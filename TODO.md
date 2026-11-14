@@ -1,1 +1,1 @@
-- [ ] checkout runevision
+- [ ] checkout runevision (https://github.com/runevision)

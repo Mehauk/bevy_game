@@ -41,7 +41,7 @@ fn startup(
 
     commands.spawn((
         PanOrbitCamera::default(),
-        Transform::from_translation(Vec3::ONE).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_xyz(150.0, 110.0, 150.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
     commands.spawn((
         Mesh3d(meshes.add(terrain)),

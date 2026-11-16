@@ -47,8 +47,6 @@ fn setup_terrain(
 
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.spawn((
         PanOrbitCamera::default(),

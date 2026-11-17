@@ -1,7 +1,6 @@
 use bevy::{
     dev_tools::fps_overlay::FpsOverlayPlugin,
-    mesh::VertexAttributeValues,
-    pbr::wireframe::{WireframeConfig, WireframePlugin},
+    pbr::wireframe::WireframePlugin,
     prelude::*,
 };
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
@@ -38,6 +37,11 @@ fn setup(
 
 mod utils {
     mod developer_utils {
+        use bevy::{
+            pbr::wireframe::WireframeConfig,
+            prelude::*,
+        };
+
         fn toggle_wireframe(
             keyboard_input: Res<ButtonInput<KeyCode>>,
             mut wireframe_config: ResMut<WireframeConfig>,
@@ -50,6 +54,11 @@ mod utils {
 }
 
 mod terrain {
+    use bevy::{
+        mesh::VertexAttributeValues,
+        prelude::*,
+    };
+
     fn setup_terrain(
         mut commands: Commands,
         mut meshes: ResMut<Assets<Mesh>>,

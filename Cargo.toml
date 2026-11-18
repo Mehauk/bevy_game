@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+avian3d = "0.8"
 bevy = { version = "0.20.1", features = ["bevy_dev_tools", "render_dev_tools", "exr"] }
+bevy_enhanced_input = "0.27"
 bevy_hanabi = "0.20.0"
 bevy_obj = "0.20.0"
-bevy_panorbit_camera = "0.36.0"
 bevy_voxel_world = "0.19.1"
 bevy_water = "0.20.0"
 noise = "0.9.0"

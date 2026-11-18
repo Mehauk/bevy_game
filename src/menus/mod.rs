@@ -3,12 +3,7 @@ pub mod command_menu;
 use std::path::{Path, PathBuf};
 
 use bevy::{
-    input::keyboard::KeyboardInput,
-    input_focus::{AutoFocus, FocusedInput, InputFocus, tab_navigation::TabIndex},
-    platform::collections::HashMap,
-    prelude::*,
-    text::{EditableText, LineBreak, TextCursorStyle, TextEdit, TextEditChange},
-    ui_widgets::TextInput,
+    input::keyboard::KeyboardInput, input_focus::{AutoFocus, FocusedInput, InputFocus, tab_navigation::TabIndex}, platform::collections::HashMap, prelude::*, text::{EditableText, LineBreak, TextCursorStyle, TextEdit, TextEditChange}, ui::InteractionDisabled, ui_widgets::TextInput,
 };
 use bevy_hui::prelude::*;
 use bevy_mod_scripting::{
@@ -138,23 +133,25 @@ impl Plugin for MenuPlugin {
                 },
             )
             .register(
-                "set_child_background",
+                "set_property",
                 |ctx: FunctionCallContext,
                  menu_name: String,
                  container_id: String,
                  index: i64,
-                 hex_color: String|
+                 key: String,
+                 value: String|
                  -> Result<(), InteropError> {
                     if index < 0 {
                         return Ok(());
                     }
                     ctx.world()?
                         .with_resource_mut(|mut ops: Mut<MenuUiOps>| {
-                            ops.0.push(MenuUiOp::SetChildBackground {
+                            ops.0.push(MenuUiOp::SetProperty {
                                 menu_name,
                                 container_id,
                                 index: index as usize,
-                                hex_color,
+                                key,
+                                value,
                             });
                         })
                 },
@@ -234,11 +231,12 @@ enum MenuUiOp {
         relative_template: String,
         props: Vec<(String, String)>,
     },
-    SetChildBackground {
+    SetProperty {
         menu_name: String,
         container_id: String,
         index: usize,
-        hex_color: String,
+        key: String,
+        value: String,
     },
     SetInputText {
         menu_name: String,
@@ -372,6 +370,7 @@ fn setup_menu_hui(
                         ..default()
                     },
                     TabIndex(0),
+                    InteractionDisabled,
                     AutoFocus,
                 ))
                 .observe(prevent_text_input_keys)
@@ -421,6 +420,44 @@ fn setup_menu_hui(
             ));
         },
     );
+
+    html_funcs.register(
+        "lua_spawn",
+        |In(entity): In<Entity>,
+         q_tags: Query<&Tags>,
+         q_parents: Query<&ChildOf>,
+         q_roots: Query<&MenuRoot>,
+         mut callbacks: MessageWriter<ScriptCallbackMessage>| {
+            let Some((menu_entity, root)) = find_menu_root(entity, &q_parents, &q_roots) else {
+                return;
+            };
+            let Some(script) = root.script.clone() else {
+                return;
+            };
+
+            let mut tag_map = HashMap::default();
+            if let Ok(tags) = q_tags.get(entity) {
+                for (k, v) in tags.tags() {
+                    tag_map.insert(k.clone(), ScriptValue::String(v.clone().into()));
+                }
+            }
+            tag_map.insert(
+                "target".to_string(),
+                ScriptValue::String(format!("@{}", entity.to_bits()).into()),
+            );
+
+            callbacks.write(ScriptCallbackMessage::new_for_script_entity(
+                OnMenuAction::into_callback_label(),
+                vec![
+                    ScriptValue::String(root.name.clone().into()),
+                    ScriptValue::Map(tag_map),
+                ],
+                script,
+                menu_entity,
+            ));
+        },
+    );
+;
 }
 
 fn dispatch_menu_ready(
@@ -570,6 +607,7 @@ fn apply_menu_ui_ops(
     q_children: Query<&Children>,
     q_ui_ids: Query<&UiId>,
     mut q_editable: Query<&mut EditableText>,
+    mut q_template_props: Query<&mut TemplateProperties>,
 ) {
     if ops.0.is_empty() {
         return;
@@ -608,7 +646,7 @@ fn apply_menu_ui_ops(
                     }
                 }
             }
-            MenuUiOp::SpawnComponent {
+                        MenuUiOp::SpawnComponent {
                 menu_name,
                 container_id,
                 relative_template,
@@ -617,9 +655,15 @@ fn apply_menu_ui_ops(
                 let Some(root) = manager.entity_for(&menu_name) else {
                     continue;
                 };
-                let Some(container) =
+                let container = if let Some(bits_str) = container_id.strip_prefix('@') {
+                    bits_str
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(Entity::try_from_bits)
+                } else {
                     find_ui_id_in_menu(root, &container_id, &q_children, &q_ui_ids)
-                else {
+                };
+                let Some(container) = container else {
                     deferred.push(MenuUiOp::SpawnComponent {
                         menu_name,
                         container_id,
@@ -633,22 +677,29 @@ fn apply_menu_ui_ops(
                     template_props.set(&k, &v);
                 }
                 let path = resolve_menu_file(&menu_name, &relative_template);
+                let is_direct_entity = container_id.starts_with('@');
                 if let Ok(mut entity_cmd) = commands.get_entity(container) {
                     entity_cmd.with_child((
-                        Node {
-                            width: Val::Percent(100.0),
-                            ..default()
+                        if is_direct_entity {
+                            Node::default()
+                        } else {
+                            Node {
+                                width: Val::Percent(100.0),
+                                ..default()
+                            }
                         },
                         HtmlNode(server.load(path)),
                         template_props,
                     ));
                 }
             }
-            MenuUiOp::SetChildBackground {
+
+             MenuUiOp::SetProperty {
                 menu_name,
                 container_id,
                 index,
-                hex_color,
+                key,
+                value,
             } => {
                 if cleared_containers
                     .iter()
@@ -662,27 +713,20 @@ fn apply_menu_ui_ops(
                 let Some(container) =
                     find_ui_id_in_menu(root, &container_id, &q_children, &q_ui_ids)
                 else {
-                    deferred.push(MenuUiOp::SetChildBackground {
+                    deferred.push(MenuUiOp::SetProperty {
                         menu_name,
                         container_id,
                         index,
-                        hex_color,
+                        key,
+                        value,
                     });
                     continue;
                 };
                 if let Ok(children) = q_children.get(container)
-                    && let Some(&child) = children.get(index)
-                    && let Ok(srgba) = Srgba::hex(&hex_color)
+                    && let Some(&row_entity) = children.get(index)
+                    && let Ok(mut props) = q_template_props.get_mut(row_entity)
                 {
-                    let target = q_children
-                        .get(child)
-                        .ok()
-                        .and_then(|c| c.first().copied())
-                        .unwrap_or(child);
-
-                    if let Ok(mut entity_cmd) = commands.get_entity(target) {
-                        entity_cmd.insert(BackgroundColor(srgba.into()));
-                    }
+                    props.set(&key, &value);
                 }
             }
             MenuUiOp::SetInputText { menu_name, text } => {

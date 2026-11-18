@@ -17,11 +17,61 @@ end
 
 local all_commands = {}
 local visible_commands = {}
+local pending_row_segments = {}
 local selected_index = nil
 local current_query = ""
 
 local NORMAL_BG = "#252834"
 local SELECTED_BG = "#3E4A6B"
+
+local function get_fuzzy_segments(candidate, query)
+    if query == "" then
+        return { { text = candidate, matched = false } }
+    end
+
+    local c_lower = string.lower(candidate)
+    local q_lower = string.lower(query)
+    local matched = {}
+    for i = 1, #candidate do
+        matched[i] = false
+    end
+
+    local qi = 1
+    local qlen = #q_lower
+    for i = 1, #c_lower do
+        if qi > qlen then
+            break
+        end
+        if string.sub(c_lower, i, i) == string.sub(q_lower, qi, qi) then
+            matched[i] = true
+            qi = qi + 1
+        end
+    end
+
+    local segments = {}
+    local current_text = ""
+    local current_matched = nil
+
+    for i = 1, #candidate do
+        local m = matched[i]
+        local char = string.sub(candidate, i, i)
+        if current_matched == nil then
+            current_matched = m
+            current_text = char
+        elseif current_matched == m then
+            current_text = current_text .. char
+        else
+            table.insert(segments, { text = current_text, matched = current_matched })
+            current_matched = m
+            current_text = char
+        end
+    end
+    if #current_text > 0 then
+        table.insert(segments, { text = current_text, matched = current_matched })
+    end
+
+    return segments
+end
 
 local function fuzzy_score(candidate, query)
     if query == "" then
@@ -79,10 +129,10 @@ end
 local function update_highlight(menu_name, old_idx, new_idx)
     local menus = get_menus()
     if old_idx ~= nil then
-        menus.set_child_background(menu_name, "palette_list", old_idx - 1, NORMAL_BG)
+        menus.set_property(menu_name, "palette_list", old_idx - 1, "bg", NORMAL_BG)
     end
     if new_idx ~= nil then
-        menus.set_child_background(menu_name, "palette_list", new_idx - 1, SELECTED_BG)
+        menus.set_property(menu_name, "palette_list", new_idx - 1, "bg", SELECTED_BG)
     end
 end
 
@@ -108,6 +158,7 @@ local function rebuild_list(menu_name, query)
     end
 
     visible_commands = {}
+    pending_row_segments = {}
     menus.clear_children(menu_name, "palette_list")
 
     selected_index = (current_query ~= "" and #scored > 0) and 1 or nil
@@ -118,9 +169,17 @@ local function rebuild_list(menu_name, query)
         end
         table.insert(visible_commands, entry.cmd)
         local bg = (i == selected_index) and SELECTED_BG or NORMAL_BG
+
+        local desc = entry.cmd.description
+        if desc == nil or desc == "" then
+            desc = " "
+        end
+
+        pending_row_segments[entry.cmd.name] = get_fuzzy_segments(entry.cmd.name, current_query)
+
         menus.spawn_component(menu_name, "palette_list", "components/command_row.html", {
-            name = entry.cmd.name,
-            description = entry.cmd.description,
+            cmd = entry.cmd.name,
+            desc = desc,
             bg = bg,
         })
     end
@@ -183,13 +242,27 @@ function on_menu_key(menu_name, key)
         elseif current_query == "" then
             menus.close_top()
         end
-        
     end
 end
 
 function on_menu_action(menu_name, tags)
-    if tags.callback == "on_row_pressed" and tags.cmd ~= nil then
+    if tags.target ~= nil and tags.cmd ~= nil then
+        local segments = pending_row_segments[tags.cmd]
+        if segments ~= nil then
+            local menus = get_menus()
+            for _, seg in ipairs(segments) do
+                if seg.text ~= "" then
+                    menus.spawn_component(menu_name, tags.target, "components/text_span.html", {
+                        text = seg.text,
+                        color = seg.matched and "#4F92FF" or "#FFFFFF",
+                    })
+                end
+            end
+            pending_row_segments[tags.cmd] = nil
+        end
+    elseif tags.callback == "on_row_pressed" and tags.cmd ~= nil then
         get_commands().run(tags.cmd)
         get_menus().close_top()
     end
 end
+

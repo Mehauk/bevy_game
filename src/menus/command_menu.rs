@@ -16,11 +16,9 @@ fn toggle_command_menu_shortcut(
     keys: Res<ButtonInput<KeyCode>>,
     mut toggle_writer: MessageWriter<ToggleMenu>,
 ) {
-    let win_pressed = keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]);
     let ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
-    let alt = keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]);
 
-    if win_pressed || (ctrl && alt && keys.just_pressed(KeyCode::Space)) {
+    if ctrl && keys.just_pressed(KeyCode::Space) {
         toggle_writer.write(ToggleMenu(MENU_NAME.to_string()));
     }
 }

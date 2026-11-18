@@ -148,16 +148,12 @@ mod character {
         keyboard: Res<ButtonInput<KeyCode>>,
         menu_manager: Res<MenuManager>,
     ) {
-        if menu_manager.any_open() {
-            cursor_options.visible = true;
-            cursor_options.grab_mode = CursorGrabMode::None;
-            return;
-        }
         if mouse.just_pressed(MouseButton::Left) {
             cursor_options.visible = false;
             cursor_options.grab_mode = CursorGrabMode::Locked;
         }
-        if keyboard.just_pressed(KeyCode::Escape) {
+        // Only ungrab with Escape if no menu is currently open
+        if keyboard.just_pressed(KeyCode::Escape) && !menu_manager.any_open() {
             cursor_options.visible = true;
             cursor_options.grab_mode = CursorGrabMode::None;
         }

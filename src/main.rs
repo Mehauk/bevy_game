@@ -1,48 +1,47 @@
+mod menus;
+mod utils;
+
 use bevy::{
+    asset::io::AssetSourceBuilder,
     dev_tools::fps_overlay::FpsOverlayPlugin,
-    pbr::wireframe::WireframePlugin,
     prelude::*,
 };
+use bevy_hui::prelude::*;
+use bevy_mod_scripting::BMSPlugin;
+
+use menus::command_menu::CommandMenuPlugin;
+use menus::MenuPlugin;
+use utils::commands::CommandRegistryPlugin;
+use utils::DevUtilsPlugin;
 
 use character::CharacterPlugin;
-use terrain::setup_terrain;
-use utils::dev_utils::toggle_wireframe;
+use terrain::TerrainPlugin;
 
 fn main() {
+    let _ = std::fs::create_dir_all("mods");
+
     App::new()
+        .register_asset_source("mods", AssetSourceBuilder::platform_default("mods", None))
         .add_plugins((
             DefaultPlugins,
+            HuiPlugin,
+            BMSPlugin,
             FpsOverlayPlugin::default(),
-            WireframePlugin::default(),
+            CommandRegistryPlugin,
+            MenuPlugin,
+            CommandMenuPlugin,
+            DevUtilsPlugin,
             CharacterPlugin,
+            TerrainPlugin,
         ))
-        .add_systems(Startup, (setup_terrain, setup,))
-        .add_systems(Update, (toggle_wireframe,))
         .run();
 }
-
-fn setup(
-    mut commands: Commands,
-) {
-    commands.spawn((
-        DirectionalLight::default(),
-        Transform::from_translation(Vec3::ONE).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-}
-
 mod character {
     use bevy::{
         input::mouse::AccumulatedMouseMotion,
         prelude::*,
         window::{CursorGrabMode, CursorOptions, PrimaryWindow},
     };
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub enum ViewMode {
-        FirstPerson,
-        #[default]
-        ThirdPerson,
-    }
 
     pub struct CharacterPlugin;
 
@@ -62,12 +61,20 @@ mod character {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum ViewMode {
+        FirstPerson,
+        #[default]
+        ThirdPerson,
+    }
+
     #[derive(Component)]
     pub struct Character {
         pub yaw: f32,
         pub pitch: f32,
         pub walk_speed: f32,
         pub sprint_speed: f32,
+        pub turn_speed: f32,
         pub sensitivity: f32,
         pub third_person_distance: f32,
         pub eye_height_offset: f32,
@@ -81,6 +88,7 @@ mod character {
                 pitch: -0.25,
                 walk_speed: 6.0,
                 sprint_speed: 12.0,
+                turn_speed: 12.0,
                 sensitivity: 0.0025,
                 third_person_distance: 6.0,
                 eye_height_offset: 0.65,
@@ -100,7 +108,6 @@ mod character {
         mut meshes: ResMut<Assets<Mesh>>,
         mut materials: ResMut<Assets<StandardMaterial>>,
     ) {
-        // Capsule3d(radius = 0.4, length = 1.0) has total height 1.8, so y = 0.9 rests on y = 0.0.
         commands
             .spawn((
                 Character::default(),
@@ -108,11 +115,22 @@ mod character {
                 Visibility::default(),
             ))
             .with_children(|parent| {
-                parent.spawn((
-                    CharacterBody,
-                    Mesh3d(meshes.add(Capsule3d::new(0.4, 1.0))),
-                    MeshMaterial3d(materials.add(Color::srgb(0.2, 0.45, 0.85))),
-                ));
+                parent
+                    .spawn((
+                        CharacterBody,
+                        Mesh3d(meshes.add(Capsule3d::new(0.4, 1.0))),
+                        MeshMaterial3d(materials.add(Color::srgb(0.2, 0.45, 0.85))),
+                        Transform::default(),
+                        Visibility::default(),
+                    ))
+                    .with_children(|body| {
+                        // Front (-Z) visor so the capsule's facing direction is visible
+                        body.spawn((
+                            Mesh3d(meshes.add(Cuboid::new(0.45, 0.18, 0.2))),
+                            MeshMaterial3d(materials.add(Color::srgb(0.1, 0.12, 0.18))),
+                            Transform::from_xyz(0.0, 0.45, -0.35),
+                        ));
+                    });
 
                 parent.spawn((
                     CharacterCamera,
@@ -155,102 +173,113 @@ mod character {
     fn character_look(
         cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
         mouse_motion: Res<AccumulatedMouseMotion>,
-        character_query: Single<(&mut Character, &mut Transform)>,
+        mut character: Single<&mut Character>,
     ) {
         if cursor_options.grab_mode != CursorGrabMode::Locked || mouse_motion.delta == Vec2::ZERO {
             return;
         }
 
-        let (mut character, mut transform) = character_query.into_inner();
         character.yaw -= mouse_motion.delta.x * character.sensitivity;
         character.pitch =
             (character.pitch - mouse_motion.delta.y * character.sensitivity).clamp(-1.35, 1.35);
-
-        transform.rotation = Quat::from_rotation_y(character.yaw);
     }
 
     fn character_move(
         time: Res<Time>,
         keyboard: Res<ButtonInput<KeyCode>>,
-        character_query: Single<(&Character, &mut Transform)>,
+        character_query: Single<
+            (&Character, &mut Transform),
+            (Without<CharacterBody>, Without<CharacterCamera>),
+        >,
+        mut body_transform: Single<
+            &mut Transform,
+            (With<CharacterBody>, Without<Character>, Without<CharacterCamera>),
+        >,
     ) {
         let (character, mut transform) = character_query.into_inner();
 
+        let yaw_rot = Quat::from_rotation_y(character.yaw);
+        let forward = yaw_rot * Vec3::NEG_Z;
+        let right = yaw_rot * Vec3::X;
+
         let mut direction = Vec3::ZERO;
         if keyboard.pressed(KeyCode::KeyW) {
-            direction += *transform.forward();
+            direction += forward;
         }
         if keyboard.pressed(KeyCode::KeyS) {
-            direction += *transform.back();
-        }
-        if keyboard.pressed(KeyCode::KeyA) {
-            direction += *transform.left();
+            direction -= forward;
         }
         if keyboard.pressed(KeyCode::KeyD) {
-            direction += *transform.right();
+            direction += right;
+        }
+        if keyboard.pressed(KeyCode::KeyA) {
+            direction -= right;
         }
 
-        direction.y = 0.0;
-        if direction == Vec3::ZERO {
-            return;
+        let alt_held =
+            keyboard.pressed(KeyCode::AltLeft) || keyboard.pressed(KeyCode::AltRight);
+
+        if direction != Vec3::ZERO {
+            let move_dir = direction.normalize();
+            let sprinting =
+                keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
+            let speed = if sprinting {
+                character.sprint_speed
+            } else {
+                character.walk_speed
+            };
+
+            transform.translation += move_dir * speed * time.delta_secs();
+
+            if character.view_mode == ViewMode::ThirdPerson && !alt_held {
+                let target_yaw = (-move_dir.x).atan2(-move_dir.z);
+                let target_rot = Quat::from_rotation_y(target_yaw);
+                let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
+                body_transform.rotation = body_transform.rotation.slerp(target_rot, turn_alpha);
+            }
         }
 
-        let sprinting =
-            keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-        let speed = if sprinting {
-            character.sprint_speed
-        } else {
-            character.walk_speed
-        };
-
-        transform.translation += direction.normalize() * speed * time.delta_secs();
+        if character.view_mode == ViewMode::FirstPerson {
+            body_transform.rotation = yaw_rot;
+        } else if alt_held {
+            let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
+            body_transform.rotation = body_transform.rotation.slerp(yaw_rot, turn_alpha);
+        }
     }
 
     fn sync_camera_and_body(
-        character_query: Single<(&Character, &Transform), Without<CharacterCamera>>,
-        mut camera_transform: Single<&mut Transform, With<CharacterCamera>>,
+        character_query: Single<
+            (&Character, &Transform),
+            (Without<CharacterCamera>, Without<CharacterBody>),
+        >,
+        mut camera_transform: Single<
+            &mut Transform,
+            (With<CharacterCamera>, Without<Character>, Without<CharacterBody>),
+        >,
         mut body_visibility: Single<&mut Visibility, With<CharacterBody>>,
     ) {
         let (character, char_transform) = *character_query;
         let eye_pivot = Vec3::new(0.0, character.eye_height_offset, 0.0);
+        let cam_yaw_rot = Quat::from_rotation_y(character.yaw);
+        let cam_pitch_rot = Quat::from_rotation_x(character.pitch);
 
         match character.view_mode {
             ViewMode::FirstPerson => {
                 **body_visibility = Visibility::Hidden;
                 camera_transform.translation = eye_pivot;
-                camera_transform.rotation = Quat::from_rotation_x(character.pitch);
+                camera_transform.rotation = cam_yaw_rot * cam_pitch_rot;
             }
             ViewMode::ThirdPerson => {
                 **body_visibility = Visibility::Visible;
-                let offset = Quat::from_rotation_x(character.pitch)
-                    * Vec3::new(0.0, 0.0, character.third_person_distance);
+                let offset =
+                    cam_yaw_rot * cam_pitch_rot * Vec3::new(0.0, 0.0, character.third_person_distance);
 
                 let mut cam_pos = eye_pivot + offset;
-                // Keep third-person camera above the ground plane (y = 0.0)
                 let min_local_y = -char_transform.translation.y + 0.25;
                 cam_pos.y = cam_pos.y.max(min_local_y);
 
                 camera_transform.translation = cam_pos;
                 camera_transform.look_at(eye_pivot, Vec3::Y);
-            }
-        }
-    }
-
-}
-
-mod utils {
-    pub mod dev_utils {
-        use bevy::{
-            pbr::wireframe::WireframeConfig,
-            prelude::*,
-        };
-
-        pub fn toggle_wireframe(
-            keyboard_input: Res<ButtonInput<KeyCode>>,
-            mut wireframe_config: ResMut<WireframeConfig>,
-        ) {
-            if keyboard_input.just_pressed(KeyCode::KeyZ) {
-                wireframe_config.global = !wireframe_config.global;
             }
         }
     }
@@ -262,14 +291,22 @@ mod terrain {
         prelude::*,
     };
 
-    pub fn setup_terrain(
+    pub struct TerrainPlugin;
+
+    impl Plugin for TerrainPlugin {
+        fn build(&self, app: &mut App) {
+            app.add_systems(Startup, setup_terrain);
+        }
+    }
+
+    fn setup_terrain(
         mut commands: Commands,
         mut meshes: ResMut<Assets<Mesh>>,
         mut materials: ResMut<Assets<StandardMaterial>>,
     ) {
         let mut terrain = Mesh::from(Plane3d::default().mesh().size(200., 200.).subdivisions(100));
 
-        if let Some(VertexAttributeValues::Float32x3(positions)) =
+        if let Some(VertexAttributeValues::Float32x3(_positions)) =
             terrain.attribute_mut(Mesh::ATTRIBUTE_POSITION)
         {}
 

@@ -1,15 +1,9 @@
 <template>
-    <property name="cmd"> </property>
     <property name="desc"> </property>
-    <property name="bg">#252834</property>
-    <property name="display">flex</property>
 
-    <button display="{display}" width="100%" min_height="32px" padding="6px 8px" background="{bg}"
-        hover:background="#33384A" border_radius="4px" on_press="lua_press" tag:callback="on_row_pressed"
-        tag:cmd="{cmd}">
-        <node width="100%" flex_direction="column" justify_content="flex_start" align_items="flex_start">
-            <node id="name_box" flex_direction="row" align_items="center" on_spawn="lua_spawn" tag:cmd="{cmd}" />
-            <text font_size="12" font_color="#9AA0B4">{desc}</text>
-        </node>
-    </button>
+    <node width="100%" min_height="32px" padding="6px 8px" flex_direction="column" justify_content="flex_start"
+        align_items="flex_start" row_gap="2px">
+        <node id="name_box" min_height="18px" flex_direction="row" align_items="center" />
+        <text id="desc_text" font_size="12" font_color="#9AA0B4">{desc}</text>
+    </node>
 </template>

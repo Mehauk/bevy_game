@@ -15,14 +15,17 @@ local function get_menus()
     return _menus
 end
 
+local MAX_ROWS = 20
 local all_commands = {}
 local visible_commands = {}
-local pending_row_segments = {}
+local spawned_row_count = 0
 local selected_index = nil
 local current_query = ""
 
 local NORMAL_BG = "#252834"
 local SELECTED_BG = "#3E4A6B"
+local MATCHED_COLOR = "#4F92FF"
+local NORMAL_COLOR = "#FFFFFF"
 
 local function get_fuzzy_segments(candidate, query)
     if query == "" then
@@ -36,15 +39,22 @@ local function get_fuzzy_segments(candidate, query)
         matched[i] = false
     end
 
-    local qi = 1
-    local qlen = #q_lower
-    for i = 1, #c_lower do
-        if qi > qlen then
-            break
-        end
-        if string.sub(c_lower, i, i) == string.sub(q_lower, qi, qi) then
+    local start_pos, end_pos = string.find(c_lower, q_lower, 1, true)
+    if start_pos ~= nil then
+        for i = start_pos, end_pos do
             matched[i] = true
-            qi = qi + 1
+        end
+    else
+        local qi = 1
+        local qlen = #q_lower
+        for i = 1, #c_lower do
+            if qi > qlen then
+                break
+            end
+            if string.sub(c_lower, i, i) == string.sub(q_lower, qi, qi) then
+                matched[i] = true
+                qi = qi + 1
+            end
         end
     end
 
@@ -158,35 +168,62 @@ local function rebuild_list(menu_name, query)
     end
 
     visible_commands = {}
-    pending_row_segments = {}
-    menus.clear_children(menu_name, "palette_list")
+    local visible_count = math.min(#scored, spawned_row_count)
+    selected_index = (current_query ~= "" and visible_count > 0) and 1 or nil
 
-    selected_index = (current_query ~= "" and #scored > 0) and 1 or nil
+    for i = 1, spawned_row_count do
+        local row_idx = i - 1
+        if i <= visible_count then
+            local entry = scored[i]
+            table.insert(visible_commands, entry.cmd)
 
-    for i, entry in ipairs(scored) do
-        if i > 20 then
-            break
+            local bg = (i == selected_index) and SELECTED_BG or NORMAL_BG
+            local desc = entry.cmd.description
+            if desc == nil or desc == "" then
+                desc = " "
+            end
+
+            local raw_segments = get_fuzzy_segments(entry.cmd.name, current_query)
+            local rich_segments = {}
+            for _, seg in ipairs(raw_segments) do
+                if seg.text ~= "" then
+                    table.insert(rich_segments, {
+                        text = seg.text,
+                        color = seg.matched and MATCHED_COLOR or NORMAL_COLOR,
+                    })
+                end
+            end
+
+            menus.set_property(menu_name, "palette_list", row_idx, "display", "flex")
+            menus.set_property(menu_name, "palette_list", row_idx, "bg", bg)
+            menus.set_child_rich_text(menu_name, "palette_list", row_idx, "name_box", rich_segments, 14.0)
+            menus.set_child_text(menu_name, "palette_list", row_idx, "desc_text", desc)
+        else
+            menus.set_property(menu_name, "palette_list", row_idx, "display", "none")
         end
-        table.insert(visible_commands, entry.cmd)
-        local bg = (i == selected_index) and SELECTED_BG or NORMAL_BG
-
-        local desc = entry.cmd.description
-        if desc == nil or desc == "" then
-            desc = " "
-        end
-
-        pending_row_segments[entry.cmd.name] = get_fuzzy_segments(entry.cmd.name, current_query)
-
-        menus.spawn_component(menu_name, "palette_list", "components/command_row.html", {
-            cmd = entry.cmd.name,
-            desc = desc,
-            bg = bg,
-        })
     end
 end
 
 function on_menu_ready(menu_name)
     all_commands = get_commands().list()
+    spawned_row_count = math.min(#all_commands, MAX_ROWS)
+
+    local menus = get_menus()
+    menus.clear_children(menu_name, "palette_list")
+
+    for i = 1, spawned_row_count do
+        local cmd = all_commands[i]
+        local desc = cmd.description
+        if desc == nil or desc == "" then
+            desc = " "
+        end
+        menus.spawn_component(menu_name, "palette_list", "components/command_row.html", {
+            desc = desc,
+            bg = NORMAL_BG,
+            display = "flex",
+        })
+    end
+
     rebuild_list(menu_name, "")
 end
 
@@ -246,23 +283,4 @@ function on_menu_key(menu_name, key)
 end
 
 function on_menu_action(menu_name, tags)
-    if tags.target ~= nil and tags.cmd ~= nil then
-        local segments = pending_row_segments[tags.cmd]
-        if segments ~= nil then
-            local menus = get_menus()
-            for _, seg in ipairs(segments) do
-                if seg.text ~= "" then
-                    menus.spawn_component(menu_name, tags.target, "components/text_span.html", {
-                        text = seg.text,
-                        color = seg.matched and "#4F92FF" or "#FFFFFF",
-                    })
-                end
-            end
-            pending_row_segments[tags.cmd] = nil
-        end
-    elseif tags.callback == "on_row_pressed" and tags.cmd ~= nil then
-        get_commands().run(tags.cmd)
-        get_menus().close_top()
-    end
 end
-

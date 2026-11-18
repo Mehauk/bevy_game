@@ -3,7 +3,15 @@ pub mod command_menu;
 use std::path::{Path, PathBuf};
 
 use bevy::{
-    input::keyboard::KeyboardInput, input_focus::{AutoFocus, FocusedInput, InputFocus, tab_navigation::TabIndex}, platform::collections::HashMap, prelude::*, text::{EditableText, LineBreak, TextCursorStyle, TextEdit, TextEditChange}, ui::InteractionDisabled, ui_widgets::TextInput,
+    input::keyboard::KeyboardInput,
+    input_focus::{AutoFocus, FocusedInput, InputFocus},
+    platform::collections::HashMap,
+    prelude::*,
+    text::{
+        EditableText, EditableTextSystems, LineBreak, TextCursorStyle, TextEdit, TextEditChange,
+    },
+    ui::InteractionDisabled,
+    ui_widgets::TextInput,
 };
 use bevy_hui::prelude::*;
 use bevy_mod_scripting::{
@@ -43,6 +51,7 @@ impl Plugin for MenuPlugin {
             .add_systems(
                 Update,
                 (
+                    reload_menus_on_asset_change,
                     handle_menu_messages,
                     dispatch_menu_ready,
                     forward_menu_keys,
@@ -54,6 +63,10 @@ impl Plugin for MenuPlugin {
                     apply_menu_ui_ops,
                 )
                     .chain(),
+            )
+            .add_systems(
+                PostUpdate,
+                strip_menu_nav_text_edits.before(EditableTextSystems),
             );
 
         NamespaceBuilder::in_namespace(app.world_mut(), "menus")
@@ -157,6 +170,82 @@ impl Plugin for MenuPlugin {
                 },
             )
             .register(
+                "set_child_text",
+                |ctx: FunctionCallContext,
+                 menu_name: String,
+                 container_id: String,
+                 index: i64,
+                 target_id: String,
+                 text: String|
+                 -> Result<(), InteropError> {
+                    if index < 0 {
+                        return Ok(());
+                    }
+                    ctx.world()?
+                        .with_resource_mut(|mut ops: Mut<MenuUiOps>| {
+                            ops.0.push(MenuUiOp::SetChildText {
+                                menu_name,
+                                container_id,
+                                index: index as usize,
+                                target_id,
+                                text,
+                            });
+                        })
+                },
+            )
+            .register(
+                "set_child_rich_text",
+                |ctx: FunctionCallContext,
+                 menu_name: String,
+                 container_id: String,
+                 index: i64,
+                 target_id: String,
+                 segments_val: ScriptValue,
+                 font_size_val: ScriptValue|
+                 -> Result<(), InteropError> {
+                    if index < 0 {
+                        return Ok(());
+                    }
+
+                    let font_size = match font_size_val {
+                        ScriptValue::Float(f) => f as f32,
+                        ScriptValue::Integer(i) => i as f32,
+                        _ => 14.0,
+                    };
+
+                    let mut segments = Vec::new();
+                    if let ScriptValue::List(list) = segments_val {
+                        for item in list {
+                            let ScriptValue::Map(map) = item else {
+                                continue;
+                            };
+                            let Some(ScriptValue::String(text)) = map.get("text") else {
+                                continue;
+                            };
+                            let color = match map.get("color") {
+                                Some(ScriptValue::String(hex)) => Srgba::hex(hex.as_ref())
+                                    .map(Color::from)
+                                    .unwrap_or(Color::WHITE),
+                                _ => Color::WHITE,
+                            };
+                            segments.push((text.clone().into_owned(), color));
+                        }
+                    }
+
+                    ctx.world()?
+                        .with_resource_mut(|mut ops: Mut<MenuUiOps>| {
+                            ops.0.push(MenuUiOp::SetChildRichText {
+                                menu_name,
+                                container_id,
+                                index: index as usize,
+                                target_id,
+                                segments,
+                                font_size,
+                            });
+                        })
+                },
+            )
+            .register(
                 "set_input_text",
                 |ctx: FunctionCallContext,
                  menu_name: String,
@@ -186,6 +275,12 @@ pub struct MenuRoot {
     pub script: Option<Handle<ScriptAsset>>,
     pub ready_sent: bool,
 }
+
+#[derive(Component)]
+struct MenuTextInput;
+
+#[derive(Component, Default)]
+struct LastMenuTextValue(String);
 
 #[derive(Resource, Default)]
 pub struct MenuManager {
@@ -237,6 +332,21 @@ enum MenuUiOp {
         index: usize,
         key: String,
         value: String,
+    },
+    SetChildText {
+        menu_name: String,
+        container_id: String,
+        index: usize,
+        target_id: String,
+        text: String,
+    },
+    SetChildRichText {
+        menu_name: String,
+        container_id: String,
+        index: usize,
+        target_id: String,
+        segments: Vec<(String, Color)>,
+        font_size: f32,
     },
     SetInputText {
         menu_name: String,
@@ -316,6 +426,14 @@ fn prevent_text_input_keys(mut event: On<FocusedInput<KeyboardInput>>) {
     }
 }
 
+fn strip_menu_nav_text_edits(mut q_editable: Query<&mut EditableText, With<MenuTextInput>>) {
+    for mut editable in &mut q_editable {
+        editable
+            .pending_edits
+            .retain(|edit| !matches!(edit, TextEdit::Up(_) | TextEdit::Down(_)));
+    }
+}
+
 fn setup_menu_hui(
     server: Res<AssetServer>,
     mut html_comps: HtmlComponents,
@@ -355,6 +473,8 @@ fn setup_menu_hui(
             commands
                 .entity(entity)
                 .insert((
+                    MenuTextInput,
+                    LastMenuTextValue::default(),
                     TextInput,
                     EditableText {
                         cursor_width: 0.3,
@@ -369,7 +489,6 @@ fn setup_menu_hui(
                         selection_color: Color::srgba(0.3, 0.5, 0.9, 0.4),
                         ..default()
                     },
-                    TabIndex(0),
                     InteractionDisabled,
                     AutoFocus,
                 ))
@@ -457,7 +576,45 @@ fn setup_menu_hui(
             ));
         },
     );
-;
+}
+
+fn reload_menus_on_asset_change(
+    mut commands: Commands,
+    server: Res<AssetServer>,
+    mut manager: ResMut<MenuManager>,
+    mut input_focus: ResMut<InputFocus>,
+    mut ops: ResMut<MenuUiOps>,
+    mut html_events: MessageReader<AssetEvent<HtmlTemplate>>,
+    mut script_events: MessageReader<AssetEvent<ScriptAsset>>,
+) {
+    let html_modified = html_events
+        .read()
+        .any(|e| matches!(e, AssetEvent::Modified { .. }));
+    let script_modified = script_events
+        .read()
+        .any(|e| matches!(e, AssetEvent::Modified { .. }));
+
+    if (!html_modified && !script_modified) || manager.open_menus.is_empty() {
+        return;
+    }
+
+    let open_names: Vec<String> = manager
+        .open_menus
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    for (_, root) in manager.open_menus.drain(..) {
+        if let Ok(mut entity_cmd) = commands.get_entity(root) {
+            entity_cmd.despawn();
+        }
+    }
+    input_focus.clear();
+    ops.0.clear();
+
+    for name in open_names {
+        open_menu(&mut commands, &server, &mut manager, &name);
+    }
 }
 
 fn dispatch_menu_ready(
@@ -503,15 +660,21 @@ fn dispatch_menu_ready(
 
 fn on_menu_text_edit_change(
     event: On<TextEditChange>,
-    q_editable: Query<&EditableText>,
+    mut q_editable: Query<(&EditableText, &mut LastMenuTextValue)>,
     q_parents: Query<&ChildOf>,
     q_roots: Query<&MenuRoot>,
     mut callbacks: MessageWriter<ScriptCallbackMessage>,
 ) {
     let target = event.event_target();
-    let Ok(editable) = q_editable.get(target) else {
+    let Ok((editable, mut last_value)) = q_editable.get_mut(target) else {
         return;
     };
+    let value = editable.value().to_string();
+    if last_value.0 == value {
+        return;
+    }
+    last_value.0 = value.clone();
+
     let Some((menu_entity, root)) = find_menu_root(target, &q_parents, &q_roots) else {
         return;
     };
@@ -522,7 +685,6 @@ fn on_menu_text_edit_change(
         return;
     };
 
-    let value = editable.value().to_string();
     callbacks.write(ScriptCallbackMessage::new_for_script_entity(
         OnMenuTextChanged::into_callback_label(),
         vec![
@@ -608,13 +770,16 @@ fn apply_menu_ui_ops(
     q_ui_ids: Query<&UiId>,
     mut q_editable: Query<&mut EditableText>,
     mut q_template_props: Query<&mut TemplateProperties>,
+    mut q_nodes: Query<&mut Node>,
+    mut q_bg: Query<&mut BackgroundColor>,
+    mut q_text: Query<&mut Text>,
 ) {
     if ops.0.is_empty() {
         return;
     }
 
     let mut deferred = Vec::new();
-    let mut cleared_containers = Vec::new();
+    let mut modified_containers: Vec<(String, String)> = Vec::new();
 
     for op in ops.0.drain(..) {
         match op {
@@ -625,7 +790,6 @@ fn apply_menu_ui_ops(
                 menu_name,
                 container_id,
             } => {
-                cleared_containers.push((menu_name.clone(), container_id.clone()));
                 let Some(root) = manager.entity_for(&menu_name) else {
                     continue;
                 };
@@ -638,6 +802,7 @@ fn apply_menu_ui_ops(
                     });
                     continue;
                 };
+                modified_containers.push((menu_name, container_id));
                 if let Ok(children) = q_children.get(container) {
                     for child in children.iter() {
                         if let Ok(mut entity_cmd) = commands.get_entity(child) {
@@ -646,7 +811,7 @@ fn apply_menu_ui_ops(
                     }
                 }
             }
-                        MenuUiOp::SpawnComponent {
+            MenuUiOp::SpawnComponent {
                 menu_name,
                 container_id,
                 relative_template,
@@ -672,44 +837,79 @@ fn apply_menu_ui_ops(
                     });
                     continue;
                 };
+                modified_containers.push((menu_name.clone(), container_id.clone()));
+
+                let mut display = Display::Flex;
+                let mut bg_color = Color::NONE;
                 let mut template_props = TemplateProperties::default();
                 for (k, v) in props {
+                    if k == "display" && v == "none" {
+                        display = Display::None;
+                    } else if k == "bg"
+                        && let Ok(srgba) = Srgba::hex(&v)
+                    {
+                        bg_color = Color::from(srgba);
+                    }
                     template_props.set(&k, &v);
                 }
+
                 let path = resolve_menu_file(&menu_name, &relative_template);
                 let is_direct_entity = container_id.starts_with('@');
                 if let Ok(mut entity_cmd) = commands.get_entity(container) {
-                    entity_cmd.with_child((
-                        if is_direct_entity {
-                            Node::default()
-                        } else {
-                            Node {
-                                width: Val::Percent(100.0),
-                                ..default()
-                            }
-                        },
-                        HtmlNode(server.load(path)),
-                        template_props,
-                    ));
+                    if is_direct_entity {
+                        entity_cmd.with_child((
+                            Node::default(),
+                            HtmlNode(server.load(path)),
+                            template_props,
+                        ));
+                    } else {
+                        entity_cmd.with_children(|parent| {
+                            parent
+                                .spawn((
+                                    Node {
+                                        width: Val::Percent(100.0),
+                                        display,
+                                        flex_direction: FlexDirection::Column,
+                                        border_radius: BorderRadius::all(CornerRadius::circular(Val::Px(4.0))),
+                                        ..default()
+                                    },
+                                    BackgroundColor(bg_color),
+                                ))
+                                .with_child((
+                                    Node {
+                                        width: Val::Percent(100.0),
+                                        ..default()
+                                    },
+                                    HtmlNode(server.load(path)),
+                                    template_props,
+                                ));
+                        });
+                    }
                 }
             }
-
-             MenuUiOp::SetProperty {
+            MenuUiOp::SetProperty {
                 menu_name,
                 container_id,
                 index,
                 key,
                 value,
             } => {
-                if cleared_containers
-                    .iter()
-                    .any(|(m, c)| m == &menu_name && c == &container_id)
-                {
-                    continue;
-                }
                 let Some(root) = manager.entity_for(&menu_name) else {
                     continue;
                 };
+                if modified_containers
+                    .iter()
+                    .any(|(m, c)| m == &menu_name && c == &container_id)
+                {
+                    deferred.push(MenuUiOp::SetProperty {
+                        menu_name,
+                        container_id,
+                        index,
+                        key,
+                        value,
+                    });
+                    continue;
+                }
                 let Some(container) =
                     find_ui_id_in_menu(root, &container_id, &q_children, &q_ui_ids)
                 else {
@@ -722,11 +922,184 @@ fn apply_menu_ui_ops(
                     });
                     continue;
                 };
-                if let Ok(children) = q_children.get(container)
-                    && let Some(&row_entity) = children.get(index)
-                    && let Ok(mut props) = q_template_props.get_mut(row_entity)
-                {
+                let Ok(children) = q_children.get(container) else {
+                    continue;
+                };
+                let Some(&row_entity) = children.get(index) else {
+                    continue;
+                };
+
+                if key == "bg" {
+                    if let Ok(srgba) = Srgba::hex(&value) {
+                        let color = Color::from(srgba);
+                        if let Ok(mut bg) = q_bg.get_mut(row_entity) {
+                            if bg.0 != color {
+                                bg.0 = color;
+                            }
+                        } else if let Ok(mut entity_cmd) = commands.get_entity(row_entity) {
+                            entity_cmd.insert(BackgroundColor(color));
+                        }
+                    }
+                } else if key == "display" {
+                    let target_display = if value == "none" {
+                        Display::None
+                    } else {
+                        Display::Flex
+                    };
+                    if let Ok(mut node) = q_nodes.get_mut(row_entity)
+                        && node.display != target_display
+                    {
+                        node.display = target_display;
+                    }
+                } else if let Ok(mut props) = q_template_props.get_mut(row_entity) {
                     props.set(&key, &value);
+                }
+            }
+            MenuUiOp::SetChildText {
+                menu_name,
+                container_id,
+                index,
+                target_id,
+                text,
+            } => {
+                let Some(root) = manager.entity_for(&menu_name) else {
+                    continue;
+                };
+                if modified_containers
+                    .iter()
+                    .any(|(m, c)| m == &menu_name && c == &container_id)
+                {
+                    deferred.push(MenuUiOp::SetChildText {
+                        menu_name,
+                        container_id,
+                        index,
+                        target_id,
+                        text,
+                    });
+                    continue;
+                }
+                let Some(container) =
+                    find_ui_id_in_menu(root, &container_id, &q_children, &q_ui_ids)
+                else {
+                    deferred.push(MenuUiOp::SetChildText {
+                        menu_name,
+                        container_id,
+                        index,
+                        target_id,
+                        text,
+                    });
+                    continue;
+                };
+                let Some(row_entity) = q_children
+                    .get(container)
+                    .ok()
+                    .and_then(|c| c.get(index).copied())
+                else {
+                    continue;
+                };
+                let Some(target) = find_ui_id_in_menu(row_entity, &target_id, &q_children, &q_ui_ids)
+                else {
+                    deferred.push(MenuUiOp::SetChildText {
+                        menu_name,
+                        container_id,
+                        index,
+                        target_id,
+                        text,
+                    });
+                    continue;
+                };
+                if let Ok(mut text_comp) = q_text.get_mut(target)
+                    && text_comp.0 != text
+                {
+                    text_comp.0 = text;
+                }
+            }
+            MenuUiOp::SetChildRichText {
+                menu_name,
+                container_id,
+                index,
+                target_id,
+                segments,
+                font_size,
+            } => {
+                let Some(root) = manager.entity_for(&menu_name) else {
+                    continue;
+                };
+                if modified_containers
+                    .iter()
+                    .any(|(m, c)| m == &menu_name && c == &container_id)
+                {
+                    deferred.push(MenuUiOp::SetChildRichText {
+                        menu_name,
+                        container_id,
+                        index,
+                        target_id,
+                        segments,
+                        font_size,
+                    });
+                    continue;
+                }
+                let Some(container) =
+                    find_ui_id_in_menu(root, &container_id, &q_children, &q_ui_ids)
+                else {
+                    deferred.push(MenuUiOp::SetChildRichText {
+                        menu_name,
+                        container_id,
+                        index,
+                        target_id,
+                        segments,
+                        font_size,
+                    });
+                    continue;
+                };
+                let Some(row_entity) = q_children
+                    .get(container)
+                    .ok()
+                    .and_then(|c| c.get(index).copied())
+                else {
+                    continue;
+                };
+                let Some(target) = find_ui_id_in_menu(row_entity, &target_id, &q_children, &q_ui_ids)
+                else {
+                    deferred.push(MenuUiOp::SetChildRichText {
+                        menu_name,
+                        container_id,
+                        index,
+                        target_id,
+                        segments,
+                        font_size,
+                    });
+                    continue;
+                };
+
+                if let Ok(children) = q_children.get(target) {
+                    for child in children.iter() {
+                        if let Ok(mut entity_cmd) = commands.get_entity(child) {
+                            entity_cmd.despawn();
+                        }
+                    }
+                }
+                if let Ok(mut target_cmd) = commands.get_entity(target) {
+                    target_cmd.with_children(|parent| {
+                        parent
+                            .spawn((
+                                Text::default(),
+                                TextFont::from_font_size(font_size),
+                                TextLayout {
+                                    linebreak: LineBreak::NoWrap,
+                                    ..default()
+                                },
+                            ))
+                            .with_children(|text_parent| {
+                                for (seg_text, seg_color) in &segments {
+                                    text_parent.spawn((
+                                        TextSpan::new(seg_text.clone()),
+                                        TextFont::from_font_size(font_size),
+                                        TextColor(*seg_color),
+                                    ));
+                                }
+                            });
+                    });
                 }
             }
             MenuUiOp::SetInputText { menu_name, text } => {

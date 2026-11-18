@@ -28,7 +28,7 @@ impl Plugin for CommandRegistryPlugin {
                                 let mut map = HashMap::default();
                                 map.insert(
                                     "name".to_string(),
-                                    ScriptValue::String(Cow::Borrowed(cmd.name)),
+                                    ScriptValue::String(Cow::Owned(cmd.name.clone())),
                                 );
                                 map.insert(
                                     "description".to_string(),
@@ -57,33 +57,23 @@ impl Plugin for CommandRegistryPlugin {
 pub struct RunCommand(pub String);
 
 pub trait CommandAppExt {
-    fn register_command<F, M>(
-        &mut self,
-        description: &'static str,
-        system: F,
-    ) -> &mut Self
+    fn register_command<F, M>(&mut self, description: &'static str, system: F) -> &mut Self
     where
         F: IntoSystem<(), (), M> + 'static;
 }
 
 impl CommandAppExt for App {
-    fn register_command<F, M>(
-        &mut self,
-        description: &'static str,
-        system: F,
-    ) -> &mut Self
+    fn register_command<F, M>(&mut self, description: &'static str, system: F) -> &mut Self
     where
         F: IntoSystem<(), (), M> + 'static,
     {
         let full_path = std::any::type_name::<F>();
 
-        let formatted = full_path
+        let name = full_path
             .split_once("::")
             .map(|(_, rest)| rest)
             .unwrap_or(full_path)
             .replace("::", ">");
-
-        let name: &'static str = Box::leak(formatted.into_boxed_str());
 
         let system_id = self.register_system(system);
         self.init_resource::<CommandRegistry>();
@@ -94,11 +84,9 @@ impl CommandAppExt for App {
     }
 }
 
-
-
 #[derive(Clone)]
 pub struct CommandEntry {
-    pub name: &'static str,
+    pub name: String,
     pub description: &'static str,
     pub system_id: SystemId,
 }
@@ -109,12 +97,7 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
-    pub fn register(
-        &mut self,
-        name: &'static str,
-        description: &'static str,
-        system_id: SystemId,
-    ) {
+    pub fn register(&mut self, name: String, description: &'static str, system_id: SystemId) {
         if let Some(existing) = self.commands.iter_mut().find(|c| c.name == name) {
             existing.description = description;
             existing.system_id = system_id;
@@ -124,7 +107,7 @@ impl CommandRegistry {
                 description,
                 system_id,
             });
-            self.commands.sort_by(|a, b| a.name.cmp(b.name));
+            self.commands.sort_by(|a, b| a.name.cmp(&b.name));
         }
     }
 

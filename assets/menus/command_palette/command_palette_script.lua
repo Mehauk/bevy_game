@@ -27,16 +27,20 @@ local SELECTED_BG = "#3E4A6B"
 local MATCHED_COLOR = "#4F92FF"
 local NORMAL_COLOR = "#FFFFFF"
 
-local function get_fuzzy_segments(candidate, query)
+local function fuzzy_match(candidate, query)
     if query == "" then
-        return { { text = candidate, matched = false } }
+        return 0, {}
     end
 
     local c_lower = string.lower(candidate)
     local q_lower = string.lower(query)
     local matched = {}
-    for i = 1, #candidate do
-        matched[i] = false
+
+    if c_lower == q_lower then
+        for i = 1, #candidate do
+            matched[i] = true
+        end
+        return 10000, matched
     end
 
     local start_pos, end_pos = string.find(c_lower, q_lower, 1, true)
@@ -44,70 +48,22 @@ local function get_fuzzy_segments(candidate, query)
         for i = start_pos, end_pos do
             matched[i] = true
         end
-    else
-        local qi = 1
-        local qlen = #q_lower
-        for i = 1, #c_lower do
-            if qi > qlen then
-                break
-            end
-            if string.sub(c_lower, i, i) == string.sub(q_lower, qi, qi) then
-                matched[i] = true
-                qi = qi + 1
-            end
-        end
-    end
-
-    local segments = {}
-    local current_text = ""
-    local current_matched = nil
-
-    for i = 1, #candidate do
-        local m = matched[i]
-        local char = string.sub(candidate, i, i)
-        if current_matched == nil then
-            current_matched = m
-            current_text = char
-        elseif current_matched == m then
-            current_text = current_text .. char
-        else
-            table.insert(segments, { text = current_text, matched = current_matched })
-            current_matched = m
-            current_text = char
-        end
-    end
-    if #current_text > 0 then
-        table.insert(segments, { text = current_text, matched = current_matched })
-    end
-
-    return segments
-end
-
-local function fuzzy_score(candidate, query)
-    if query == "" then
-        return 0
-    end
-    if candidate == query then
-        return 10000
-    end
-    local start_pos = string.find(candidate, query, 1, true)
-    if start_pos ~= nil then
         local bonus = (start_pos == 1) and 500 or 0
-        return 5000 + bonus - #candidate
+        return 5000 + bonus - #c_lower, matched
     end
 
     local qi = 1
-    local qlen = #query
+    local qlen = #q_lower
     local score = 0
     local prev_matched = false
     local prev_char = nil
 
-    for i = 1, #candidate do
+    for i = 1, #c_lower do
         if qi > qlen then
             break
         end
-        local c = string.sub(candidate, i, i)
-        local q = string.sub(query, qi, qi)
+        local c = string.sub(c_lower, i, i)
+        local q = string.sub(q_lower, qi, qi)
         if c == q then
             local at_boundary = prev_char == nil
                 or prev_char == ">"
@@ -122,6 +78,7 @@ local function fuzzy_score(candidate, query)
             if prev_matched then
                 score = score + 15
             end
+            matched[i] = true
             prev_matched = true
             qi = qi + 1
         else
@@ -131,9 +88,45 @@ local function fuzzy_score(candidate, query)
     end
 
     if qi > qlen then
-        return score - #candidate
+        return score - #c_lower, matched
     end
-    return nil
+    return nil, nil
+end
+
+local function segments_from_matches(candidate, matched)
+    if matched == nil or next(matched) == nil then
+        return { { text = candidate, color = NORMAL_COLOR } }
+    end
+
+    local segments = {}
+    local current_text = ""
+    local current_matched = nil
+
+    for i = 1, #candidate do
+        local m = matched[i] == true
+        local char = string.sub(candidate, i, i)
+        if current_matched == nil then
+            current_matched = m
+            current_text = char
+        elseif current_matched == m then
+            current_text = current_text .. char
+        else
+            table.insert(segments, {
+                text = current_text,
+                color = current_matched and MATCHED_COLOR or NORMAL_COLOR,
+            })
+            current_matched = m
+            current_text = char
+        end
+    end
+    if #current_text > 0 then
+        table.insert(segments, {
+            text = current_text,
+            color = current_matched and MATCHED_COLOR or NORMAL_COLOR,
+        })
+    end
+
+    return segments
 end
 
 local function update_highlight(menu_name, old_idx, new_idx)
@@ -152,9 +145,9 @@ local function rebuild_list(menu_name, query)
     local scored = {}
 
     for _, cmd in ipairs(all_commands) do
-        local s = fuzzy_score(string.lower(cmd.name), current_query)
+        local s, m = fuzzy_match(cmd.name, current_query)
         if s ~= nil then
-            table.insert(scored, { cmd = cmd, score = s })
+            table.insert(scored, { cmd = cmd, score = s, matched = m })
         end
     end
 
@@ -183,16 +176,7 @@ local function rebuild_list(menu_name, query)
                 desc = " "
             end
 
-            local raw_segments = get_fuzzy_segments(entry.cmd.name, current_query)
-            local rich_segments = {}
-            for _, seg in ipairs(raw_segments) do
-                if seg.text ~= "" then
-                    table.insert(rich_segments, {
-                        text = seg.text,
-                        color = seg.matched and MATCHED_COLOR or NORMAL_COLOR,
-                    })
-                end
-            end
+            local rich_segments = segments_from_matches(entry.cmd.name, entry.matched)
 
             menus.set_property(menu_name, "palette_list", row_idx, "display", "flex")
             menus.set_property(menu_name, "palette_list", row_idx, "bg", bg)
@@ -211,14 +195,8 @@ function on_menu_ready(menu_name)
     local menus = get_menus()
     menus.clear_children(menu_name, "palette_list")
 
-    for i = 1, spawned_row_count do
-        local cmd = all_commands[i]
-        local desc = cmd.description
-        if desc == nil or desc == "" then
-            desc = " "
-        end
+    for _ = 1, spawned_row_count do
         menus.spawn_component(menu_name, "palette_list", "components/command_row.html", {
-            desc = desc,
             bg = NORMAL_BG,
             display = "flex",
         })
@@ -280,7 +258,4 @@ function on_menu_key(menu_name, key)
             menus.close_top()
         end
     end
-end
-
-function on_menu_action(menu_name, tags)
 end

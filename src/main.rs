@@ -9,10 +9,8 @@ use bevy::{
 use bevy_hui::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 
-use menus::command_menu::CommandMenuPlugin;
-use menus::MenuPlugin;
-use utils::commands::CommandRegistryPlugin;
-use utils::DevUtilsPlugin;
+use menus::{MenuPlugin, command_menu::CommandMenuPlugin};
+use utils::{DevUtilsPlugin, commands::CommandRegistryPlugin};
 
 use character::CharacterPlugin;
 use terrain::TerrainPlugin;
@@ -36,12 +34,15 @@ fn main() {
         ))
         .run();
 }
+
 mod character {
     use bevy::{
         input::mouse::AccumulatedMouseMotion,
         prelude::*,
         window::{CursorGrabMode, CursorOptions, PrimaryWindow},
     };
+
+    use crate::menus::MenuManager;
 
     pub struct CharacterPlugin;
 
@@ -124,7 +125,6 @@ mod character {
                         Visibility::default(),
                     ))
                     .with_children(|body| {
-                        // Front (-Z) visor so the capsule's facing direction is visible
                         body.spawn((
                             Mesh3d(meshes.add(Cuboid::new(0.45, 0.18, 0.2))),
                             MeshMaterial3d(materials.add(Color::srgb(0.1, 0.12, 0.18))),
@@ -144,7 +144,13 @@ mod character {
         mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
         mouse: Res<ButtonInput<MouseButton>>,
         keyboard: Res<ButtonInput<KeyCode>>,
+        menu_manager: Res<MenuManager>,
     ) {
+        if menu_manager.any_open() {
+            cursor_options.visible = true;
+            cursor_options.grab_mode = CursorGrabMode::None;
+            return;
+        }
         if mouse.just_pressed(MouseButton::Left) {
             cursor_options.visible = false;
             cursor_options.grab_mode = CursorGrabMode::Locked;
@@ -157,8 +163,12 @@ mod character {
 
     fn toggle_view_mode(
         keyboard: Res<ButtonInput<KeyCode>>,
+        menu_manager: Res<MenuManager>,
         mut character: Single<&mut Character>,
     ) {
+        if menu_manager.any_open() {
+            return;
+        }
         let shift_held =
             keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
 
@@ -173,9 +183,13 @@ mod character {
     fn character_look(
         cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
         mouse_motion: Res<AccumulatedMouseMotion>,
+        menu_manager: Res<MenuManager>,
         mut character: Single<&mut Character>,
     ) {
-        if cursor_options.grab_mode != CursorGrabMode::Locked || mouse_motion.delta == Vec2::ZERO {
+        if menu_manager.any_open()
+            || cursor_options.grab_mode != CursorGrabMode::Locked
+            || mouse_motion.delta == Vec2::ZERO
+        {
             return;
         }
 
@@ -187,6 +201,7 @@ mod character {
     fn character_move(
         time: Res<Time>,
         keyboard: Res<ButtonInput<KeyCode>>,
+        menu_manager: Res<MenuManager>,
         character_query: Single<
             (&Character, &mut Transform),
             (Without<CharacterBody>, Without<CharacterCamera>),
@@ -196,6 +211,9 @@ mod character {
             (With<CharacterBody>, Without<Character>, Without<CharacterCamera>),
         >,
     ) {
+        if menu_manager.any_open() {
+            return;
+        }
         let (character, mut transform) = character_query.into_inner();
 
         let yaw_rot = Quat::from_rotation_y(character.yaw);

@@ -1,4 +1,11 @@
-use bevy::{ecs::system::SystemId, prelude::*};
+use std::{borrow::Cow, collections::VecDeque};
+
+use bevy::{ecs::system::SystemId, platform::collections::HashMap, prelude::*};
+use bevy_mod_scripting::bindings::{
+    InteropError, WorldExtensions,
+    function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
+    script_value::ScriptValue,
+};
 
 pub struct CommandRegistryPlugin;
 
@@ -7,6 +14,42 @@ impl Plugin for CommandRegistryPlugin {
         app.init_resource::<CommandRegistry>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);
+
+        NamespaceBuilder::in_namespace(app.world_mut(), "commands")
+            .register(
+                "list",
+                |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
+                    let world = ctx.world()?;
+                    world.with_resource(|registry: &CommandRegistry| {
+                        let list: VecDeque<ScriptValue> = registry
+                            .commands
+                            .iter()
+                            .map(|cmd| {
+                                let mut map = HashMap::default();
+                                map.insert(
+                                    "name".to_string(),
+                                    ScriptValue::String(Cow::Borrowed(cmd.name)),
+                                );
+                                map.insert(
+                                    "description".to_string(),
+                                    ScriptValue::String(Cow::Borrowed(cmd.description)),
+                                );
+                                ScriptValue::Map(map)
+                            })
+                            .collect();
+                        ScriptValue::List(list)
+                    })
+                },
+            )
+            .register(
+                "run",
+                |ctx: FunctionCallContext, name: String| -> Result<(), InteropError> {
+                    let world = ctx.world()?;
+                    world.with_resource_mut(|mut writer: Mut<Messages<RunCommand>>| {
+                        writer.write(RunCommand(name));
+                    })
+                },
+            );
     }
 }
 

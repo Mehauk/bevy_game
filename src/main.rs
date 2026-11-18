@@ -6,7 +6,7 @@ use bevy::{
     dev_tools::fps_overlay::FpsOverlayPlugin,
     prelude::*,
 };
-use bevy_hui::prelude::*;
+use bevy_flair::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 
 use menus::{MenuPlugin, command_menu::CommandMenuPlugin};
@@ -22,7 +22,7 @@ fn main() {
         .register_asset_source("mods", AssetSourceBuilder::platform_default("mods", None))
         .add_plugins((
             DefaultPlugins,
-            HuiPlugin,
+            FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
             CommandRegistryPlugin,
@@ -148,7 +148,7 @@ mod character {
         keyboard: Res<ButtonInput<KeyCode>>,
         menu_manager: Res<MenuManager>,
     ) {
-        if mouse.just_pressed(MouseButton::Left) {
+        if mouse.just_pressed(MouseButton::Left) && !menu_manager.any_open() {
             cursor_options.visible = false;
             cursor_options.grab_mode = CursorGrabMode::Locked;
         }

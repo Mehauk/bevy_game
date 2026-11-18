@@ -13,7 +13,7 @@
   - [x] keep text input box centered (no move) (should help with the flickering)
 - [x] When i edit a component's htmls file, the ui goes blank, I have to go back to the index and press save then it comes back
 
-# Menu reworks
+# Command menu rework
 - [ ] command menu
   - [ ] open a bottom sheet similar to skyrim
   - [ ] when you start typing show suggestion to autocompelte as well as a list of items to choose from with the arrow keys 

@@ -180,19 +180,23 @@ local function refresh_keyboard()
             and b.alt == mods.alt
             and b.super == mods.super
         then
-            if lookup[b.key] == nil then
-                lookup[b.key] = b.label
-            else
-                lookup[b.key] = lookup[b.key] .. " / " .. b.label
+            local is_active = (b.active ~= false)
+            local existing = lookup[b.key]
+            if existing == nil then
+                lookup[b.key] = { label = b.label, active = is_active }
+            elseif is_active and not existing.active then
+                lookup[b.key] = { label = b.label, active = true }
+            elseif is_active == existing.active then
+                existing.label = existing.label .. " / " .. b.label
             end
         end
     end
 
     for _, kw in ipairs(key_widgets) do
-        local desc = lookup[kw.code]
-        if desc ~= nil then
+        local entry = lookup[kw.code]
+        if entry ~= nil then
             dom.add_class(kw.el, "bound")
-            dom.set_text(kw.desc_el, truncate_two_lines(desc, kw.max_cols))
+            dom.set_text(kw.desc_el, truncate_two_lines(entry.label, kw.max_cols))
         else
             dom.remove_class(kw.el, "bound")
             dom.set_text(kw.desc_el, "")

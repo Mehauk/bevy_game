@@ -7,6 +7,15 @@ use bevy_mod_scripting::bindings::{
     script_value::ScriptValue,
 };
 
+#[macro_export]
+macro_rules! command {
+    ($app:expr, $desc:expr, $path:path) => {
+        $app.register_command(stringify!($path).replace("::", ">"), $desc, $path)
+    };
+}
+
+pub use crate::command;
+
 pub struct CommandRegistryPlugin;
 
 impl Plugin for CommandRegistryPlugin {
@@ -57,29 +66,31 @@ impl Plugin for CommandRegistryPlugin {
 pub struct RunCommand(pub String);
 
 pub trait CommandAppExt {
-    fn register_command<F, M>(&mut self, description: &'static str, system: F) -> &mut Self
+    fn register_command<F, M>(
+        &mut self,
+        name: impl Into<String>,
+        description: &'static str,
+        system: F,
+    ) -> &mut Self
     where
         F: IntoSystem<(), (), M> + 'static;
 }
 
 impl CommandAppExt for App {
-    fn register_command<F, M>(&mut self, description: &'static str, system: F) -> &mut Self
+    fn register_command<F, M>(
+        &mut self,
+        name: impl Into<String>,
+        description: &'static str,
+        system: F,
+    ) -> &mut Self
     where
         F: IntoSystem<(), (), M> + 'static,
     {
-        let full_path = std::any::type_name::<F>();
-
-        let name = full_path
-            .split_once("::")
-            .map(|(_, rest)| rest)
-            .unwrap_or(full_path)
-            .replace("::", ">");
-
         let system_id = self.register_system(system);
         self.init_resource::<CommandRegistry>();
         self.world_mut()
             .resource_mut::<CommandRegistry>()
-            .register(name, description, system_id);
+            .register(name.into(), description, system_id);
         self
     }
 }
@@ -98,7 +109,12 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     pub fn register(&mut self, name: String, description: &'static str, system_id: SystemId) {
-        if let Some(existing) = self.commands.iter_mut().find(|c| c.name == name) {
+        if let Some(existing) = self
+            .commands
+            .iter_mut()
+            .find(|c| c.name.eq_ignore_ascii_case(&name))
+        {
+            existing.name = name;
             existing.description = description;
             existing.system_id = system_id;
         } else {

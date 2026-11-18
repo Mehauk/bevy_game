@@ -2,17 +2,18 @@ pub mod commands;
 
 use bevy::{pbr::wireframe::WireframePlugin, prelude::*};
 
-use commands::CommandAppExt;
+use commands::{CommandAppExt, command};
 
 pub struct DevUtilsPlugin;
 
 impl Plugin for DevUtilsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(WireframePlugin::default())
-            .register_command(
-                "Toggle global wireframe rendering",
-                dev_utils::toggle_wireframe,
-            );
+        app.add_plugins(WireframePlugin::default());
+        command!(
+            app,
+            "Toggle global wireframe rendering",
+            dev_utils::toggle_wireframe
+        );
     }
 }
 

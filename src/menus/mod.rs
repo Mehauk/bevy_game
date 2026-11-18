@@ -1,4 +1,5 @@
 pub mod command_menu;
+pub mod keyboard_menu;
 
 use std::{
     path::{Path, PathBuf},
@@ -21,6 +22,7 @@ use bevy::{
     ui::InteractionDisabled,
     ui_widgets::{Button as UiButton, TextInput},
 };
+use bevy_enhanced_input::prelude::*;
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::{
     asset::ScriptAsset,
@@ -39,27 +41,37 @@ use bevy_mod_scripting::{
     script::ScriptAttachment,
 };
 
+use crate::{
+    input::{ContextActive, HotkeyLabel, InputAppExt, MenuInput},
+    utils::commands::CommandAppExt,
+};
+
 callback_labels!(
     OnMenuReady => "on_menu_ready",
     OnDomEvent => "on_dom_event",
     OnMenuModifiersChanged => "on_modifiers_changed",
 );
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MenuUpdateSystems;
+
 pub struct MenuPlugin;
 
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuManager>()
+            .init_resource::<MenuRegistry>()
             .init_resource::<DomRuntime>()
             .init_resource::<HtmlHotReloadState>()
             .add_message::<ToggleMenu>()
             .add_message::<MenuCmd>()
+            .add_systems(Startup, setup_menu_input)
+            .add_observer(on_close_top_menu)
             .add_systems(
                 Update,
                 (
                     reload_menus_on_asset_change,
                     handle_menu_commands,
-                    close_top_menu_on_escape,
                     dispatch_menu_ready,
                     dispatch_modifier_changes,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
@@ -67,12 +79,137 @@ impl Plugin for MenuPlugin {
                     event_handler::<OnMenuModifiersChanged, LuaScriptingPlugin>,
                     apply_dom_ops,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(MenuUpdateSystems),
             )
             .add_systems(PostUpdate, strip_menu_nav_text_edits.before(EditableTextSystems));
 
         register_menu_namespaces(app);
     }
+}
+
+pub struct MenuSpec {
+    pub id: &'static str,
+    pub hotkey_label: &'static str,
+    pub command: Option<(&'static str, &'static str)>,
+    pub bindings: Vec<Binding>,
+}
+
+#[derive(Clone)]
+pub struct MenuEntry {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Resource, Default)]
+pub struct MenuRegistry {
+    pub menus: Vec<MenuEntry>,
+}
+
+impl MenuRegistry {
+    fn record(&mut self, id: &'static str, label: &'static str) {
+        if !self.menus.iter().any(|m| m.id == id) {
+            self.menus.push(MenuEntry { id, label });
+        }
+    }
+}
+
+pub trait MenuAppExt {
+    fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
+        &mut self,
+        spec: MenuSpec,
+    ) -> &mut Self;
+
+    fn register_menu_command(
+        &mut self,
+        id: &'static str,
+        command_name: impl Into<String>,
+        description: &'static str,
+    ) -> &mut Self;
+}
+
+impl MenuAppExt for App {
+    fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
+        &mut self,
+        spec: MenuSpec,
+    ) -> &mut Self {
+        let menu_id = spec.id;
+        self.init_resource::<MenuRegistry>();
+        self.world_mut()
+            .resource_mut::<MenuRegistry>()
+            .record(menu_id, spec.hotkey_label);
+
+        if let Some((cmd_name, desc)) = spec.command {
+            self.register_command(cmd_name, desc, move |mut writer: MessageWriter<ToggleMenu>| {
+                writer.write(ToggleMenu(menu_id.to_string()));
+            });
+        }
+
+        if !spec.bindings.is_empty() {
+            self.register_global_action::<A, _, _, _>(
+                spec.hotkey_label,
+                spec.bindings,
+                move |_ev: On<Start<A>>, mut writer: MessageWriter<ToggleMenu>| {
+                    writer.write(ToggleMenu(menu_id.to_string()));
+                },
+            );
+        }
+
+        self
+    }
+
+    fn register_menu_command(
+        &mut self,
+        id: &'static str,
+        command_name: impl Into<String>,
+        description: &'static str,
+    ) -> &mut Self {
+        self.init_resource::<MenuRegistry>();
+        self.world_mut()
+            .resource_mut::<MenuRegistry>()
+            .record(id, id);
+
+        self.register_command(
+            command_name,
+            description,
+            move |mut writer: MessageWriter<ToggleMenu>| {
+                writer.write(ToggleMenu(id.to_string()));
+            },
+        )
+    }
+}
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct CloseTopMenu;
+
+fn setup_menu_input(mut commands: Commands) {
+    let menu_ctx = commands
+        .spawn((
+            MenuInput,
+            ContextActive(false),
+            ContextActivity::<MenuInput>::INACTIVE,
+        ))
+        .id();
+
+    let close_action = commands
+        .spawn((
+            Action::<CloseTopMenu>::new(),
+            ActionOf::<MenuInput>::new(menu_ctx),
+            ActionSettings {
+                consume_input: true,
+                require_reset: true,
+                ..default()
+            },
+            HotkeyLabel("Close Menu"),
+        ))
+        .id();
+
+    commands.spawn((Binding::from(KeyCode::Escape), BindingOf(close_action)));
+}
+
+fn on_close_top_menu(_event: On<Start<CloseTopMenu>>, mut writer: MessageWriter<MenuCmd>) {
+    writer.write(MenuCmd::Close(None));
 }
 
 fn push_menu_cmd(ctx: &FunctionCallContext, cmd: MenuCmd) -> Result<(), InteropError> {
@@ -246,20 +383,17 @@ impl NodeSpec {
     fn from_xml(node: roxmltree::Node) -> Self {
         let tag = node.tag_name().name().to_ascii_lowercase();
         let attr = |k| node.attribute(k);
-        let text = attr("text")
-            .map(str::to_string)
-            .filter(|_| true)
-            .unwrap_or_else(|| {
-                if matches!(tag.as_str(), "text" | "span") {
-                    node.children()
-                        .filter_map(|c| c.is_text().then(|| c.text()).flatten())
-                        .collect::<String>()
-                        .trim()
-                        .to_string()
-                } else {
-                    String::new()
-                }
-            });
+        let text = attr("text").map(str::to_string).unwrap_or_else(|| {
+            if matches!(tag.as_str(), "text" | "span") {
+                node.children()
+                    .filter_map(|c| c.is_text().then(|| c.text()).flatten())
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            } else {
+                String::new()
+            }
+        });
 
         Self {
             tag,
@@ -328,16 +462,39 @@ struct DomRuntime {
 }
 
 impl DomRuntime {
-    fn alloc_node(&mut self, entity: Entity, menu_root: Entity, html_id: Option<String>, classes: Vec<String>) -> i64 {
+    fn alloc_node(
+        &mut self,
+        entity: Entity,
+        menu_root: Entity,
+        html_id: Option<String>,
+        classes: Vec<String>,
+    ) -> i64 {
         self.next_id += 1;
         let id = self.next_id;
-        self.nodes.insert(id, DomNode { entity, menu_root, html_id, classes });
+        self.nodes.insert(
+            id,
+            DomNode {
+                entity,
+                menu_root,
+                html_id,
+                classes,
+            },
+        );
         id
     }
 
     fn queue_node(&mut self, menu_root: Entity, parent_id: i64, spec: NodeSpec) -> i64 {
-        let id = self.alloc_node(Entity::PLACEHOLDER, menu_root, spec.id.clone(), spec.classes.clone());
-        self.ops.push(DomOp::Create { id, parent_id, spec });
+        let id = self.alloc_node(
+            Entity::PLACEHOLDER,
+            menu_root,
+            spec.id.clone(),
+            spec.classes.clone(),
+        );
+        self.ops.push(DomOp::Create {
+            id,
+            parent_id,
+            spec,
+        });
         id
     }
 
@@ -349,7 +506,12 @@ impl DomRuntime {
     }
 }
 
-fn queue_xml_subtree(rt: &mut DomRuntime, menu_root: Entity, parent_id: i64, xml: roxmltree::Node) -> i64 {
+fn queue_xml_subtree(
+    rt: &mut DomRuntime,
+    menu_root: Entity,
+    parent_id: i64,
+    xml: roxmltree::Node,
+) -> i64 {
     let id = rt.queue_node(menu_root, parent_id, NodeSpec::from_xml(xml));
     for child in xml.children().filter(|c| c.is_element()) {
         queue_xml_subtree(rt, menu_root, id, child);
@@ -384,7 +546,9 @@ struct DomEventCtx<'w, 's> {
 
 impl DomEventCtx<'_, '_> {
     fn has_handler(&self, target: Entity, event: &str) -> bool {
-        self.handlers.get(target).is_ok_and(|h| h.0.contains_key(event))
+        self.handlers
+            .get(target)
+            .is_ok_and(|h| h.0.contains_key(event))
     }
 
     fn emit(&mut self, target: Entity, event: &str, payload: ScriptValue) -> bool {
@@ -404,16 +568,17 @@ impl DomEventCtx<'_, '_> {
             return false;
         };
         let node_id = self.handles.get(target).map_or(0, |h| h.0);
-        self.callbacks.write(ScriptCallbackMessage::new_for_script_entity(
-            OnDomEvent::into_callback_label(),
-            vec![
-                ScriptValue::String(handler.clone().into()),
-                ScriptValue::Integer(node_id),
-                payload,
-            ],
-            script,
-            menu_entity,
-        ));
+        self.callbacks
+            .write(ScriptCallbackMessage::new_for_script_entity(
+                OnDomEvent::into_callback_label(),
+                vec![
+                    ScriptValue::String(handler.clone().into()),
+                    ScriptValue::Integer(node_id),
+                    payload,
+                ],
+                script,
+                menu_entity,
+            ));
         true
     }
 }
@@ -452,10 +617,22 @@ fn on_dom_key_input(
     }
 
     let mut payload = HashMap::default();
-    payload.insert("key".to_string(), ScriptValue::String(format!("{:?}", event.input.key_code).into()));
-    payload.insert("ctrl".to_string(), ScriptValue::Bool(keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])));
-    payload.insert("shift".to_string(), ScriptValue::Bool(keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])));
-    payload.insert("alt".to_string(), ScriptValue::Bool(keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight])));
+    payload.insert(
+        "key".to_string(),
+        ScriptValue::String(format!("{:?}", event.input.key_code).into()),
+    );
+    payload.insert(
+        "ctrl".to_string(),
+        ScriptValue::Bool(keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])),
+    );
+    payload.insert(
+        "shift".to_string(),
+        ScriptValue::Bool(keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])),
+    );
+    payload.insert(
+        "alt".to_string(),
+        ScriptValue::Bool(keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight])),
+    );
     payload.insert("repeat".to_string(), ScriptValue::Bool(event.input.repeat));
 
     ctx.emit(target, "key_down", ScriptValue::Map(payload));
@@ -493,10 +670,27 @@ fn reload_menus_on_asset_change(
     manager: Res<MenuManager>,
     mut commands: Commands,
 ) {
-    let script_modified = script_events.read().any(|e| matches!(e, AssetEvent::Modified { .. }));
+    let modified_scripts: Vec<AssetId<ScriptAsset>> = script_events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+
+    let script_modified = !modified_scripts.is_empty()
+        && q_roots.iter().any(|r| {
+            r.script
+                .as_ref()
+                .is_some_and(|h| modified_scripts.contains(&h.id()))
+        });
+
     let html_modified = hot.timer.tick(time.delta()).just_finished()
         && q_roots.iter().any(|r| {
-            std::fs::metadata(&r.html_path).ok().and_then(|m| m.modified().ok()) != r.html_modified
+            std::fs::metadata(&r.html_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                != r.html_modified
         });
 
     if (script_modified || html_modified) && manager.any_open() {
@@ -526,35 +720,41 @@ fn handle_menu_commands(
             match cmd {
                 MenuCmd::Open(name) => open_menu_in_world(world, &name),
                 MenuCmd::Close(Some(name)) => {
-                    if let Some(i) = world.resource::<MenuManager>().open_menus.iter().rposition(|(n, _)| n == &name) {
+                    if let Some(i) = world
+                        .resource::<MenuManager>()
+                        .open_menus
+                        .iter()
+                        .rposition(|(n, _)| n == &name)
+                    {
                         close_menu_at(world, i);
                     }
                 }
                 MenuCmd::Close(None) => {
-                    if let Some(top) = world.resource::<MenuManager>().open_menus.len().checked_sub(1) {
+                    if let Some(top) = world
+                        .resource::<MenuManager>()
+                        .open_menus
+                        .len()
+                        .checked_sub(1)
+                    {
                         close_menu_at(world, top);
                     }
                 }
             }
         }
         for name in toggle_list {
-            let pos = world.resource::<MenuManager>().open_menus.iter().rposition(|(n, _)| n == &name);
+            let pos = world
+                .resource::<MenuManager>()
+                .open_menus
+                .iter()
+                .rposition(|(n, _)| n == &name);
             match pos {
-                Some(i) => { close_menu_at(world, i); }
+                Some(i) => {
+                    close_menu_at(world, i);
+                }
                 None => open_menu_in_world(world, &name),
             }
         }
     });
-}
-
-fn close_top_menu_on_escape(
-    keys: Res<ButtonInput<KeyCode>>,
-    manager: Res<MenuManager>,
-    mut writer: MessageWriter<MenuCmd>,
-) {
-    if keys.just_pressed(KeyCode::Escape) && manager.any_open() {
-        writer.write(MenuCmd::Close(None));
-    }
 }
 
 fn dispatch_menu_ready(
@@ -623,11 +823,16 @@ fn apply_dom_ops(world: &mut World) {
     }
 
     let mut needs_prune = false;
-    let entity_of = |world: &World, id: i64| world.resource::<DomRuntime>().nodes.get(&id).map(|n| n.entity);
+    let entity_of =
+        |world: &World, id: i64| world.resource::<DomRuntime>().nodes.get(&id).map(|n| n.entity);
 
     for op in ops {
         match op {
-            DomOp::Create { id, parent_id, spec } => {
+            DomOp::Create {
+                id,
+                parent_id,
+                spec,
+            } => {
                 if let Some(parent) = entity_of(world, parent_id) {
                     let entity = spawn_node_entity(world, id, parent, spec);
                     if let Some(node) = world.resource_mut::<DomRuntime>().nodes.get_mut(&id) {
@@ -652,9 +857,13 @@ fn apply_dom_ops(world: &mut World) {
                 }
             }
             DomOp::SetText { id, text } => {
-                let Some(entity) = entity_of(world, id) else { continue };
+                let Some(entity) = entity_of(world, id) else {
+                    continue;
+                };
                 if let Some(mut t) = world.get_mut::<Text>(entity) {
-                    if t.0 != text { t.0 = text; }
+                    if t.0 != text {
+                        t.0 = text;
+                    }
                 } else if let Some(mut span) = world.get_mut::<TextSpan>(entity)
                     && span.0 != text
                 {
@@ -670,12 +879,19 @@ fn apply_dom_ops(world: &mut World) {
                 }
             }
             DomOp::SetClass { id, cls, add } => {
-                let Some(entity) = entity_of(world, id) else { continue };
+                let Some(entity) = entity_of(world, id) else {
+                    continue;
+                };
                 let updated = {
                     let mut rt = world.resource_mut::<DomRuntime>();
-                    let Some(node) = rt.nodes.get_mut(&id) else { continue };
+                    let Some(node) = rt.nodes.get_mut(&id) else {
+                        continue;
+                    };
                     let changed = if add {
-                        !node.classes.contains(&cls) && { node.classes.push(cls); true }
+                        !node.classes.contains(&cls) && {
+                            node.classes.push(cls);
+                            true
+                        }
                     } else {
                         let len = node.classes.len();
                         node.classes.retain(|c| c != &cls);
@@ -693,7 +909,11 @@ fn apply_dom_ops(world: &mut World) {
                 if let Some(entity) = entity_of(world, id)
                     && let Some(mut handlers) = world.get_mut::<DomHandlers>(entity)
                 {
-                    let key = if event == "press" { "click".into() } else { event };
+                    let key = if event == "press" {
+                        "click".into()
+                    } else {
+                        event
+                    };
                     handlers.0.insert(key, handler);
                 }
             }
@@ -744,8 +964,14 @@ fn spawn_node_entity(world: &mut World, id: i64, parent: Entity, spec: NodeSpec)
                 Node::default(),
                 MenuTextInput::default(),
                 TextInput,
-                EditableText { cursor_width: 0.3, ..default() },
-                TextLayout { linebreak: LineBreak::NoWrap, ..default() },
+                EditableText {
+                    cursor_width: 0.3,
+                    ..default()
+                },
+                TextLayout {
+                    linebreak: LineBreak::NoWrap,
+                    ..default()
+                },
                 TextCursorStyle {
                     color: Color::WHITE,
                     selection_color: Color::srgba(0.3, 0.5, 0.9, 0.4),
@@ -793,7 +1019,9 @@ fn open_menu_in_world(world: &mut World, name: &str) {
         warn!("Failed to read menu HTML at {}", html_path.display());
         return;
     };
-    let html_modified = std::fs::metadata(&html_path).ok().and_then(|m| m.modified().ok());
+    let html_modified = std::fs::metadata(&html_path)
+        .ok()
+        .and_then(|m| m.modified().ok());
 
     let asset_server = world.resource::<AssetServer>();
     let css_handle = resolve_menu_file(&format!("menus/{name}/style.css"))
@@ -821,9 +1049,10 @@ fn open_menu_in_world(world: &mut World, name: &str) {
     }
     let root_entity = root_mut.id();
 
-    let root_dom_id = world
-        .resource_mut::<DomRuntime>()
-        .alloc_node(root_entity, root_entity, None, Vec::new());
+    let root_dom_id =
+        world
+            .resource_mut::<DomRuntime>()
+            .alloc_node(root_entity, root_entity, None, Vec::new());
 
     if let Ok(mut e) = world.get_entity_mut(root_entity) {
         e.insert((

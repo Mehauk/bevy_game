@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use bevy::{
-    ecs::relationship::Relationship,
+    ecs::{relationship::Relationship, system::IntoObserverSystem},
     platform::collections::HashMap,
     prelude::*,
 };
@@ -12,31 +12,61 @@ use bevy_mod_scripting::bindings::{
     script_value::ScriptValue,
 };
 
-use crate::{
-    menus::{MenuManager, ToggleMenu},
-    utils::commands::CommandAppExt,
-};
+use crate::menus::{MenuManager, MenuUpdateSystems};
+
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InputUpdateSystems {
+    SyncActionContexts,
+    ApplyContextSync,
+    SyncHotkeyRegistry,
+}
 
 pub struct InputPlugin;
 
 impl Plugin for InputPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EnhancedInputPlugin)
-            .add_input_context::<GameplayInput>()
-            .add_input_context::<GlobalInput>()
             .init_resource::<HotkeyRegistry>()
-            .register_command("Toggle virtual keyboard overlay", toggle_keyboard_overlay_cmd)
-            .add_systems(Startup, setup_global_input)
+            .register_hotkey_context::<GlobalInput>("global")
+            .register_hotkey_context::<GameplayInput>("gameplay")
+            .register_hotkey_context::<MenuInput>("menu")
+            .configure_sets(
+                Update,
+                (
+                    InputUpdateSystems::SyncActionContexts,
+                    InputUpdateSystems::ApplyContextSync,
+                    InputUpdateSystems::SyncHotkeyRegistry,
+                )
+                    .chain()
+                    .before(MenuUpdateSystems),
+            )
+            .add_systems(PreStartup, setup_global_input)
             .add_systems(
                 PreUpdate,
-                sync_gameplay_context_activity.before(EnhancedInputSystems::Update),
+                sync_context_activity.before(EnhancedInputSystems::Update),
             )
-            .add_systems(Update, sync_hotkey_registry)
-            .add_observer(on_toggle_command_palette)
-            .add_observer(on_toggle_keyboard_overlay);
+            .add_systems(
+                Update,
+                ApplyDeferred.in_set(InputUpdateSystems::ApplyContextSync),
+            )
+            .add_systems(
+                Update,
+                sync_hotkey_registry.in_set(InputUpdateSystems::SyncHotkeyRegistry),
+            );
 
         register_input_namespace(app);
     }
+}
+
+fn setup_global_input(mut commands: Commands) {
+    let global_entity = commands
+        .spawn((
+            GlobalInput,
+            ContextActive(true),
+            ContextActivity::<GlobalInput>::ACTIVE,
+        ))
+        .id();
+    commands.insert_resource(GlobalInputEntity(global_entity));
 }
 
 #[derive(Component, Default, Clone)]
@@ -45,21 +75,30 @@ pub struct GameplayInput;
 #[derive(Component, Default, Clone)]
 pub struct GlobalInput;
 
+#[derive(Component, Default, Clone)]
+pub struct MenuInput;
+
+#[derive(Resource)]
+pub struct GlobalInputEntity(pub Entity);
+
 #[derive(Component, Clone, Copy, Default)]
 pub struct HotkeyLabel(pub &'static str);
 
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct ToggleCommandPalette;
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub struct ContextActive(pub bool);
 
-#[derive(InputAction)]
-#[action_output(bool)]
-pub struct ToggleKeyboardOverlay;
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub struct ActionContext {
+    pub name: &'static str,
+    pub active: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct HotkeyEntry {
     pub key: String,
     pub label: String,
+    pub context: String,
+    pub active: bool,
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
@@ -71,56 +110,95 @@ pub struct HotkeyRegistry {
     pub entries: Vec<HotkeyEntry>,
 }
 
-fn setup_global_input(world: &mut World) {
-    let cmd_palette: Binding = KeyCode::Space.with_mod_keys(ModKeys::CONTROL).into();
-    let kb_overlay: Binding = KeyCode::KeyK
-        .with_mod_keys(ModKeys::CONTROL | ModKeys::SHIFT)
-        .into();
+pub trait InputAppExt {
+    fn register_hotkey_context<C: Component>(&mut self, name: &'static str) -> &mut Self;
 
-    world
-        .spawn_scene(bsn! {
-            GlobalInput
-            Actions<GlobalInput> [
-                Action::<ToggleCommandPalette>::new()
-                HotkeyLabel("Command Palette")
-                Bindings [
-                    cmd_palette
-                ]
-                --
-                Action::<ToggleKeyboardOverlay>::new()
-                HotkeyLabel("Keyboard Overlay")
-                Bindings [
-                    Binding(KeyCode::F1)
-                    --
-                    kb_overlay
-                ]
-            ]
-        })
-        .unwrap();
+    fn register_global_action<A, B, O, M>(
+        &mut self,
+        label: &'static str,
+        bindings: B,
+        observer: O,
+    ) -> &mut Self
+    where
+        A: InputAction<Output = bool> + Send + Sync + 'static,
+        B: IntoIterator<Item = Binding>,
+        O: IntoObserverSystem<Start<A>, M>;
 }
 
-fn toggle_keyboard_overlay_cmd(mut toggle_writer: MessageWriter<ToggleMenu>) {
-    toggle_writer.write(ToggleMenu("keyboard".to_string()));
+impl InputAppExt for App {
+    fn register_hotkey_context<C: Component>(&mut self, name: &'static str) -> &mut Self {
+        self.add_input_context::<C>().add_systems(
+            Update,
+            (move |q_changed_ctx: Query<(), (With<C>, Changed<ContextActive>)>,
+                   q_ctx: Query<Option<&ContextActive>, With<C>>,
+                   q_new_actions: Query<(), Added<ActionOf<C>>>,
+                   q_actions: Query<(Entity, &ActionOf<C>)>,
+                   mut commands: Commands| {
+                if q_changed_ctx.is_empty() && q_new_actions.is_empty() {
+                    return;
+                }
+                for (action_entity, action_of) in &q_actions {
+                    let active = q_ctx
+                        .get(action_of.get())
+                        .ok()
+                        .flatten()
+                        .is_none_or(|c| c.0);
+                    commands
+                        .entity(action_entity)
+                        .insert(ActionContext { name, active });
+                }
+            })
+            .in_set(InputUpdateSystems::SyncActionContexts),
+        )
+    }
+
+    fn register_global_action<A, B, O, M>(
+        &mut self,
+        label: &'static str,
+        bindings: B,
+        observer: O,
+    ) -> &mut Self
+    where
+        A: InputAction<Output = bool> + Send + Sync + 'static,
+        B: IntoIterator<Item = Binding>,
+        O: IntoObserverSystem<Start<A>, M>,
+    {
+        let bindings: Vec<Binding> = bindings.into_iter().collect();
+        self.add_observer(observer).add_systems(
+            Startup,
+            move |mut commands: Commands, global: Res<GlobalInputEntity>| {
+                let action = commands
+                    .spawn((
+                        Action::<A>::new(),
+                        ActionOf::<GlobalInput>::new(global.0),
+                        HotkeyLabel(label),
+                    ))
+                    .id();
+
+                for binding in &bindings {
+                    commands.spawn((binding.clone(), BindingOf(action)));
+                }
+            },
+        )
+    }
 }
 
-fn on_toggle_command_palette(
-    _event: On<Start<ToggleCommandPalette>>,
-    mut toggle_writer: MessageWriter<ToggleMenu>,
-) {
-    toggle_writer.write(ToggleMenu("command_palette".to_string()));
+pub fn set_context_active<C: Component>(commands: &mut Commands, entity: Entity, active: bool) {
+    let activity = if active {
+        ContextActivity::<C>::ACTIVE
+    } else {
+        ContextActivity::<C>::INACTIVE
+    };
+    commands
+        .entity(entity)
+        .insert((activity, ContextActive(active)));
 }
 
-fn on_toggle_keyboard_overlay(
-    _event: On<Start<ToggleKeyboardOverlay>>,
-    mut toggle_writer: MessageWriter<ToggleMenu>,
-) {
-    toggle_writer.write(ToggleMenu("keyboard".to_string()));
-}
-
-fn sync_gameplay_context_activity(
+fn sync_context_activity(
     menu_manager: Res<MenuManager>,
     mut prev_open: Local<Option<bool>>,
-    q_contexts: Query<Entity, With<GameplayInput>>,
+    q_gameplay: Query<Entity, With<GameplayInput>>,
+    q_menu: Query<Entity, With<MenuInput>>,
     mut commands: Commands,
 ) {
     let open = menu_manager.any_open();
@@ -129,24 +207,37 @@ fn sync_gameplay_context_activity(
     }
     *prev_open = Some(open);
 
-    let target = if open {
-        ContextActivity::<GameplayInput>::INACTIVE
-    } else {
-        ContextActivity::<GameplayInput>::ACTIVE
-    };
-    for entity in &q_contexts {
-        commands.entity(entity).insert(target);
+    for entity in &q_gameplay {
+        set_context_active::<GameplayInput>(&mut commands, entity, !open);
+    }
+    for entity in &q_menu {
+        set_context_active::<MenuInput>(&mut commands, entity, open);
     }
 }
 
 fn sync_hotkey_registry(
-    q_changed: Query<(), Or<(Added<Binding>, Changed<Binding>, Added<HotkeyLabel>, Changed<HotkeyLabel>)>>,
+    q_changed: Query<
+        (),
+        Or<(
+            Added<Binding>,
+            Changed<Binding>,
+            Changed<BindingOf>,
+            Added<HotkeyLabel>,
+            Changed<HotkeyLabel>,
+            Added<ActionContext>,
+            Changed<ActionContext>,
+        )>,
+    >,
     mut removed_bindings: RemovedComponents<Binding>,
+    mut removed_labels: RemovedComponents<HotkeyLabel>,
     q_bindings: Query<(&Binding, &BindingOf, Option<&HotkeyLabel>)>,
-    q_actions: Query<&HotkeyLabel>,
+    q_actions: Query<(Option<&HotkeyLabel>, Option<&ActionContext>)>,
     mut registry: ResMut<HotkeyRegistry>,
 ) {
-    if q_changed.is_empty() && removed_bindings.read().next().is_none() && !registry.entries.is_empty() {
+    if q_changed.is_empty()
+        && removed_bindings.read().next().is_none()
+        && removed_labels.read().next().is_none()
+    {
         return;
     }
 
@@ -155,14 +246,21 @@ fn sync_hotkey_registry(
         let Binding::Keyboard { key, mod_keys } = *binding else {
             continue;
         };
+        let (action_label, action_ctx) = q_actions
+            .get(binding_of.get())
+            .ok()
+            .unwrap_or((None, None));
         let label = binding_label
-            .or_else(|| q_actions.get(binding_of.get()).ok())
+            .or(action_label)
             .map(|l| l.0)
             .unwrap_or("Bound");
+        let (context, active) = action_ctx.map_or(("unknown", true), |c| (c.name, c.active));
 
         entries.push(HotkeyEntry {
             key: format!("{key:?}"),
             label: label.to_string(),
+            context: context.to_string(),
+            active,
             ctrl: mod_keys.contains(ModKeys::CONTROL),
             shift: mod_keys.contains(ModKeys::SHIFT),
             alt: mod_keys.contains(ModKeys::ALT),
@@ -201,8 +299,19 @@ fn register_input_namespace(app: &mut App) {
                         .iter()
                         .map(|entry| {
                             let mut map = HashMap::default();
-                            map.insert("key".to_string(), ScriptValue::String(Cow::Owned(entry.key.clone())));
-                            map.insert("label".to_string(), ScriptValue::String(Cow::Owned(entry.label.clone())));
+                            map.insert(
+                                "key".to_string(),
+                                ScriptValue::String(Cow::Owned(entry.key.clone())),
+                            );
+                            map.insert(
+                                "label".to_string(),
+                                ScriptValue::String(Cow::Owned(entry.label.clone())),
+                            );
+                            map.insert(
+                                "context".to_string(),
+                                ScriptValue::String(Cow::Owned(entry.context.clone())),
+                            );
+                            map.insert("active".to_string(), ScriptValue::Bool(entry.active));
                             map.insert("ctrl".to_string(), ScriptValue::Bool(entry.ctrl));
                             map.insert("shift".to_string(), ScriptValue::Bool(entry.shift));
                             map.insert("alt".to_string(), ScriptValue::Bool(entry.alt));

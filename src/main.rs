@@ -10,11 +10,13 @@ use bevy::{
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 
-use menus::{MenuPlugin, command_menu::CommandMenuPlugin};
-use utils::{DevUtilsPlugin, commands::CommandRegistryPlugin};
 use character::CharacterPlugin;
-use terrain::TerrainPlugin;
 use input::InputPlugin;
+use menus::{
+    MenuPlugin, command_menu::CommandMenuPlugin, keyboard_menu::KeyboardMenuPlugin,
+};
+use terrain::TerrainPlugin;
+use utils::{DevUtilsPlugin, commands::CommandRegistryPlugin};
 
 fn main() {
     let _ = std::fs::create_dir_all("mods");
@@ -27,9 +29,10 @@ fn main() {
             BMSPlugin,
             FpsOverlayPlugin::default(),
             CommandRegistryPlugin,
+            InputPlugin,
             MenuPlugin,
             CommandMenuPlugin,
-            InputPlugin, 
+            KeyboardMenuPlugin,
             DevUtilsPlugin,
             CharacterPlugin,
             TerrainPlugin,
@@ -45,23 +48,34 @@ mod character {
     use bevy_enhanced_input::prelude::*;
 
     use crate::{
-        input::{GameplayInput, HotkeyLabel},
-        utils::commands::CommandAppExt,
+        input::{ContextActive, GameplayInput, HotkeyLabel},
+        menus::MenuManager,
+        utils::commands::{CommandAppExt, command},
     };
 
     pub struct CharacterPlugin;
 
     impl Plugin for CharacterPlugin {
         fn build(&self, app: &mut App) {
-            app.add_systems(Startup, setup_character)
-                .register_command("toggle between first and third person view", toggle_view_mode)
+            app.init_resource::<WantedCursorLock>()
+                .add_systems(Startup, setup_character)
                 .add_observer(on_grab_cursor)
                 .add_observer(on_release_cursor)
                 .add_observer(on_toggle_view_mode)
                 .add_observer(on_character_look)
-                .add_systems(Update, (character_move, sync_camera_and_body).chain());
+                .add_systems(Update, (character_move, sync_camera_and_body).chain())
+                .add_systems(PostUpdate, sync_cursor_with_menus);
+
+            command!(
+                app,
+                "toggle between first and third person view",
+                toggle_view_mode
+            );
         }
     }
+
+    #[derive(Resource, Default)]
+    struct WantedCursorLock(bool);
 
     #[derive(InputAction)]
     #[action_output(Vec2)]
@@ -227,7 +241,10 @@ mod character {
             .unwrap();
 
         char_entity
-            .insert(ContextActivity::<GameplayInput>::ACTIVE)
+            .insert((
+                ContextActive(true),
+                ContextActivity::<GameplayInput>::ACTIVE,
+            ))
             .with_children(|parent| {
                 parent
                     .spawn((
@@ -249,20 +266,36 @@ mod character {
             });
     }
 
-    fn on_grab_cursor(
-        _event: On<Start<GrabCursor>>,
-        mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
-    ) {
-        cursor_options.visible = false;
-        cursor_options.grab_mode = CursorGrabMode::Locked;
+    fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
+        wanted_lock.0 = true;
     }
 
     fn on_release_cursor(
         _event: On<Start<ReleaseCursor>>,
+        mut wanted_lock: ResMut<WantedCursorLock>,
+    ) {
+        wanted_lock.0 = false;
+    }
+
+    fn sync_cursor_with_menus(
+        wanted_lock: Res<WantedCursorLock>,
+        menu_manager: Res<MenuManager>,
+        mut prev_locked: Local<Option<bool>>,
         mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
     ) {
-        cursor_options.visible = true;
-        cursor_options.grab_mode = CursorGrabMode::None;
+        let should_lock = wanted_lock.0 && !menu_manager.any_open();
+        if *prev_locked == Some(should_lock) {
+            return;
+        }
+        *prev_locked = Some(should_lock);
+
+        if should_lock {
+            cursor_options.visible = false;
+            cursor_options.grab_mode = CursorGrabMode::Locked;
+        } else {
+            cursor_options.visible = true;
+            cursor_options.grab_mode = CursorGrabMode::None;
+        }
     }
 
     fn toggle_view_mode(mut character: Single<&mut Character>) {
@@ -300,7 +333,11 @@ mod character {
         >,
         mut body_transform: Single<
             &mut Transform,
-            (With<CharacterBody>, Without<Character>, Without<CharacterCamera>),
+            (
+                With<CharacterBody>,
+                Without<Character>,
+                Without<CharacterCamera>,
+            ),
         >,
     ) {
         let (character, mut transform) = character_query.into_inner();
@@ -345,7 +382,11 @@ mod character {
         >,
         mut camera_transform: Single<
             &mut Transform,
-            (With<CharacterCamera>, Without<Character>, Without<CharacterBody>),
+            (
+                With<CharacterCamera>,
+                Without<Character>,
+                Without<CharacterBody>,
+            ),
         >,
         mut body_visibility: Single<&mut Visibility, With<CharacterBody>>,
     ) {
@@ -362,8 +403,9 @@ mod character {
             }
             ViewMode::ThirdPerson => {
                 **body_visibility = Visibility::Visible;
-                let offset =
-                    cam_yaw_rot * cam_pitch_rot * Vec3::new(0.0, 0.0, character.third_person_distance);
+                let offset = cam_yaw_rot
+                    * cam_pitch_rot
+                    * Vec3::new(0.0, 0.0, character.third_person_distance);
 
                 let mut cam_pos = eye_pivot + offset;
                 let min_local_y = -char_transform.translation.y + 0.25;
@@ -377,10 +419,7 @@ mod character {
 }
 
 mod terrain {
-    use bevy::{
-        mesh::VertexAttributeValues,
-        prelude::*,
-    };
+    use bevy::{mesh::VertexAttributeValues, prelude::*};
 
     pub struct TerrainPlugin;
 

@@ -310,9 +310,12 @@ fn find_ui_id_in_menu(
     None
 }
 
-fn prevent_tab_focus_loss(mut event: On<FocusedInput<KeyboardInput>>) {
-    if event.input.key_code == KeyCode::Tab {
-        event.propagate(false);
+fn prevent_text_input_keys(mut event: On<FocusedInput<KeyboardInput>>) {
+    match event.input.key_code {
+        KeyCode::Tab | KeyCode::ArrowUp | KeyCode::ArrowDown => {
+            event.propagate(false);
+        }
+        _ => {}
     }
 }
 
@@ -376,7 +379,7 @@ fn setup_menu_hui(
                     TabIndex(0),
                     AutoFocus,
                 ))
-                .observe(prevent_tab_focus_loss);
+                .observe(prevent_text_input_keys);
         },
     );
 
@@ -632,7 +635,14 @@ fn apply_menu_ui_ops(
                 }
                 let path = resolve_menu_file(&menu_name, &relative_template);
                 if let Ok(mut entity_cmd) = commands.get_entity(container) {
-                    entity_cmd.with_child((HtmlNode(server.load(path)), template_props));
+                    entity_cmd.with_child((
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                        HtmlNode(server.load(path)),
+                        template_props,
+                    ));
                 }
             }
             MenuUiOp::SetChildBackground {

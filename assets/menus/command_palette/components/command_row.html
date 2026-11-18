@@ -1,10 +1,11 @@
 <template>
     <property name="name">command</property>
     <property name="description"></property>
-    <property name="bg">#252834</property>
+    <property name="bg">#33252834</property>
 
-    <button width="100%" padding="6px 8px" justify_content="space_between" background="{bg}" hover:background="#33384A"
-        border_radius="4px" on_press="lua_press" tag:callback="on_row_pressed" tag:cmd="{name}">
+    <button width="100%" min_height="32px" padding="6px 8px" justify_content="space_between" align_items="center"
+        background="{bg}" hover:background="#3333384A" border_radius="12px" on_press="lua_press"
+        tag:callback="on_row_pressed" tag:cmd="{name}">
         <text font_size="14" font_color="#FFFFFF">{name}</text>
         <text font_size="12" font_color="#9AA0B4">{description}</text>
     </button>

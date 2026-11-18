@@ -153,10 +153,8 @@ function on_menu_key(menu_name, key)
     elseif key == "ArrowUp" then
         if count > 0 then
             local old = selected_index
-            if selected_index == nil then
+            if selected_index == nil or selected_index <= 1 then
                 selected_index = count
-            elseif selected_index <= 1 then
-                selected_index = nil
             else
                 selected_index = selected_index - 1
             end

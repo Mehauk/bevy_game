@@ -42,17 +42,19 @@ mod character {
         window::{CursorGrabMode, CursorOptions, PrimaryWindow},
     };
 
-    use crate::menus::MenuManager;
+    use crate::{menus::MenuManager, utils::commands::CommandAppExt};
 
     pub struct CharacterPlugin;
 
     impl Plugin for CharacterPlugin {
         fn build(&self, app: &mut App) {
-            app.add_systems(Startup, setup_character).add_systems(
+            app.add_systems(Startup, setup_character)
+            .register_command("toggle between first and third person view", toggle_view_mode)
+            .add_systems(
                 Update,
                 (
                     grab_cursor,
-                    toggle_view_mode,
+                    handle_view_mode_input,
                     character_look,
                     character_move,
                     sync_camera_and_body,
@@ -161,22 +163,28 @@ mod character {
         }
     }
 
-    fn toggle_view_mode(
+    fn toggle_view_mode(mut character: Single<&mut Character>) {
+        character.view_mode = match character.view_mode {
+            ViewMode::FirstPerson => ViewMode::ThirdPerson,
+            ViewMode::ThirdPerson => ViewMode::FirstPerson,
+        };
+    }   
+
+
+    fn handle_view_mode_input(
         keyboard: Res<ButtonInput<KeyCode>>,
         menu_manager: Res<MenuManager>,
-        mut character: Single<&mut Character>,
+        character: Single<&mut Character>,
     ) {
         if menu_manager.any_open() {
             return;
         }
+
         let shift_held =
             keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
 
         if shift_held && keyboard.just_pressed(KeyCode::KeyF) {
-            character.view_mode = match character.view_mode {
-                ViewMode::FirstPerson => ViewMode::ThirdPerson,
-                ViewMode::ThirdPerson => ViewMode::FirstPerson,
-            };
+            toggle_view_mode(character);
         }
     }
 

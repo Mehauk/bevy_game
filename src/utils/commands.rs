@@ -57,21 +57,34 @@ impl Plugin for CommandRegistryPlugin {
 pub struct RunCommand(pub String);
 
 pub trait CommandAppExt {
-    fn register_command<M>(
+    fn register_command<F, M>(
         &mut self,
-        name: &'static str,
         description: &'static str,
-        system: impl IntoSystem<(), (), M> + 'static,
-    ) -> &mut Self;
+        system: F,
+    ) -> &mut Self
+    where
+        F: IntoSystem<(), (), M> + 'static;
 }
 
 impl CommandAppExt for App {
-    fn register_command<M>(
+    fn register_command<F, M>(
         &mut self,
-        name: &'static str,
         description: &'static str,
-        system: impl IntoSystem<(), (), M> + 'static,
-    ) -> &mut Self {
+        system: F,
+    ) -> &mut Self
+    where
+        F: IntoSystem<(), (), M> + 'static,
+    {
+        let full_path = std::any::type_name::<F>();
+
+        let formatted = full_path
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or(full_path)
+            .replace("::", ">");
+
+        let name: &'static str = Box::leak(formatted.into_boxed_str());
+
         let system_id = self.register_system(system);
         self.init_resource::<CommandRegistry>();
         self.world_mut()
@@ -80,6 +93,8 @@ impl CommandAppExt for App {
         self
     }
 }
+
+
 
 #[derive(Clone)]
 pub struct CommandEntry {

@@ -178,9 +178,12 @@ function on_menu_key(menu_name, key)
         end
 
         if target ~= nil then
+            menus.close_top()
             commands.run(target)
+        elseif current_query == "" then
+            menus.close_top()
         end
-        menus.close_top()
+        
     end
 end
 

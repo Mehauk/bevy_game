@@ -7,7 +7,7 @@ use bevy::{
     input_focus::{AutoFocus, FocusedInput, InputFocus, tab_navigation::TabIndex},
     platform::collections::HashMap,
     prelude::*,
-    text::{EditableText, LineBreak, TextCursorStyle, TextEdit},
+    text::{EditableText, LineBreak, TextCursorStyle, TextEdit, TextEditChange},
     ui_widgets::TextInput,
 };
 use bevy_hui::prelude::*;
@@ -50,7 +50,6 @@ impl Plugin for MenuPlugin {
                 (
                     handle_menu_messages,
                     dispatch_menu_ready,
-                    forward_menu_text_changes,
                     forward_menu_keys,
                     close_top_menu_on_escape,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
@@ -324,8 +323,6 @@ fn setup_menu_hui(
     mut html_comps: HtmlComponents,
     mut html_funcs: HtmlFunctions,
 ) {
-    // Auto-discover all component templates under assets/menus/*/components/*.html
-    // and mods/menus/*/components/*.html, registering them as HTML tags matching their file name.
     for base_name in ["assets", "mods"] {
         let menu_base = get_base_dir(base_name).join("menus");
         let Ok(menu_dirs) = std::fs::read_dir(&menu_base) else {
@@ -354,8 +351,6 @@ fn setup_menu_hui(
         }
     }
 
-    // Generic behavior hook for text inputs: <node on_spawn="text_input" ...>
-    // Styling (width, padding, font size, colors, borders) stays 100% in HTML.
     html_funcs.register(
         "text_input",
         |In(entity): In<Entity>, mut commands: Commands| {
@@ -379,7 +374,8 @@ fn setup_menu_hui(
                     TabIndex(0),
                     AutoFocus,
                 ))
-                .observe(prevent_text_input_keys);
+                .observe(prevent_text_input_keys)
+                .observe(on_menu_text_edit_change);
         },
     );
 
@@ -468,34 +464,37 @@ fn dispatch_menu_ready(
     }
 }
 
-fn forward_menu_text_changes(
-    q_changed: Query<(Entity, &EditableText), Changed<EditableText>>,
+fn on_menu_text_edit_change(
+    event: On<TextEditChange>,
+    q_editable: Query<&EditableText>,
     q_parents: Query<&ChildOf>,
     q_roots: Query<&MenuRoot>,
     mut callbacks: MessageWriter<ScriptCallbackMessage>,
 ) {
-    for (entity, editable) in &q_changed {
-        let Some((menu_entity, root)) = find_menu_root(entity, &q_parents, &q_roots) else {
-            continue;
-        };
-        if !root.ready_sent {
-            continue;
-        }
-        let Some(script) = root.script.clone() else {
-            continue;
-        };
-
-        let value = editable.value().to_string();
-        callbacks.write(ScriptCallbackMessage::new_for_script_entity(
-            OnMenuTextChanged::into_callback_label(),
-            vec![
-                ScriptValue::String(root.name.clone().into()),
-                ScriptValue::String(value.into()),
-            ],
-            script,
-            menu_entity,
-        ));
+    let target = event.event_target();
+    let Ok(editable) = q_editable.get(target) else {
+        return;
+    };
+    let Some((menu_entity, root)) = find_menu_root(target, &q_parents, &q_roots) else {
+        return;
+    };
+    if !root.ready_sent {
+        return;
     }
+    let Some(script) = root.script.clone() else {
+        return;
+    };
+
+    let value = editable.value().to_string();
+    callbacks.write(ScriptCallbackMessage::new_for_script_entity(
+        OnMenuTextChanged::into_callback_label(),
+        vec![
+            ScriptValue::String(root.name.clone().into()),
+            ScriptValue::String(value.into()),
+        ],
+        script,
+        menu_entity,
+    ));
 }
 
 fn forward_menu_keys(

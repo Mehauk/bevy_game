@@ -10,7 +10,6 @@ impl Plugin for DevUtilsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(WireframePlugin::default())
             .register_command(
-                "utils>dev_utils>toggle_wireframe",
                 "Toggle global wireframe rendering",
                 dev_utils::toggle_wireframe,
             );

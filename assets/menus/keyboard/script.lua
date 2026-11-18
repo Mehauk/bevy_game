@@ -1,0 +1,267 @@
+local dom   = import_namespace("dom")
+local input = import_namespace("input")
+local menus = import_namespace("menus")
+
+function on_dom_event(handler, node, payload)
+    local fn = _G[handler]
+    if fn ~= nil then
+        fn(node, payload)
+    end
+end
+
+local LAYOUT = {
+    {
+        { code = "Escape", label = "ESC", w = "w-1" },
+        { spacer = true },
+        { code = "F1",  label = "F1",  w = "w-1" }, { code = "F2",  label = "F2",  w = "w-1" },
+        { code = "F3",  label = "F3",  w = "w-1" }, { code = "F4",  label = "F4",  w = "w-1" },
+        { spacer = true },
+        { code = "F5",  label = "F5",  w = "w-1" }, { code = "F6",  label = "F6",  w = "w-1" },
+        { code = "F7",  label = "F7",  w = "w-1" }, { code = "F8",  label = "F8",  w = "w-1" },
+        { spacer = true },
+        { code = "F9",  label = "F9",  w = "w-1" }, { code = "F10", label = "F10", w = "w-1" },
+        { code = "F11", label = "F11", w = "w-1" }, { code = "F12", label = "F12", w = "w-1" },
+    },
+    {
+        { code = "Backquote", label = "`", w = "w-1" },
+        { code = "Digit1", label = "1", w = "w-1" }, { code = "Digit2", label = "2", w = "w-1" },
+        { code = "Digit3", label = "3", w = "w-1" }, { code = "Digit4", label = "4", w = "w-1" },
+        { code = "Digit5", label = "5", w = "w-1" }, { code = "Digit6", label = "6", w = "w-1" },
+        { code = "Digit7", label = "7", w = "w-1" }, { code = "Digit8", label = "8", w = "w-1" },
+        { code = "Digit9", label = "9", w = "w-1" }, { code = "Digit0", label = "0", w = "w-1" },
+        { code = "Minus",  label = "-", w = "w-1" }, { code = "Equal",  label = "=", w = "w-1" },
+        { code = "Backspace", label = "BACK", w = "w-2" },
+    },
+    {
+        { code = "Tab",  label = "TAB", w = "w-15" },
+        { code = "KeyQ", label = "Q", w = "w-1" }, { code = "KeyW", label = "W", w = "w-1" },
+        { code = "KeyE", label = "E", w = "w-1" }, { code = "KeyR", label = "R", w = "w-1" },
+        { code = "KeyT", label = "T", w = "w-1" }, { code = "KeyY", label = "Y", w = "w-1" },
+        { code = "KeyU", label = "U", w = "w-1" }, { code = "KeyI", label = "I", w = "w-1" },
+        { code = "KeyO", label = "O", w = "w-1" }, { code = "KeyP", label = "P", w = "w-1" },
+        { code = "BracketLeft",  label = "[", w = "w-1" },
+        { code = "BracketRight", label = "]", w = "w-1" },
+        { code = "Backslash",    label = "\\", w = "w-15" },
+    },
+    {
+        { code = "CapsLock", label = "CAPS", w = "w-175" },
+        { code = "KeyA", label = "A", w = "w-1" }, { code = "KeyS", label = "S", w = "w-1" },
+        { code = "KeyD", label = "D", w = "w-1" }, { code = "KeyF", label = "F", w = "w-1" },
+        { code = "KeyG", label = "G", w = "w-1" }, { code = "KeyH", label = "H", w = "w-1" },
+        { code = "KeyJ", label = "J", w = "w-1" }, { code = "KeyK", label = "K", w = "w-1" },
+        { code = "KeyL", label = "L", w = "w-1" },
+        { code = "Semicolon", label = ";", w = "w-1" },
+        { code = "Quote",     label = "'", w = "w-1" },
+        { code = "Enter",     label = "ENTER", w = "w-225" },
+    },
+    {
+        { code = "ShiftLeft",  label = "SHIFT", w = "w-225", mod = "shift" },
+        { code = "KeyZ", label = "Z", w = "w-1" }, { code = "KeyX", label = "X", w = "w-1" },
+        { code = "KeyC", label = "C", w = "w-1" }, { code = "KeyV", label = "V", w = "w-1" },
+        { code = "KeyB", label = "B", w = "w-1" }, { code = "KeyN", label = "N", w = "w-1" },
+        { code = "KeyM", label = "M", w = "w-1" },
+        { code = "Comma",  label = ",", w = "w-1" },
+        { code = "Period", label = ".", w = "w-1" },
+        { code = "Slash",  label = "/", w = "w-1" },
+        { code = "ShiftRight", label = "SHIFT", w = "w-275", mod = "shift" },
+    },
+    {
+        { code = "ControlLeft",  label = "CTRL", w = "w-125", mod = "ctrl" },
+        { code = "SuperLeft",    label = "WIN",  w = "w-125", mod = "super" },
+        { code = "AltLeft",      label = "ALT",  w = "w-125", mod = "alt" },
+        { code = "Space",        label = "SPACE", w = "w-625" },
+        { code = "AltRight",     label = "ALT",  w = "w-125", mod = "alt" },
+        { code = "SuperRight",   label = "WIN",  w = "w-125", mod = "super" },
+        { code = "ControlRight", label = "CTRL", w = "w-125", mod = "ctrl" },
+    },
+}
+
+local WIDTH_CHARS = {
+    ["w-1"] = 7, ["w-125"] = 9, ["w-15"] = 11, ["w-175"] = 13,
+    ["w-2"] = 16, ["w-225"] = 18, ["w-275"] = 22, ["w-625"] = 48,
+}
+
+local all_bindings = {}
+local key_widgets = {}
+local node_to_mod = {}
+local mod_indicator_el = nil
+
+local physical_mods = { ctrl = false, shift = false, alt = false, super = false }
+local pinned_mods   = { ctrl = false, shift = false, alt = false, super = false }
+
+local function effective_mods()
+    return {
+        ctrl  = physical_mods.ctrl  or pinned_mods.ctrl,
+        shift = physical_mods.shift or pinned_mods.shift,
+        alt   = physical_mods.alt   or pinned_mods.alt,
+        super = physical_mods.super or pinned_mods.super,
+    }
+end
+
+local function truncate_two_lines(text, max_cols)
+    if text == nil or text == "" then
+        return ""
+    end
+
+    local words = {}
+    for w in string.gmatch(text, "%S+") do
+        table.insert(words, w)
+    end
+    if #words == 0 then
+        return ""
+    end
+
+    local lines = { "" }
+    local line_idx = 1
+
+    for wi, word in ipairs(words) do
+        local cur = lines[line_idx]
+        local candidate = (cur == "") and word or (cur .. " " .. word)
+        if #candidate <= max_cols then
+            lines[line_idx] = candidate
+        elseif line_idx == 1 then
+            if cur == "" then
+                lines[1] = string.sub(word, 1, max_cols)
+                local rest = string.sub(word, max_cols + 1)
+                if #rest > 0 then
+                    line_idx = 2
+                    lines[2] = rest
+                    if #lines[2] > max_cols then
+                        lines[2] = string.sub(lines[2], 1, math.max(1, max_cols - 3)) .. "..."
+                        return table.concat(lines, "\n")
+                    end
+                end
+            else
+                line_idx = 2
+                lines[2] = word
+                if #lines[2] > max_cols then
+                    lines[2] = string.sub(lines[2], 1, math.max(1, max_cols - 3)) .. "..."
+                    return table.concat(lines, "\n")
+                end
+            end
+        else
+            local base = cur
+            local room = max_cols - 3
+            if #base > room then
+                base = string.sub(base, 1, math.max(1, room))
+            end
+            lines[2] = base .. "..."
+            return table.concat(lines, "\n")
+        end
+
+        if line_idx == 2 and wi < #words then
+            -- continue loop; next word will either fit or trigger ellipsis
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+local function format_mods_header(mods)
+    local parts = {}
+    if mods.ctrl  then table.insert(parts, "Ctrl") end
+    if mods.shift then table.insert(parts, "Shift") end
+    if mods.alt   then table.insert(parts, "Alt") end
+    if mods.super then table.insert(parts, "Super") end
+    if #parts == 0 then
+        return "Modifiers: None"
+    end
+    return "Modifiers: " .. table.concat(parts, " + ")
+end
+
+local function refresh_keyboard()
+    local mods = effective_mods()
+    dom.set_text(mod_indicator_el, format_mods_header(mods))
+
+    local lookup = {}
+    for _, b in ipairs(all_bindings) do
+        if b.ctrl == mods.ctrl
+            and b.shift == mods.shift
+            and b.alt == mods.alt
+            and b.super == mods.super
+        then
+            if lookup[b.key] == nil then
+                lookup[b.key] = b.label
+            else
+                lookup[b.key] = lookup[b.key] .. " / " .. b.label
+            end
+        end
+    end
+
+    for _, kw in ipairs(key_widgets) do
+        local desc = lookup[kw.code]
+        if desc ~= nil then
+            dom.add_class(kw.el, "bound")
+            dom.set_text(kw.desc_el, truncate_two_lines(desc, kw.max_cols))
+        else
+            dom.remove_class(kw.el, "bound")
+            dom.set_text(kw.desc_el, "")
+        end
+
+        if kw.mod ~= nil then
+            if mods[kw.mod] then
+                dom.add_class(kw.el, "mod-held")
+            else
+                dom.remove_class(kw.el, "mod-held")
+            end
+        end
+    end
+end
+
+function on_menu_ready(_, root_id)
+    all_bindings = input.list_bindings()
+    physical_mods = input.active_modifiers()
+
+    mod_indicator_el = dom.get_by_id(root_id, "mod_indicator")
+    local rows_container = dom.get_by_id(root_id, "keyboard_rows")
+    dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
+
+    dom.clear(rows_container)
+    key_widgets = {}
+    node_to_mod = {}
+
+    for _, row_def in ipairs(LAYOUT) do
+        local row_el = dom.create(rows_container, "node", { class = "kb-row" })
+        for _, key_def in ipairs(row_def) do
+            if key_def.spacer then
+                dom.create(row_el, "node", { class = "spacer" })
+            else
+                local key_el = dom.create(row_el, "node", { class = "key " .. key_def.w })
+                dom.create(key_el, "text", { class = "key-cap", text = key_def.label })
+                local desc_el = dom.create(key_el, "text", { class = "key-desc", text = "" })
+
+                if key_def.mod ~= nil then
+                    node_to_mod[key_el] = key_def.mod
+                    dom.on(key_el, "click", "on_mod_key_click")
+                end
+
+                table.insert(key_widgets, {
+                    code = key_def.code,
+                    mod = key_def.mod,
+                    el = key_el,
+                    desc_el = desc_el,
+                    max_cols = WIDTH_CHARS[key_def.w] or 7,
+                })
+            end
+        end
+    end
+
+    refresh_keyboard()
+end
+
+function on_modifiers_changed(mods)
+    physical_mods = mods
+    refresh_keyboard()
+end
+
+function on_mod_key_click(node_id)
+    local mod = node_to_mod[node_id]
+    if mod ~= nil then
+        pinned_mods[mod] = not pinned_mods[mod]
+        refresh_keyboard()
+    end
+end
+
+function on_backdrop_click()
+    menus.close_top()
+end

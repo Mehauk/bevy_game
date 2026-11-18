@@ -10,6 +10,7 @@ function on_dom_event(handler, node, payload)
 end
 
 local MAX_ROWS = 20
+local current_menu_name = nil
 local all_commands = {}
 local visible = {}
 local selected_index = nil
@@ -168,7 +169,8 @@ local function rebuild_list(query)
     end
 end
 
-function on_menu_ready(_, root_id)
+function on_menu_ready(menu_name, root_id)
+    current_menu_name = menu_name
     all_commands = commands.list()
     list_el = dom.get_by_id(root_id, "palette_list")
     search_el = dom.get_by_id(root_id, "search")
@@ -181,7 +183,7 @@ function on_menu_ready(_, root_id)
 end
 
 function on_backdrop_click()
-    menus.close_top()
+    menus.close(current_menu_name)
 end
 
 function on_search_change(_, text)
@@ -226,10 +228,10 @@ function on_search_key(_, ev)
         end
 
         if target ~= nil then
-            menus.close_top()
+            menus.close(current_menu_name)
             commands.run(target)
         elseif current_query == "" then
-            menus.close_top()
+            menus.close(current_menu_name)
         end
     end
 end

@@ -19,11 +19,11 @@
   - [ ] when you start typing show suggestion to autocompelte as well as a list of items to choose from with the arrow keys 
 
 # Hotkeys
-- [ ] use bevy_enhanced_input
-  - [ ] show bound keys on a vitual keyboard overlay (new command)
-    - [ ] bound keys light up and have a short name/desc (max two lines, anything longeer just becomes ... (make sure not to resize the keys))
-    - [ ] key board should show other hotkeys when different modifiers are pressed (shift, cntrl, shift + cntrl, ...)
-    - [ ] keybinds inactive during menus (can remove menu gaurd in grab_cursor)
+- [x] use bevy_enhanced_input
+  - [x] show bound keys on a vitual keyboard overlay (new command)
+    - [x] bound keys light up and have a short name/desc (max two lines, anything longer just becomes ...)
+    - [x] key board should show other hotkeys when different modifiers are pressed (shift, cntrl, shift + cntrl, ...)
+    - [x] keybinds inactive during menus (can remove menu gaurd in grab_cursor)
 
 # Camera
 - [ ] zoom to switch between views + zoom out more

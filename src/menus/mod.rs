@@ -42,6 +42,7 @@ use bevy_mod_scripting::{
 callback_labels!(
     OnMenuReady => "on_menu_ready",
     OnDomEvent => "on_dom_event",
+    OnMenuModifiersChanged => "on_modifiers_changed",
 );
 
 pub struct MenuPlugin;
@@ -60,8 +61,10 @@ impl Plugin for MenuPlugin {
                     handle_menu_commands,
                     close_top_menu_on_escape,
                     dispatch_menu_ready,
+                    dispatch_modifier_changes,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
                     event_handler::<OnDomEvent, LuaScriptingPlugin>,
+                    event_handler::<OnMenuModifiersChanged, LuaScriptingPlugin>,
                     apply_dom_ops,
                 )
                     .chain(),
@@ -207,6 +210,7 @@ struct MenuTextInput(String);
 #[derive(Resource, Default)]
 pub struct MenuManager {
     open_menus: Vec<(String, Entity)>,
+    last_mods: (bool, bool, bool, bool),
 }
 
 impl MenuManager {
@@ -518,13 +522,6 @@ fn handle_menu_commands(
     }
 
     commands.queue(move |world: &mut World| {
-        for name in toggle_list {
-            let pos = world.resource::<MenuManager>().open_menus.iter().rposition(|(n, _)| n == &name);
-            match pos {
-                Some(i) => { close_menu_at(world, i); }
-                None => open_menu_in_world(world, &name),
-            }
-        }
         for cmd in cmd_list {
             match cmd {
                 MenuCmd::Open(name) => open_menu_in_world(world, &name),
@@ -538,6 +535,13 @@ fn handle_menu_commands(
                         close_menu_at(world, top);
                     }
                 }
+            }
+        }
+        for name in toggle_list {
+            let pos = world.resource::<MenuManager>().open_menus.iter().rposition(|(n, _)| n == &name);
+            match pos {
+                Some(i) => { close_menu_at(world, i); }
+                None => open_menu_in_world(world, &name),
             }
         }
     });
@@ -582,6 +586,33 @@ fn dispatch_menu_ready(
                 menu_entity,
             ));
         }
+    }
+}
+
+fn dispatch_modifier_changes(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut manager: ResMut<MenuManager>,
+    q_roots: Query<(Entity, &MenuRoot)>,
+    mut callbacks: MessageWriter<ScriptCallbackMessage>,
+) {
+    let mods = crate::input::current_modifier_flags(&keys);
+    if mods == manager.last_mods {
+        return;
+    }
+    manager.last_mods = mods;
+    if !manager.any_open() {
+        return;
+    }
+    for (entity, root) in &q_roots {
+        let (true, Some(script)) = (root.ready_sent, root.script.clone()) else {
+            continue;
+        };
+        callbacks.write(ScriptCallbackMessage::new_for_script_entity(
+            OnMenuModifiersChanged::into_callback_label(),
+            vec![crate::input::modifier_map(mods.0, mods.1, mods.2, mods.3)],
+            script,
+            entity,
+        ));
     }
 }
 

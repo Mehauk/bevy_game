@@ -1,3 +1,4 @@
+mod input;
 mod menus;
 mod utils;
 
@@ -11,9 +12,9 @@ use bevy_mod_scripting::BMSPlugin;
 
 use menus::{MenuPlugin, command_menu::CommandMenuPlugin};
 use utils::{DevUtilsPlugin, commands::CommandRegistryPlugin};
-
 use character::CharacterPlugin;
 use terrain::TerrainPlugin;
+use input::InputPlugin;
 
 fn main() {
     let _ = std::fs::create_dir_all("mods");
@@ -28,6 +29,7 @@ fn main() {
             CommandRegistryPlugin,
             MenuPlugin,
             CommandMenuPlugin,
+            InputPlugin, 
             DevUtilsPlugin,
             CharacterPlugin,
             TerrainPlugin,
@@ -37,32 +39,57 @@ fn main() {
 
 mod character {
     use bevy::{
-        input::mouse::AccumulatedMouseMotion,
         prelude::*,
         window::{CursorGrabMode, CursorOptions, PrimaryWindow},
     };
+    use bevy_enhanced_input::prelude::*;
 
-    use crate::{menus::MenuManager, utils::commands::CommandAppExt};
+    use crate::{
+        input::{GameplayInput, HotkeyLabel},
+        utils::commands::CommandAppExt,
+    };
 
     pub struct CharacterPlugin;
 
     impl Plugin for CharacterPlugin {
         fn build(&self, app: &mut App) {
             app.add_systems(Startup, setup_character)
-            .register_command("toggle between first and third person view", toggle_view_mode)
-            .add_systems(
-                Update,
-                (
-                    grab_cursor,
-                    handle_view_mode_input,
-                    character_look,
-                    character_move,
-                    sync_camera_and_body,
-                )
-                    .chain(),
-            );
+                .register_command("toggle between first and third person view", toggle_view_mode)
+                .add_observer(on_grab_cursor)
+                .add_observer(on_release_cursor)
+                .add_observer(on_toggle_view_mode)
+                .add_observer(on_character_look)
+                .add_systems(Update, (character_move, sync_camera_and_body).chain());
         }
     }
+
+    #[derive(InputAction)]
+    #[action_output(Vec2)]
+    struct Move;
+
+    #[derive(InputAction)]
+    #[action_output(Vec2)]
+    struct Look;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct Sprint;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct AlignToCamera;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct ToggleViewMode;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct GrabCursor;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct ReleaseCursor;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub enum ViewMode {
@@ -71,7 +98,7 @@ mod character {
         ThirdPerson,
     }
 
-    #[derive(Component)]
+    #[derive(Component, Clone)]
     pub struct Character {
         pub yaw: f32,
         pub pitch: f32,
@@ -106,57 +133,136 @@ mod character {
     #[derive(Component)]
     struct CharacterCamera;
 
-    fn setup_character(
-        mut commands: Commands,
-        mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<StandardMaterial>>,
-    ) {
-        commands
-            .spawn((
-                Character::default(),
-                Transform::from_xyz(0.0, 0.9, 0.0),
-                Visibility::default(),
-            ))
+    fn setup_character(world: &mut World) {
+        let capsule_mesh = world
+            .resource_mut::<Assets<Mesh>>()
+            .add(Capsule3d::new(0.4, 1.0));
+        let visor_mesh = world
+            .resource_mut::<Assets<Mesh>>()
+            .add(Cuboid::new(0.45, 0.18, 0.2));
+        let body_mat = world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(Color::srgb(0.2, 0.45, 0.85));
+        let visor_mat = world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(Color::srgb(0.1, 0.12, 0.18));
+
+        let reset_settings = ActionSettings {
+            require_reset: true,
+            ..default()
+        };
+        let toggle_view: Binding = KeyCode::KeyF.with_mod_keys(ModKeys::SHIFT).into();
+
+        let mut char_entity = world
+            .spawn_scene(bsn! {
+                Character
+                Transform::from_xyz(0.0, 0.9, 0.0)
+                Visibility::default()
+                GameplayInput
+                Actions<GameplayInput> [
+                    Action::<Move>::new()
+                    reset_settings
+                    Bindings [
+                        Binding(KeyCode::KeyW)
+                        HotkeyLabel("Move Forward")
+                        ~SwizzleAxis::YXZ
+                        --
+                        Binding(KeyCode::KeyS)
+                        HotkeyLabel("Move Back")
+                        ~Negate::all()
+                        ~SwizzleAxis::YXZ
+                        --
+                        Binding(KeyCode::KeyD)
+                        HotkeyLabel("Move Right")
+                        --
+                        Binding(KeyCode::KeyA)
+                        HotkeyLabel("Move Left")
+                        ~Negate::all()
+                    ]
+                    --
+                    Action::<Look>::new()
+                    Bindings [
+                        Binding::mouse_motion()
+                    ]
+                    --
+                    Action::<Sprint>::new()
+                    reset_settings
+                    HotkeyLabel("Sprint")
+                    Bindings [
+                        Binding(KeyCode::ShiftLeft)
+                        --
+                        Binding(KeyCode::ShiftRight)
+                    ]
+                    --
+                    Action::<AlignToCamera>::new()
+                    reset_settings
+                    HotkeyLabel("Align Camera")
+                    Bindings [
+                        Binding(KeyCode::AltLeft)
+                        --
+                        Binding(KeyCode::AltRight)
+                    ]
+                    --
+                    Action::<ToggleViewMode>::new()
+                    reset_settings
+                    HotkeyLabel("Toggle 1st/3rd View")
+                    Bindings [
+                        toggle_view
+                    ]
+                    --
+                    Action::<GrabCursor>::new()
+                    reset_settings
+                    Bindings [
+                        Binding(MouseButton::Left)
+                    ]
+                    --
+                    Action::<ReleaseCursor>::new()
+                    reset_settings
+                    HotkeyLabel("Unlock Cursor")
+                    Bindings [
+                        Binding(KeyCode::Escape)
+                    ]
+                ]
+            })
+            .unwrap();
+
+        char_entity
+            .insert(ContextActivity::<GameplayInput>::ACTIVE)
             .with_children(|parent| {
                 parent
                     .spawn((
                         CharacterBody,
-                        Mesh3d(meshes.add(Capsule3d::new(0.4, 1.0))),
-                        MeshMaterial3d(materials.add(Color::srgb(0.2, 0.45, 0.85))),
+                        Mesh3d(capsule_mesh),
+                        MeshMaterial3d(body_mat),
                         Transform::default(),
                         Visibility::default(),
                     ))
                     .with_children(|body| {
                         body.spawn((
-                            Mesh3d(meshes.add(Cuboid::new(0.45, 0.18, 0.2))),
-                            MeshMaterial3d(materials.add(Color::srgb(0.1, 0.12, 0.18))),
+                            Mesh3d(visor_mesh),
+                            MeshMaterial3d(visor_mat),
                             Transform::from_xyz(0.0, 0.45, -0.35),
                         ));
                     });
 
-                parent.spawn((
-                    CharacterCamera,
-                    Camera3d::default(),
-                    Transform::default(),
-                ));
+                parent.spawn((CharacterCamera, Camera3d::default(), Transform::default()));
             });
     }
 
-    fn grab_cursor(
+    fn on_grab_cursor(
+        _event: On<Start<GrabCursor>>,
         mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
-        mouse: Res<ButtonInput<MouseButton>>,
-        keyboard: Res<ButtonInput<KeyCode>>,
-        menu_manager: Res<MenuManager>,
     ) {
-        if mouse.just_pressed(MouseButton::Left) && !menu_manager.any_open() {
-            cursor_options.visible = false;
-            cursor_options.grab_mode = CursorGrabMode::Locked;
-        }
-        // Only ungrab with Escape if no menu is currently open
-        if keyboard.just_pressed(KeyCode::Escape) && !menu_manager.any_open() {
-            cursor_options.visible = true;
-            cursor_options.grab_mode = CursorGrabMode::None;
-        }
+        cursor_options.visible = false;
+        cursor_options.grab_mode = CursorGrabMode::Locked;
+    }
+
+    fn on_release_cursor(
+        _event: On<Start<ReleaseCursor>>,
+        mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
+    ) {
+        cursor_options.visible = true;
+        cursor_options.grab_mode = CursorGrabMode::None;
     }
 
     fn toggle_view_mode(mut character: Single<&mut Character>) {
@@ -164,48 +270,30 @@ mod character {
             ViewMode::FirstPerson => ViewMode::ThirdPerson,
             ViewMode::ThirdPerson => ViewMode::FirstPerson,
         };
-    }   
-
-
-    fn handle_view_mode_input(
-        keyboard: Res<ButtonInput<KeyCode>>,
-        menu_manager: Res<MenuManager>,
-        character: Single<&mut Character>,
-    ) {
-        if menu_manager.any_open() {
-            return;
-        }
-
-        let shift_held =
-            keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
-
-        if shift_held && keyboard.just_pressed(KeyCode::KeyF) {
-            toggle_view_mode(character);
-        }
     }
 
-    fn character_look(
+    fn on_toggle_view_mode(_event: On<Start<ToggleViewMode>>, character: Single<&mut Character>) {
+        toggle_view_mode(character);
+    }
+
+    fn on_character_look(
+        event: On<Fire<Look>>,
         cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
-        mouse_motion: Res<AccumulatedMouseMotion>,
-        menu_manager: Res<MenuManager>,
         mut character: Single<&mut Character>,
     ) {
-        if menu_manager.any_open()
-            || cursor_options.grab_mode != CursorGrabMode::Locked
-            || mouse_motion.delta == Vec2::ZERO
-        {
+        if cursor_options.grab_mode != CursorGrabMode::Locked || event.value == Vec2::ZERO {
             return;
         }
-
-        character.yaw -= mouse_motion.delta.x * character.sensitivity;
+        character.yaw -= event.value.x * character.sensitivity;
         character.pitch =
-            (character.pitch - mouse_motion.delta.y * character.sensitivity).clamp(-1.35, 1.35);
+            (character.pitch - event.value.y * character.sensitivity).clamp(-1.35, 1.35);
     }
 
     fn character_move(
         time: Res<Time>,
-        keyboard: Res<ButtonInput<KeyCode>>,
-        menu_manager: Res<MenuManager>,
+        move_action: Single<&Action<Move>>,
+        sprint_action: Single<&Action<Sprint>>,
+        align_action: Single<&Action<AlignToCamera>>,
         character_query: Single<
             (&Character, &mut Transform),
             (Without<CharacterBody>, Without<CharacterCamera>),
@@ -215,42 +303,23 @@ mod character {
             (With<CharacterBody>, Without<Character>, Without<CharacterCamera>),
         >,
     ) {
-        if menu_manager.any_open() {
-            return;
-        }
         let (character, mut transform) = character_query.into_inner();
+        let move_vec = ***move_action;
+        let sprinting = ***sprint_action;
+        let alt_held = ***align_action;
 
         let yaw_rot = Quat::from_rotation_y(character.yaw);
         let forward = yaw_rot * Vec3::NEG_Z;
         let right = yaw_rot * Vec3::X;
-
-        let mut direction = Vec3::ZERO;
-        if keyboard.pressed(KeyCode::KeyW) {
-            direction += forward;
-        }
-        if keyboard.pressed(KeyCode::KeyS) {
-            direction -= forward;
-        }
-        if keyboard.pressed(KeyCode::KeyD) {
-            direction += right;
-        }
-        if keyboard.pressed(KeyCode::KeyA) {
-            direction -= right;
-        }
-
-        let alt_held =
-            keyboard.pressed(KeyCode::AltLeft) || keyboard.pressed(KeyCode::AltRight);
+        let direction = right * move_vec.x + forward * move_vec.y;
 
         if direction != Vec3::ZERO {
             let move_dir = direction.normalize();
-            let sprinting =
-                keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight);
             let speed = if sprinting {
                 character.sprint_speed
             } else {
                 character.walk_speed
             };
-
             transform.translation += move_dir * speed * time.delta_secs();
 
             if character.view_mode == ViewMode::ThirdPerson && !alt_held {

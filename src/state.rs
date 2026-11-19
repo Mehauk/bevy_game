@@ -1,11 +1,20 @@
 //! Application and gameplay state machines.
 //!
 //! [`GameState`] models top-level game phases. [`PlayState`] is a sub-state scoped to
-//! [`GameState::InGame`] via Bevy's `SubStates` derive, so the pause state only exists
-//! during gameplay and cleanly transitions simulation time when entering and exiting.
+//! [`GameState::InGame`] via Bevy's `SubStates` derive. Pausing the game switches
+//! [`PlayState`] between `Running` and `Paused`, automatically halting or resuming
+//! virtual time and Avian physics simulation.
+//!
+//! Also registers the `state` Lua namespace so scripts can pause or resume gameplay.
 
-use avian3d::{prelude::Physics, schedule::PhysicsTime};
+use avian3d::prelude::Physics;
+use avian3d::schedule::PhysicsTime;
 use bevy::prelude::*;
+use bevy_mod_scripting::bindings::{
+    InteropError, WorldExtensions,
+    function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
+    script_value::ScriptValue,
+};
 
 use crate::menus::MenuManager;
 
@@ -23,10 +32,19 @@ pub enum PlayState {
     Paused,
 }
 
-/// Tracks whether a pause was caused by opening the command palette so that closing
-/// the palette resumes playback without overriding other pause sources.
+/// Reference-counted pause state separating menu-initiated pauses from manual pauses.
 #[derive(Resource, Default)]
-struct PalettePause(bool);
+struct PauseTracker {
+    menu_pauses: u32,
+    manual_paused: bool,
+    last_reload_gen: u64,
+}
+
+impl PauseTracker {
+    fn is_paused(&self) -> bool {
+        self.menu_pauses > 0 || self.manual_paused
+    }
+}
 
 pub struct StatePlugin;
 
@@ -34,14 +52,75 @@ impl Plugin for StatePlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<GameState>()
             .add_sub_state::<PlayState>()
-            .init_resource::<PalettePause>()
+            .init_resource::<PauseTracker>()
             .add_systems(OnEnter(PlayState::Paused), pause_simulation)
             .add_systems(OnExit(PlayState::Paused), unpause_simulation)
-            .add_systems(OnExit(GameState::InGame), clear_palette_pause)
+            .add_systems(OnExit(GameState::InGame), clear_pauses)
             .add_systems(
                 PostUpdate,
-                sync_pause_with_command_palette
-                    .run_if(in_state(GameState::InGame).and_then(resource_exists::<MenuManager>)),
+                sync_menu_pauses
+                    .run_if(in_state(GameState::InGame))
+                    .run_if(resource_exists::<MenuManager>),
+            );
+
+        NamespaceBuilder::in_namespace(app.world_mut(), "state")
+            .register(
+                "pause",
+                |ctx: FunctionCallContext| -> Result<(), InteropError> {
+                    let world = ctx.world()?;
+                    let menu_open = world
+                        .with_resource(|mgr: &MenuManager| mgr.any_open())
+                        .unwrap_or(false);
+                    let should_pause = world.with_resource_mut(|mut tracker: Mut<PauseTracker>| {
+                        if menu_open {
+                            tracker.menu_pauses += 1;
+                        } else {
+                            tracker.manual_paused = true;
+                        }
+                        tracker.is_paused()
+                    })?;
+                    if should_pause {
+                        world.with_resource_mut(|mut next_state: Mut<NextState<PlayState>>| {
+                            next_state.set(PlayState::Paused);
+                        })?;
+                    }
+                    Ok(())
+                },
+            )
+            .register(
+                "resume",
+                |ctx: FunctionCallContext| -> Result<(), InteropError> {
+                    let world = ctx.world()?;
+                    let menu_open = world
+                        .with_resource(|mgr: &MenuManager| mgr.any_open())
+                        .unwrap_or(false);
+                    let should_resume = world.with_resource_mut(|mut tracker: Mut<PauseTracker>| {
+                        if menu_open && tracker.menu_pauses > 0 {
+                            tracker.menu_pauses -= 1;
+                        } else {
+                            tracker.manual_paused = false;
+                            if !menu_open {
+                                tracker.menu_pauses = 0;
+                            }
+                        }
+                        !tracker.is_paused()
+                    })?;
+                    if should_resume {
+                        world.with_resource_mut(|mut next_state: Mut<NextState<PlayState>>| {
+                            next_state.set(PlayState::Running);
+                        })?;
+                    }
+                    Ok(())
+                },
+            )
+            .register(
+                "is_paused",
+                |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
+                    let world = ctx.world()?;
+                    world.with_resource(|play_state: &State<PlayState>| {
+                        ScriptValue::Bool(*play_state.get() == PlayState::Paused)
+                    })
+                },
             );
     }
 }
@@ -59,40 +138,36 @@ fn pause_simulation(
 fn unpause_simulation(
     mut virtual_time: ResMut<Time<Virtual>>,
     physics_time: Option<ResMut<Time<Physics>>>,
-    mut palette_pause: ResMut<PalettePause>,
 ) {
     virtual_time.unpause();
     if let Some(mut physics) = physics_time {
         physics.unpause();
     }
-    palette_pause.0 = false;
 }
 
-fn clear_palette_pause(mut palette_pause: ResMut<PalettePause>) {
-    palette_pause.0 = false;
+fn clear_pauses(mut tracker: ResMut<PauseTracker>) {
+    tracker.menu_pauses = 0;
+    tracker.manual_paused = false;
 }
 
-fn sync_pause_with_command_palette(
+/// Resets menu pause counts on hot-reload or once all menus have closed.
+fn sync_menu_pauses(
     menu_manager: Res<MenuManager>,
+    mut tracker: ResMut<PauseTracker>,
     play_state: Res<State<PlayState>>,
     mut next_play_state: ResMut<NextState<PlayState>>,
-    mut palette_pause: ResMut<PalettePause>,
-    mut prev_open: Local<Option<bool>>,
 ) {
-    let open = menu_manager.is_open("command_palette");
-    if *prev_open == Some(open) {
-        return;
+    let reload_gen = menu_manager.reload_generation();
+    if reload_gen != tracker.last_reload_gen {
+        tracker.last_reload_gen = reload_gen;
+        tracker.menu_pauses = 0;
     }
-    *prev_open = Some(open);
 
-    if open {
-        if *play_state.get() == PlayState::Running {
-            palette_pause.0 = true;
-            next_play_state.set(PlayState::Paused);
+    if !menu_manager.any_open() && tracker.menu_pauses > 0 {
+        tracker.menu_pauses = 0;
+        if !tracker.is_paused() && *play_state.get() == PlayState::Paused {
+            next_play_state.set(PlayState::Running);
         }
-    } else if palette_pause.0 {
-        palette_pause.0 = false;
-        next_play_state.set(PlayState::Running);
     }
 }
 
@@ -118,33 +193,71 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_pauses_and_resumes_play_state() {
+    fn stacked_pausing_menus_stay_paused_until_last_closes() {
         let mut app = test_app();
 
-        // Non-palette menu does not trigger pause.
-        app.world_mut()
-            .resource_mut::<MenuManager>()
-            .push("keyboard".into(), Entity::from_raw_u32(1).unwrap());
-        app.update();
-        app.update();
-        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
-        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        let menu_a = app.world_mut().spawn_empty().id();
+        let menu_b = app.world_mut().spawn_empty().id();
+        {
+            let mut mgr = app.world_mut().resource_mut::<MenuManager>();
+            mgr.push("menu_a".into(), menu_a);
+            mgr.push("menu_b".into(), menu_b);
+        }
 
-        // Opening command_palette triggers pause.
+        // Simulate two menus calling state.pause().
+        app.world_mut().resource_mut::<PauseTracker>().menu_pauses = 2;
         app.world_mut()
-            .resource_mut::<MenuManager>()
-            .push("command_palette".into(), Entity::from_raw_u32(2).unwrap());
+            .resource_mut::<NextState<PlayState>>()
+            .set(PlayState::Paused);
         app.update();
         app.update();
         assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Paused);
+
+        // Close one menu (topmost or bottommost); one menu remains open with menu_pauses == 1.
+        {
+            let mut mgr = app.world_mut().resource_mut::<MenuManager>();
+            let pos = mgr.index_of("menu_b").unwrap();
+            mgr.remove_at(pos);
+        }
+        app.world_mut().resource_mut::<PauseTracker>().menu_pauses -= 1;
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Paused);
+
+        // Close remaining menu.
+        {
+            let mut mgr = app.world_mut().resource_mut::<MenuManager>();
+            let pos = mgr.index_of("menu_a").unwrap();
+            mgr.remove_at(pos);
+        }
+        app.world_mut().resource_mut::<PauseTracker>().menu_pauses -= 1;
+        app.update();
+        app.update();
+        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
+    }
+
+    #[test]
+    fn closing_all_menus_without_resume_auto_resumes() {
+        let mut app = test_app();
+
+        let menu = app.world_mut().spawn_empty().id();
+        app.world_mut()
+            .resource_mut::<MenuManager>()
+            .push("command_palette".into(), menu);
+        app.world_mut().resource_mut::<PauseTracker>().menu_pauses = 1;
+        app.world_mut()
+            .resource_mut::<NextState<PlayState>>()
+            .set(PlayState::Paused);
+        app.update();
+        app.update();
         assert!(app.world().resource::<Time<Virtual>>().is_paused());
 
-        // Closing command_palette unpauses.
         let mut mgr = app.world_mut().resource_mut::<MenuManager>();
         let pos = mgr.index_of("command_palette").unwrap();
         mgr.remove_at(pos);
         app.update();
         app.update();
+
         assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
         assert!(!app.world().resource::<Time<Virtual>>().is_paused());
     }

@@ -1,6 +1,7 @@
 local dom      = import_namespace("dom")
 local commands = import_namespace("commands")
 local menus    = import_namespace("menus")
+local state    = import_namespace("state")
 
 function on_dom_event(handler, node, payload)
     local fn = _G[handler]
@@ -212,7 +213,13 @@ local function rebuild_list(raw_input)
     update_preview()
 end
 
+local function close_palette()
+    state.resume()
+    menus.close(current_menu_name)
+end
+
 function on_menu_ready(menu_name, root_id)
+    state.pause()
     current_menu_name = menu_name
     all_commands = commands.list()
     list_el = dom.get_by_id(root_id, "palette_list")
@@ -228,7 +235,7 @@ function on_menu_ready(menu_name, root_id)
 end
 
 function on_backdrop_click()
-    menus.close(current_menu_name)
+    close_palette()
 end
 
 function on_search_change(_, text)
@@ -239,7 +246,9 @@ function on_search_key(_, ev)
     local count = #visible
     local key = ev.key
 
-    if key == "ArrowDown" then
+    if key == "Escape" then
+        close_palette()
+    elseif key == "ArrowDown" then
         if count > 0 then
             if selected_index == nil or selected_index >= count then
                 set_selected(1)
@@ -277,11 +286,9 @@ function on_search_key(_, ev)
             end
         end
 
+        close_palette()
         if full_command ~= "" then
-            menus.close(current_menu_name)
             commands.run(full_command)
-        else
-            menus.close(current_menu_name)
         end
     end
 end

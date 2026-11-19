@@ -22,6 +22,10 @@
 - [x] make the command list scrollable keeping the selected one at the bottom
 - [x] The bottom sheet takes the entire screen it should only take a third of the screen
 - [x] in the skyrim ~ menu you tyoe in line (the only diff for ours should be an extra floating scrollable autofill/suggestions chooser, which we already have but need to be placed better)
+- [ ] pressing ~ again once inside the menu should close it (this is pure lua change)
+- [ ] clicking outside the vie should not close the menu (if there was any rust code that did this remove it (probably no longer needed))
+- [ ] leaving the menu with esc or repressing ~ should not leave the mouse uncaptured
+- [ ] entering a command should not close the console/menu
 
 # Hotkeys
 - [x] use bevy_enhanced_input
@@ -54,4 +58,4 @@
 
 # Pause and resume
 - [x] when ~ menu is open pause the game exactly as it is, when the menu is closed, resume.
-- [ ] Use lua hook for pause/unpaused menus instead
+- [x] Use lua hook for pause/unpaused menus instead

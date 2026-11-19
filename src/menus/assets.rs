@@ -83,6 +83,9 @@ pub(crate) fn reload_menus_on_asset_change(
                 .map(str::to_string)
                 .collect();
             while close_top_menu(world) {}
+            world
+                .resource_mut::<MenuManager>()
+                .bump_reload_generation();
             for name in names {
                 open_menu_in_world(world, &name);
             }

@@ -21,6 +21,7 @@ pub enum MenuCmd {
 #[derive(Resource, Default)]
 pub struct MenuManager {
     open_menus: Vec<(String, Entity)>,
+    reload_generation: u64,
 }
 
 impl MenuManager {
@@ -28,8 +29,16 @@ impl MenuManager {
         !self.open_menus.is_empty()
     }
 
-    pub fn is_open(&self, name: &str) -> bool {
-        self.index_of(name).is_some()
+    pub fn reload_generation(&self) -> u64 {
+        self.reload_generation
+    }
+
+    pub(crate) fn bump_reload_generation(&mut self) {
+        self.reload_generation = self.reload_generation.wrapping_add(1);
+    }
+
+    pub(crate) fn top_entity(&self) -> Option<Entity> {
+        self.open_menus.last().map(|(_, entity)| *entity)
     }
 
     /// Nesting depth, used to layer each newly opened menu above the previous one.

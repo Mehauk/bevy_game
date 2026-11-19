@@ -49,6 +49,9 @@ fn broadcast_to_menus(
 
 /// Tell open menus which modifiers and keys are held, so the keyboard overlay can show
 /// the bindings for the currently-pinned modifier set.
+///
+/// `just_pressed_list` is sent only to the topmost menu so stacked menus do not both
+/// react to the same key press (e.g. `Escape`).
 pub(crate) fn dispatch_modifier_changes(
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -98,16 +101,29 @@ pub(crate) fn dispatch_modifier_changes(
     tracking.last_mods = mods;
     tracking.last_pressed = pressed.clone();
 
-    broadcast_to_menus(
-        &q_roots,
-        &mut callbacks,
-        OnMenuModifiersChanged::into_callback_label(),
-        &[
-            modifier_map(mods),
-            script_str_list(&pressed),
-            script_str_list(&just_pressed),
-        ],
-    );
+    let label = OnMenuModifiersChanged::into_callback_label();
+    let mods_val = modifier_map(mods);
+    let pressed_val = script_str_list(&pressed);
+    let just_pressed_val = script_str_list(&just_pressed);
+    let empty_list = ScriptValue::List(Default::default());
+    let top_entity = manager.top_entity();
+
+    for (entity, root) in q_roots.iter() {
+        let Some(script) = root.ready_script() else {
+            continue;
+        };
+        let just_pressed_for_menu = if Some(entity) == top_entity {
+            just_pressed_val.clone()
+        } else {
+            empty_list.clone()
+        };
+        callbacks.write(ScriptCallbackMessage::new_for_script_entity(
+            label.clone(),
+            vec![mods_val.clone(), pressed_val.clone(), just_pressed_for_menu],
+            script,
+            entity,
+        ));
+    }
 }
 
 /// Relay the outcome of the last `input.remap` to open menus.

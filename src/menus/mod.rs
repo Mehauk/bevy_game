@@ -41,9 +41,7 @@ use crate::utils::registry::commands::CommandAppExt;
 use crate::utils::registry::menus::{MenuRegistry, MenuRegistryExt};
 
 use dom::apply_dom_ops;
-use lifecycle::{
-    dispatch_menu_ready, handle_menu_commands, on_close_top_menu, setup_menu_input,
-};
+use lifecycle::{dispatch_menu_ready, handle_menu_commands};
 use state::{MenuCmd, ToggleMenu};
 
 // Engine → Lua callbacks. The string on the right is the global function name Lua sees.
@@ -69,8 +67,6 @@ impl Plugin for MenuPlugin {
             .init_resource::<dispatch::ModifierTracking>()
             .add_message::<ToggleMenu>()
             .add_message::<MenuCmd>()
-            .add_systems(Startup, setup_menu_input)
-            .add_observer(on_close_top_menu)
             .add_observer(dom::events::on_dom_click)
             .add_observer(dom::events::on_dom_hover_enter)
             .add_observer(dom::events::on_dom_hover_exit)

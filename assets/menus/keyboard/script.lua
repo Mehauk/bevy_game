@@ -89,6 +89,7 @@ local WIDTH_CHARS = {
     ["w-2"] = 16, ["w-225"] = 18, ["w-275"] = 22, ["w-625"] = 48,
 }
 
+local current_menu_name = nil
 local all_bindings = {}
 local key_widgets = {}
 local node_to_widget = {}
@@ -557,7 +558,8 @@ function truncate_two_lines(text, max_cols)
     return table.concat(lines, "\n")
 end
 
-function on_menu_ready(_, root_id)
+function on_menu_ready(menu_name, root_id)
+    current_menu_name = menu_name
     all_bindings = input.list_bindings()
     physical_mods = input.active_modifiers()
     remapping_source = nil
@@ -679,19 +681,28 @@ function on_modifiers_changed(mods, pressed_list, just_pressed_list)
 
     update_pressed_widgets(pressed_list)
 
-    if remapping_source ~= nil and just_pressed_list ~= nil then
-        local current_mods = effective_mods()
-        for _, key_code in ipairs(just_pressed_list) do
-            if key_code == "Escape" then
-                cancel_remapping()
-                break
-            elseif not NON_REBIND_KEYS[key_code] then
-                if key_code == remapping_source.code and mods_equal(current_mods, remapping_source.mods) then
+    if just_pressed_list ~= nil then
+        if remapping_source ~= nil then
+            local current_mods = effective_mods()
+            for _, key_code in ipairs(just_pressed_list) do
+                if key_code == "Escape" then
                     cancel_remapping()
-                else
-                    execute_remap(remapping_source, key_code, current_mods)
+                    break
+                elseif not NON_REBIND_KEYS[key_code] then
+                    if key_code == remapping_source.code and mods_equal(current_mods, remapping_source.mods) then
+                        cancel_remapping()
+                    else
+                        execute_remap(remapping_source, key_code, current_mods)
+                    end
+                    break
                 end
-                break
+            end
+        else
+            for _, key_code in ipairs(just_pressed_list) do
+                if key_code == "Escape" then
+                    menus.close(current_menu_name)
+                    break
+                end
             end
         end
     end
@@ -766,7 +777,7 @@ function on_backdrop_click()
     if remapping_source ~= nil then
         cancel_remapping()
     else
-        menus.close_top()
+        menus.close(current_menu_name)
     end
 end
 

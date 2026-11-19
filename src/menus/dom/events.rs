@@ -114,10 +114,13 @@ pub(crate) fn on_dom_key_input(
         return;
     }
     let key = event.input.key_code;
-    // Navigation keys belong to the menu script, not to text-edit caret movement.
-    if matches!(key, KeyCode::ArrowDown | KeyCode::ArrowUp | KeyCode::Tab | KeyCode::Enter) {
+    // Navigation and close keys belong to the menu script, not to text-edit caret movement.
+    if matches!(
+        key,
+        KeyCode::ArrowDown | KeyCode::ArrowUp | KeyCode::Tab | KeyCode::Enter | KeyCode::Escape
+    ) {
         event.propagate(false);
-        if event.input.repeat && matches!(key, KeyCode::Tab | KeyCode::Enter) {
+        if event.input.repeat && matches!(key, KeyCode::Tab | KeyCode::Enter | KeyCode::Escape) {
             return;
         }
     }

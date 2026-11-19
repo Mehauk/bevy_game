@@ -7,9 +7,8 @@
 //! [`MenuRoot::ready_sent`] handshake: no DOM event may be dispatched to a script that has
 //! not finished loading, or its handler globals would not exist yet.
 
-use bevy::prelude::*;
 use bevy::input_focus::InputFocus;
-use bevy_enhanced_input::prelude::*;
+use bevy::prelude::*;
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::{
     asset::ScriptAsset,
@@ -22,7 +21,6 @@ use bevy_mod_scripting::{
     script::ScriptAttachment,
 };
 
-use crate::input::{ContextActive, HotkeyLabel, MenuInput};
 use crate::menus::OnMenuReady;
 use crate::menus::assets::resolve_menu_file;
 use crate::menus::dom::{
@@ -30,39 +28,6 @@ use crate::menus::dom::{
 };
 use crate::menus::focus::MenuFocusState;
 use crate::menus::state::{MenuCmd, MenuManager, ToggleMenu};
-
-/// Menu-context hotkey that closes the topmost menu.
-#[derive(InputAction)]
-#[action_output(bool)]
-pub(crate) struct CloseTopMenu;
-
-pub(crate) fn setup_menu_input(mut commands: Commands) {
-    let menu_ctx = commands
-        .spawn((MenuInput, ContextActive(false), ContextActivity::<MenuInput>::INACTIVE))
-        .id();
-
-    let close_action = commands
-        .spawn((
-            Action::<CloseTopMenu>::new(),
-            ActionOf::<MenuInput>::new(menu_ctx),
-            ActionSettings {
-                consume_input: true,
-                require_reset: true,
-                ..default()
-            },
-            HotkeyLabel("Close Menu"),
-        ))
-        .id();
-
-    commands.spawn((Binding::from(KeyCode::Escape), BindingOf(close_action)));
-}
-
-pub(crate) fn on_close_top_menu(
-    _event: On<Start<CloseTopMenu>>,
-    mut writer: MessageWriter<MenuCmd>,
-) {
-    writer.write(MenuCmd::Close(None));
-}
 
 /// The root entity of one open menu instance and the state of its script handshake.
 #[derive(Component)]

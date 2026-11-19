@@ -51,3 +51,7 @@
 # Terrain
 - [x] Setup atmosphere
 - [x] I dont touch the floor, jumping also leaves me a little bit off the floor
+
+# Pause and resume
+- [x] when ~ menu is open pause the game exactly as it is, when the menu is closed, resume.
+- [ ] Use lua hook for pause/unpaused menus instead

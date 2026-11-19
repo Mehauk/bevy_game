@@ -49,7 +49,7 @@ impl Default for HtmlHotReloadState {
 
 /// Rebuild every open menu when its HTML or script changes on disk.
 pub(crate) fn reload_menus_on_asset_change(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut hot: ResMut<HtmlHotReloadState>,
     mut script_events: MessageReader<AssetEvent<ScriptAsset>>,
     q_roots: Query<&MenuRoot>,

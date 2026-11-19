@@ -5,6 +5,7 @@ use bevy_enhanced_input::prelude::*;
 use crate::{
     camera::{CameraRig, CameraSystems, CameraTarget, ViewMode},
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
+    state::PlayState,
     terrain::TerrainMap,
     utils::registry::commands::{CommandAppExt, CommandArgs, command},
 };
@@ -35,8 +36,16 @@ pub struct CharacterPlugin;
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_character)
-            .add_systems(FixedUpdate, (character_ground_check, character_physics_move).chain())
-            .add_systems(Update, character_rotate_body)
+            .add_systems(
+                FixedUpdate,
+                (character_ground_check, character_physics_move)
+                    .chain()
+                    .run_if(in_state(PlayState::Running)),
+            )
+            .add_systems(
+                Update,
+                character_rotate_body.run_if(in_state(PlayState::Running)),
+            )
             .add_systems(
                 PostUpdate,
                 sync_body_visibility
@@ -558,6 +567,7 @@ fn increase_character_speed(args: Res<CommandArgs>, mut character_query: Query<&
         );
     });
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

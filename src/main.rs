@@ -2,9 +2,11 @@ mod camera;
 mod character;
 mod input;
 mod menus;
+mod state;
 mod terrain;
 mod utils;
 
+use avian3d::prelude::*;
 use bevy::{
     asset::io::AssetSourceBuilder,
     dev_tools::fps_overlay::FpsOverlayPlugin,
@@ -17,13 +19,13 @@ use camera::CameraPlugin;
 use character::CharacterPlugin;
 use input::InputPlugin;
 use menus::MenuPlugin;
+use state::StatePlugin;
 use terrain::TerrainPlugin;
 use utils::{
     DevUtilsPlugin,
     ProfilerPlugin,
     registry::{commands::CommandRegistryPlugin, menus::MenuRegistryPlugin},
 };
-use avian3d::prelude::*;
 
 fn main() {
     let _ = std::fs::create_dir_all("mods");
@@ -46,6 +48,7 @@ fn main() {
             CommandRegistryPlugin,
             InputPlugin,
             MenuPlugin,
+            StatePlugin,
             DevUtilsPlugin,
             ProfilerPlugin,
             CameraPlugin,

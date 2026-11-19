@@ -28,6 +28,10 @@ impl MenuManager {
         !self.open_menus.is_empty()
     }
 
+    pub fn is_open(&self, name: &str) -> bool {
+        self.index_of(name).is_some()
+    }
+
     /// Nesting depth, used to layer each newly opened menu above the previous one.
     pub(crate) fn depth(&self) -> usize {
         self.open_menus.len()

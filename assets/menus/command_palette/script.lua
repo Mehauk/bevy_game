@@ -226,16 +226,10 @@ function on_menu_ready(menu_name, root_id)
     search_el = dom.get_by_id(root_id, "search")
     preview_el = dom.get_by_id(root_id, "suggestion_preview")
 
-    dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
-    dom.on(dom.get_by_id(root_id, "backdrop"), "right_click", "on_backdrop_click")
     dom.on(search_el, "text_change", "on_search_change")
     dom.on(search_el, "key_down", "on_search_key")
 
     rebuild_list("")
-end
-
-function on_backdrop_click()
-    close_palette()
 end
 
 function on_search_change(_, text)
@@ -246,7 +240,7 @@ function on_search_key(_, ev)
     local count = #visible
     local key = ev.key
 
-    if key == "Escape" then
+    if key == "Escape" or (key == "Backquote" and not ev["repeat"]) then
         close_palette()
     elseif key == "ArrowDown" then
         if count > 0 then
@@ -286,9 +280,10 @@ function on_search_key(_, ev)
             end
         end
 
-        close_palette()
         if full_command ~= "" then
             commands.run(full_command)
+            dom.set_value(search_el, "")
+            rebuild_list("")
         end
     end
 end

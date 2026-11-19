@@ -215,21 +215,22 @@ fn on_release_cursor(_event: On<Start<ReleaseCursor>>, mut wanted_lock: ResMut<W
 fn sync_cursor_with_menus(
     wanted_lock: Res<WantedCursorLock>,
     menu_manager: Res<MenuManager>,
-    mut prev_locked: Local<Option<bool>>,
-    mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
+    primary_window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
 ) {
-    let should_lock = wanted_lock.0 && !menu_manager.any_open();
-    if *prev_locked == Some(should_lock) {
-        return;
-    }
-    *prev_locked = Some(should_lock);
+    let (window, mut cursor_options) = primary_window.into_inner();
+    let should_lock = wanted_lock.0 && !menu_manager.any_open() && window.focused;
 
-    if should_lock {
-        cursor_options.visible = false;
-        cursor_options.grab_mode = CursorGrabMode::Locked;
+    let (desired_visible, desired_grab) = if should_lock {
+        (false, CursorGrabMode::Locked)
     } else {
-        cursor_options.visible = true;
-        cursor_options.grab_mode = CursorGrabMode::None;
+        (true, CursorGrabMode::None)
+    };
+
+    if cursor_options.visible != desired_visible {
+        cursor_options.visible = desired_visible;
+    }
+    if cursor_options.grab_mode != desired_grab {
+        cursor_options.grab_mode = desired_grab;
     }
 }
 

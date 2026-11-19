@@ -144,25 +144,50 @@ pub fn set_context_active<C: Component>(commands: &mut Commands, entity: Entity,
 }
 
 /// Push menu-open state onto the two input contexts. Runs in `PreUpdate` and only emits
-/// commands when the state actually flips.
+/// commands when the state actually flips (or once close-time inputs are released).
 fn sync_context_activity(
     menu_manager: Res<MenuManager>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut prev_open: Local<Option<bool>>,
+    mut held_keys_on_close: Local<Vec<KeyCode>>,
+    mut held_buttons_on_close: Local<Vec<MouseButton>>,
     q_gameplay: Query<Entity, With<GameplayInput>>,
     q_menu: Query<Entity, With<MenuInput>>,
     mut commands: Commands,
 ) {
     let open = menu_manager.any_open();
-    if *prev_open == Some(open) {
-        return;
+    let transitioned = *prev_open != Some(open);
+    if transitioned {
+        *prev_open = Some(open);
+        for entity in &q_menu {
+            set_context_active::<MenuInput>(&mut commands, entity, open);
+        }
+        if open {
+            held_keys_on_close.clear();
+            held_buttons_on_close.clear();
+            for entity in &q_gameplay {
+                set_context_active::<GameplayInput>(&mut commands, entity, false);
+            }
+            return;
+        }
+        // Delay re-activating GameplayInput until any keys or buttons still held when
+        // the menu closed (e.g. Esc or ~) are released, so they cannot immediately fire
+        // ReleaseCursor or re-open the menu.
+        *held_keys_on_close = keys.get_pressed().copied().collect();
+        *held_buttons_on_close = mouse_buttons.get_pressed().copied().collect();
     }
-    *prev_open = Some(open);
 
-    for entity in &q_gameplay {
-        set_context_active::<GameplayInput>(&mut commands, entity, !open);
-    }
-    for entity in &q_menu {
-        set_context_active::<MenuInput>(&mut commands, entity, open);
+    if !open
+        && (transitioned || !held_keys_on_close.is_empty() || !held_buttons_on_close.is_empty())
+    {
+        held_keys_on_close.retain(|k| keys.pressed(*k));
+        held_buttons_on_close.retain(|b| mouse_buttons.pressed(*b));
+        if held_keys_on_close.is_empty() && held_buttons_on_close.is_empty() {
+            for entity in &q_gameplay {
+                set_context_active::<GameplayInput>(&mut commands, entity, true);
+            }
+        }
     }
 }
 

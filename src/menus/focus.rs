@@ -27,18 +27,14 @@ pub(crate) fn track_and_maintain_menu_focus(
         return;
     }
 
-    if let Some(current) = focus.get() {
-        if q_inputs.contains(current) {
-            state.last_focused = Some(current);
-        }
-    } else if let Some(last) = state.last_focused {
-        if q_inputs.contains(last) {
-            focus.set(last, FocusCause::Navigated);
-        } else {
-            state.last_focused = None;
-        }
+    if let Some(current) = focus.get().filter(|&e| q_inputs.contains(e)) {
+        state.last_focused = Some(current);
+    } else if let Some(last) = state.last_focused.filter(|&e| q_inputs.contains(e)) {
+        focus.set(last, FocusCause::Navigated);
     } else if let Some(af) = q_autofocus.iter().next() {
         focus.set(af, FocusCause::Auto);
         state.last_focused = Some(af);
+    } else {
+        state.last_focused = None;
     }
 }

@@ -20,6 +20,8 @@
   - [x] add commands to increase character base speed and sprint
     - [x] this command will take parameters space separated
 - [x] make the command list scrollable keeping the selected one at the bottom
+- [x] The bottom sheet takes the entire screen it should only take a third of the screen
+- [x] in the skyrim ~ menu you tyoe in line (the only diff for ours should be an extra floating scrollable autofill/suggestions chooser, which we already have but need to be placed better)
 
 # Hotkeys
 - [x] use bevy_enhanced_input
@@ -41,6 +43,7 @@
 - [x] Move all the keybinding `rules` out of the game engine and into the lua script? Im okay with the rules being ephimeral.
 - [x] when remapping a movement key, show lock icons on the illegal placements
 - [x] when remapping keys, right click should cancel
+- [x] Add hotkey for toggling fps overlay
 
 # Camera
 - [x] zoom to switch between views + zoom out more (using shift + scroll wheel)

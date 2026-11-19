@@ -2,6 +2,9 @@
     position: absolute;
     width: 100%;
     height: 100%;
+    /* column, not the default row: with row, justify-content pushed the sheet
+       right and align-items stretched it to the full screen height */
+    flex-direction: column;
     justify-content: flex-end;
     align-items: stretch;
 }
@@ -15,6 +18,8 @@
 
 .bottom-sheet {
     width: 100%;
+    /* Skyrim-console style: the sheet owns the bottom third of the screen */
+    height: 33%;
     padding: 12px 20px 14px 20px;
     row-gap: 8px;
     flex-direction: column;
@@ -41,9 +46,19 @@
     color: #4F92FF;
 }
 
+/* Preview + typed line as one bottom-hugging block, Skyrim-style: the Tab
+   autocomplete hint sits directly above the input, right-aligned toward the caret. */
+.input-section {
+    width: 100%;
+    flex-direction: column;
+    row-gap: 4px;
+}
+
 .suggestion-preview {
+    width: 100%;
     font-size: 13px;
     color: #8DA0C2;
+    text-align: right;
 }
 
 .console-hint {
@@ -51,12 +66,17 @@
     color: #6A7285;
 }
 
-/* Exactly fits VISIBLE_ROWS (5) rows: 5 * (26 min-height + 8 padding) + 4 * 3 gap = 182.
-   The Lua script renders only this many rows and scrolls the window with the
-   selection pinned to the bottom. */
+/* Base height exactly fits VISIBLE_ROWS (5) rows: 5 * (26 min-height + 8 padding)
+   + 4 * 3 gap = 182. The Lua script renders only this many rows and scrolls the
+   window with the selection pinned to the bottom. flex-grow lets the area fill the
+   sheet while justify-content keeps the rows hugging the input line, so the chooser
+   floats just above the typed line and grows upward (Skyrim-style). */
 .palette-list {
     width: 100%;
     height: 182px;
+    flex-grow: 1;
+    flex-shrink: 1;
+    justify-content: flex-end;
     flex-direction: column;
     row-gap: 3px;
     overflow: hidden;

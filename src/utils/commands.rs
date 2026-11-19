@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::VecDeque};
+use std::collections::VecDeque;
 
 use bevy::{ecs::system::SystemId, prelude::*};
 use bevy_mod_scripting::bindings::{
@@ -7,7 +7,7 @@ use bevy_mod_scripting::bindings::{
     script_value::ScriptValue,
 };
 
-use crate::utils::script_map;
+use crate::utils::{script_map, script_str};
 
 #[macro_export]
 macro_rules! command {
@@ -60,14 +60,8 @@ impl Plugin for CommandRegistryPlugin {
                             .iter()
                             .map(|cmd| {
                                 script_map([
-                                    (
-                                        "name",
-                                        ScriptValue::String(Cow::Owned(cmd.name.clone())),
-                                    ),
-                                    (
-                                        "description",
-                                        ScriptValue::String(Cow::Borrowed(cmd.description)),
-                                    ),
+                                    ("name", script_str(&cmd.name)),
+                                    ("description", script_str(cmd.description)),
                                 ])
                             })
                             .collect();

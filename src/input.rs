@@ -65,11 +65,7 @@ impl Plugin for InputPlugin {
 
 fn setup_gameplay_input(mut commands: Commands) {
     let gameplay_entity = commands
-        .spawn((
-            GameplayInput,
-            ContextActive(true),
-            ContextActivity::<GameplayInput>::ACTIVE,
-        ))
+        .spawn((GameplayInput, ContextActive(true), ContextActivity::<GameplayInput>::ACTIVE))
         .id();
     commands.insert_resource(GameplayInputEntity(gameplay_entity));
 }
@@ -201,29 +197,6 @@ pub fn parse_key_code(s: &str) -> Option<KeyCode> {
         Semicolon, Quote, Comma, Period, Slash,
         ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
     )
-}
-
-pub fn format_binding_chain(mods: &ModKeys, key_str: &str, label: Option<&str>) -> String {
-    let mut parts = Vec::new();
-    if mods.contains(ModKeys::CONTROL) {
-        parts.push("Ctrl");
-    }
-    if mods.contains(ModKeys::SHIFT) {
-        parts.push("Shift");
-    }
-    if mods.contains(ModKeys::ALT) {
-        parts.push("Alt");
-    }
-    if mods.contains(ModKeys::SUPER) {
-        parts.push("Super");
-    }
-    parts.push(key_str);
-    let chain = parts.join(" + ");
-    if let Some(lbl) = label {
-        format!("{chain} ({lbl})")
-    } else {
-        chain
-    }
 }
 
 /// Canonical display name for a mouse button, shared by binding serialization and
@@ -368,17 +341,15 @@ fn sync_context_activity(
 }
 
 fn sync_hotkey_registry(
+    // Changed<T> also fires on insertion, so Added<T> arms would be redundant.
     q_changed: Query<
         (),
         Or<(
-            Added<Binding>,
             Changed<Binding>,
             Changed<BindingOf>,
-            Added<HotkeyLabel>,
             Changed<HotkeyLabel>,
-            Added<ActionContext>,
             Changed<ActionContext>,
-            Added<MovementBinding>,
+            Changed<MovementBinding>,
         )>,
     >,
     mut removed_bindings: RemovedComponents<Binding>,
@@ -435,8 +406,6 @@ struct BindingSnapshot {
     entity: Entity,
     key: String,
     mods: ModKeys,
-    context: String,
-    is_movement: bool,
     label: Option<String>,
 }
 
@@ -446,75 +415,24 @@ impl BindingSnapshot {
     }
 }
 
-/// Validate assigning `(key, mods)` to a binding whose action is (or isn't) a movement binding.
-/// Movement keys must stay modifier-free and outside any hotkey chain; hotkey chains must not
-/// land on a movement key. `chain_exclude` lists bindings allowed to share `key` with modifiers
-/// (the pair being swapped).
-fn validate_placement(
-    snapshots: &[BindingSnapshot],
-    key: &str,
-    mods: ModKeys,
-    is_movement: bool,
-    chain_exclude: &[Entity],
-) -> Result<(), String> {
-    if is_movement {
-        if !mods.is_empty() {
-            return Err("Movement keys cannot have modifier keys".to_string());
-        }
-        if let Some(chain_desc) = snapshots.iter().find_map(|s| {
-            (!chain_exclude.contains(&s.entity)
-                && s.key.eq_ignore_ascii_case(key)
-                && !s.mods.is_empty())
-                .then(|| format_binding_chain(&s.mods, &s.key, s.label.as_deref()))
-        }) {
-            return Err(format!(
-                "Cannot remap movement key to '{key}': key is part of hotkey chain '{chain_desc}'"
-            ));
-        }
-    } else if !mods.is_empty()
-        && snapshots
-            .iter()
-            .any(|s| s.is_movement && s.key.eq_ignore_ascii_case(key))
-    {
-        return Err(format!("Cannot bind hotkey chain to movement key '{key}'"));
-    }
-    Ok(())
-}
-
 fn handle_remap_bindings(
     mut messages: MessageReader<RemapBindingMessage>,
-    q_bindings: Query<(
-        Entity,
-        &Binding,
-        &BindingOf,
-        Option<&HotkeyLabel>,
-        Option<&MovementBinding>,
-    )>,
-    q_actions: Query<(Option<&HotkeyLabel>, Option<&ActionContext>)>,
+    q_bindings: Query<(Entity, &Binding, &BindingOf, Option<&HotkeyLabel>)>,
+    q_actions: Query<Option<&HotkeyLabel>>,
     mut commands: Commands,
     mut remap_status: ResMut<RemapStatus>,
 ) {
     for msg in messages.read() {
-        if msg.source_key.eq_ignore_ascii_case("MouseMotion")
-            || msg.target_key.eq_ignore_ascii_case("MouseMotion")
-        {
-            warn!("Aim/Look cannot be rebound");
-            remap_status.set_error("Aim/Look cannot be rebound".to_string());
-            continue;
-        }
-
         let binding_snapshots: Vec<BindingSnapshot> = q_bindings
             .iter()
-            .filter_map(|(e, b, b_of, lbl, mov)| {
+            .filter_map(|(e, b, b_of, lbl)| {
                 let (key, mods) = binding_key_and_mods(b)?;
-                let (_, ctx) = q_actions.get(b_of.get()).ok().unwrap_or((None, None));
+                let action_label = q_actions.get(b_of.get()).ok().flatten();
                 Some(BindingSnapshot {
                     entity: e,
                     key,
                     mods,
-                    context: ctx.map_or("unknown", |c| c.name).to_string(),
-                    is_movement: mov.is_some(),
-                    label: lbl.map(|l| l.0.to_string()),
+                    label: lbl.or(action_label).map(|l| l.0.to_string()),
                 })
             })
             .collect();
@@ -532,12 +450,6 @@ fn handle_remap_bindings(
             continue;
         };
 
-        if source.context != "gameplay" {
-            warn!("Cannot remap non-gameplay binding '{}'", source.key);
-            remap_status.set_error("Only gameplay keybinds can be remapped".to_string());
-            continue;
-        }
-
         let Some(target_code) = parse_input_code(&msg.target_key) else {
             remap_status.set_error(format!("Unknown key or button '{}'", msg.target_key));
             continue;
@@ -547,62 +459,29 @@ fn handle_remap_bindings(
         let source_label = source.display_label();
 
         let result = match target {
-            None => validate_placement(
-                &binding_snapshots,
-                &msg.target_key,
-                msg.target_mods,
-                source.is_movement,
-                &[source.entity],
-            )
-            .map(|()| {
+            None => {
                 commands
                     .entity(source.entity)
                     .insert(target_code.to_binding(msg.target_mods));
-                format!("Remapped '{source_label}' to '{}'", msg.target_key)
-            }),
-            Some(target) => {
-                if target.context != "gameplay" {
-                    Err(format!(
-                        "Cannot swap with non-gameplay keybind '{}'",
+                Ok(format!("Remapped '{source_label}' to '{}'", msg.target_key))
+            }
+            Some(target) => match parse_input_code(&source.key) {
+                Some(source_code) => {
+                    commands
+                        .entity(source.entity)
+                        .insert(target_code.to_binding(target.mods));
+                    commands
+                        .entity(target.entity)
+                        .insert(source_code.to_binding(source.mods));
+                    Ok(format!(
+                        "Swapped '{source_label}' ({}) <-> '{}' ({})",
+                        source.key,
+                        target.display_label(),
                         target.key
                     ))
-                } else {
-                    let source_code = parse_input_code(&source.key);
-                    match source_code {
-                        None => Err(format!("Unknown key or button '{}'", source.key)),
-                        Some(source_code) => validate_placement(
-                            &binding_snapshots,
-                            &msg.target_key,
-                            msg.target_mods,
-                            source.is_movement,
-                            &[source.entity, target.entity],
-                        )
-                        .and_then(|()| {
-                            validate_placement(
-                                &binding_snapshots,
-                                &source.key,
-                                source.mods,
-                                target.is_movement,
-                                &[source.entity, target.entity],
-                            )
-                        })
-                        .map(|()| {
-                            commands
-                                .entity(source.entity)
-                                .insert(target_code.to_binding(target.mods));
-                            commands
-                                .entity(target.entity)
-                                .insert(source_code.to_binding(source.mods));
-                            format!(
-                                "Swapped '{source_label}' ({}) <-> '{}' ({})",
-                                source.key,
-                                target.display_label(),
-                                target.key
-                            )
-                        }),
-                    }
                 }
-            }
+                None => Err(format!("Unknown key or button '{}'", source.key)),
+            },
         };
 
         match result {
@@ -637,17 +516,15 @@ pub fn parse_mod_keys(val: &ScriptValue) -> ModKeys {
 
 pub fn current_modifier_flags(keys: &ButtonInput<KeyCode>) -> ModKeys {
     let mut mods = ModKeys::empty();
-    if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
-        mods |= ModKeys::CONTROL;
-    }
-    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
-        mods |= ModKeys::SHIFT;
-    }
-    if keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) {
-        mods |= ModKeys::ALT;
-    }
-    if keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]) {
-        mods |= ModKeys::SUPER;
+    for (pair, flag) in [
+        ([KeyCode::ControlLeft, KeyCode::ControlRight], ModKeys::CONTROL),
+        ([KeyCode::ShiftLeft, KeyCode::ShiftRight], ModKeys::SHIFT),
+        ([KeyCode::AltLeft, KeyCode::AltRight], ModKeys::ALT),
+        ([KeyCode::SuperLeft, KeyCode::SuperRight], ModKeys::SUPER),
+    ] {
+        if keys.any_pressed(pair) {
+            mods |= flag;
+        }
     }
     mods
 }

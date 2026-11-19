@@ -119,12 +119,28 @@ impl Default for CameraTarget {
     }
 }
 
-fn setup_camera(mut commands: Commands) {
-    let reset_settings = ActionSettings {
-        require_reset: true,
-        ..default()
-    };
+fn spawn_gameplay_action<A: InputAction>(
+    commands: &mut Commands,
+    cam_entity: Entity,
+    label: &'static str,
+    reset: bool,
+    binding: Binding,
+) {
+    let action = commands
+        .spawn((
+            Action::<A>::new(),
+            ActionOf::<GameplayInput>::new(cam_entity),
+            ActionSettings {
+                require_reset: reset,
+                ..default()
+            },
+            HotkeyLabel(label),
+        ))
+        .id();
+    commands.spawn((binding, BindingOf(action)));
+}
 
+fn setup_camera(mut commands: Commands) {
     let cam_entity = commands
         .spawn((
             MainCamera,
@@ -137,62 +153,43 @@ fn setup_camera(mut commands: Commands) {
         ))
         .id();
 
-    let look_action = commands
-        .spawn((
-            Action::<Look>::new(),
-            ActionOf::<GameplayInput>::new(cam_entity),
-            HotkeyLabel("Camera Look"),
-        ))
-        .id();
-    commands.spawn((Binding::mouse_motion(), BindingOf(look_action)));
-
-    let toggle_action = commands
-        .spawn((
-            Action::<ToggleViewMode>::new(),
-            ActionOf::<GameplayInput>::new(cam_entity),
-            reset_settings,
-            HotkeyLabel("Toggle 1st/3rd View"),
-        ))
-        .id();
-    commands.spawn((
+    spawn_gameplay_action::<Look>(
+        &mut commands,
+        cam_entity,
+        "Camera Look",
+        false,
+        Binding::mouse_motion(),
+    );
+    spawn_gameplay_action::<ToggleViewMode>(
+        &mut commands,
+        cam_entity,
+        "Toggle 1st/3rd View",
+        true,
         Binding::from(KeyCode::KeyF.with_mod_keys(ModKeys::SHIFT)),
-        BindingOf(toggle_action),
-    ));
-
-    let grab_action = commands
-        .spawn((
-            Action::<GrabCursor>::new(),
-            ActionOf::<GameplayInput>::new(cam_entity),
-            reset_settings,
-            HotkeyLabel("Grab Cursor"),
-        ))
-        .id();
-    commands.spawn((Binding::from(MouseButton::Left), BindingOf(grab_action)));
-
-    let release_action = commands
-        .spawn((
-            Action::<ReleaseCursor>::new(),
-            ActionOf::<GameplayInput>::new(cam_entity),
-            reset_settings,
-            HotkeyLabel("Unlock Cursor"),
-        ))
-        .id();
-    commands.spawn((Binding::from(KeyCode::Escape), BindingOf(release_action)));
-
-    let zoom_action = commands
-        .spawn((
-            Action::<ZoomCamera>::new(),
-            ActionOf::<GameplayInput>::new(cam_entity),
-            reset_settings,
-            HotkeyLabel("Zoom Camera"),
-        ))
-        .id();
-    commands.spawn((
+    );
+    spawn_gameplay_action::<GrabCursor>(
+        &mut commands,
+        cam_entity,
+        "Grab Cursor",
+        true,
+        Binding::from(MouseButton::Left),
+    );
+    spawn_gameplay_action::<ReleaseCursor>(
+        &mut commands,
+        cam_entity,
+        "Unlock Cursor",
+        true,
+        Binding::from(KeyCode::Escape),
+    );
+    spawn_gameplay_action::<ZoomCamera>(
+        &mut commands,
+        cam_entity,
+        "Zoom Camera",
+        true,
         Binding::MouseWheel {
             mod_keys: ModKeys::SHIFT | ModKeys::CONTROL,
         },
-        BindingOf(zoom_action),
-    ));
+    );
 }
 
 fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
@@ -261,28 +258,20 @@ fn on_camera_zoom(
     }
 
     if scroll_y > 0.0 {
-        // Zoom in
-        match rig.view_mode {
-            ViewMode::FirstPerson => {}
-            ViewMode::ThirdPerson => {
-                rig.distance -= ZOOM_STEP;
-                if rig.distance < MIN_THIRD_PERSON_DIST {
-                    rig.distance = MIN_THIRD_PERSON_DIST;
-                    rig.view_mode = ViewMode::FirstPerson;
-                }
+        // Zoom in; going past the minimum distance collapses into first person.
+        if rig.view_mode == ViewMode::ThirdPerson {
+            rig.distance -= ZOOM_STEP;
+            if rig.distance < MIN_THIRD_PERSON_DIST {
+                rig.distance = MIN_THIRD_PERSON_DIST;
+                rig.view_mode = ViewMode::FirstPerson;
             }
         }
+    } else if rig.view_mode == ViewMode::FirstPerson {
+        // Zoom out from first person pops back to third person at the minimum distance.
+        rig.view_mode = ViewMode::ThirdPerson;
+        rig.distance = MIN_THIRD_PERSON_DIST + ZOOM_STEP;
     } else {
-        // Zoom out
-        match rig.view_mode {
-            ViewMode::FirstPerson => {
-                rig.view_mode = ViewMode::ThirdPerson;
-                rig.distance = MIN_THIRD_PERSON_DIST + ZOOM_STEP;
-            }
-            ViewMode::ThirdPerson => {
-                rig.distance = (rig.distance + ZOOM_STEP).min(MAX_ZOOM_DIST);
-            }
-        }
+        rig.distance = (rig.distance + ZOOM_STEP).min(MAX_ZOOM_DIST);
     }
 }
 

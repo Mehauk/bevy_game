@@ -69,7 +69,7 @@ Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
 | --- | --- |
 | `input.list_bindings()` | List of all bound actions: `{ key, label, context, active, is_movement, ctrl, shift, alt, super }`. `context` is `"gameplay"`, `"menu"`, or `"unknown"`. |
 | `input.active_modifiers()` | Modifier map of physically held modifiers. |
-| `input.remap(source_key, source_mods, target_key, target_mods)` | Request a remap (or swap, if the target is already bound). Only gameplay bindings can be remapped; movement keys can never carry modifiers or join a hotkey chain. Result arrives via `on_remap_result`. |
+| `input.remap(source_key, source_mods, target_key, target_mods)` | Request a remap (or swap, if the target is already bound). Keybinding rules (gameplay-only, Aim/Look lock, movement-key modifier/chain restrictions) are enforced by the menu script. Result arrives via `on_remap_result`. |
 | `input.remap_status()` | `{ success, message, version }` of the last remap. |
 
 ## `commands` namespace

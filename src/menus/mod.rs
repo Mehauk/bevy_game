@@ -143,11 +143,7 @@ struct CloseTopMenu;
 
 fn setup_menu_input(mut commands: Commands) {
     let menu_ctx = commands
-        .spawn((
-            MenuInput,
-            ContextActive(false),
-            ContextActivity::<MenuInput>::INACTIVE,
-        ))
+        .spawn((MenuInput, ContextActive(false), ContextActivity::<MenuInput>::INACTIVE))
         .id();
 
     let close_action = commands
@@ -383,30 +379,19 @@ impl NodeSpec {
 
     fn from_script_opts(tag: String, opts: ScriptValue) -> Self {
         let tag_lower = tag.to_ascii_lowercase();
-        let default_mouse = matches!(tag_lower.as_str(), "input" | "button");
         let mut spec = Self {
+            mouse_input: matches!(tag_lower.as_str(), "input" | "button"),
             tag: tag_lower,
-            mouse_input: default_mouse,
             ..default()
         };
         let ScriptValue::Map(map) = opts else {
             return spec;
         };
-        if let Some(ScriptValue::String(id)) = map.get("id") {
-            spec.id = Some(id.to_string());
-        }
-        if let Some(ScriptValue::String(cls)) = map.get("class") {
-            spec.classes = split_classes(cls);
-        }
-        if let Some(ScriptValue::String(text)) = map.get("text") {
-            spec.text = text.to_string();
-        }
-        if let Some(ScriptValue::Bool(af)) = map.get("autofocus") {
-            spec.autofocus = *af;
-        }
-        if let Some(ScriptValue::Bool(m)) = map.get("mouse") {
-            spec.mouse_input = *m;
-        }
+        if let Some(ScriptValue::String(s)) = map.get("id") { spec.id = Some(s.to_string()); }
+        if let Some(ScriptValue::String(c)) = map.get("class") { spec.classes = split_classes(c); }
+        if let Some(ScriptValue::String(t)) = map.get("text") { spec.text = t.to_string(); }
+        if let Some(ScriptValue::Bool(b)) = map.get("autofocus") { spec.autofocus = *b; }
+        if let Some(ScriptValue::Bool(b)) = map.get("mouse") { spec.mouse_input = *b; }
         spec
     }
 }
@@ -526,22 +511,26 @@ struct DomEventCtx<'w, 's> {
 }
 
 impl DomEventCtx<'_, '_> {
-    fn has_handler(&self, target: Entity, event: &str) -> bool {
+    /// Nearest ancestor of `target` (inclusive) that has a handler for `event`, with the handler name.
+    fn find_handler(&self, target: Entity, event: &str) -> Option<(Entity, String)> {
         std::iter::once(target)
             .chain(self.parents.iter_ancestors(target))
-            .any(|e| self.handlers.get(e).is_ok_and(|h| h.0.contains_key(event)))
+            .find_map(|e| {
+                self.handlers
+                    .get(e)
+                    .ok()
+                    .and_then(|h| h.0.get(event).map(|s| (e, s.clone())))
+            })
+    }
+
+    fn has_handler(&self, target: Entity, event: &str) -> bool {
+        self.find_handler(target, event).is_some()
     }
 
     fn emit(&mut self, target: Entity, event: &str, payload: ScriptValue) -> bool {
-        let target_with_handler = std::iter::once(target)
-            .chain(self.parents.iter_ancestors(target))
-            .find(|&e| self.handlers.get(e).is_ok_and(|h| h.0.contains_key(event)));
-
-        let Some(target_entity) = target_with_handler else {
+        let Some((target_entity, handler)) = self.find_handler(target, event) else {
             return false;
         };
-
-        let handler = self.handlers.get(target_entity).unwrap().0.get(event).unwrap().clone();
 
         let Some((menu_entity, root)) = std::iter::once(target_entity)
             .chain(self.parents.iter_ancestors(target_entity))
@@ -594,12 +583,10 @@ fn on_dom_key_input(
     if !event.input.state.is_pressed() || !ctx.has_handler(target, "key_down") {
         return;
     }
-    if matches!(
-        event.input.key_code,
-        KeyCode::ArrowDown | KeyCode::ArrowUp | KeyCode::Tab | KeyCode::Enter
-    ) {
+    let key = event.input.key_code;
+    if matches!(key, KeyCode::ArrowDown | KeyCode::ArrowUp | KeyCode::Tab | KeyCode::Enter) {
         event.propagate(false);
-        if event.input.repeat && matches!(event.input.key_code, KeyCode::Tab | KeyCode::Enter) {
+        if event.input.repeat && matches!(key, KeyCode::Tab | KeyCode::Enter) {
             return;
         }
     }
@@ -678,18 +665,14 @@ fn reload_menus_on_asset_change(
 ) {
     let modified_scripts: Vec<AssetId<ScriptAsset>> = script_events
         .read()
-        .filter_map(|e| match e {
-            AssetEvent::Modified { id } => Some(*id),
-            _ => None,
-        })
+        .filter_map(|e| if let AssetEvent::Modified { id } = e { Some(*id) } else { None })
         .collect();
 
-    let script_modified = !modified_scripts.is_empty()
-        && q_roots.iter().any(|r| {
-            r.script
-                .as_ref()
-                .is_some_and(|h| modified_scripts.contains(&h.id()))
-        });
+    let script_modified = q_roots.iter().any(|r| {
+        r.script
+            .as_ref()
+            .is_some_and(|h| modified_scripts.contains(&h.id()))
+    });
 
     let html_modified = hot.timer.tick(time.delta()).just_finished()
         && q_roots.iter().any(|r| {
@@ -707,14 +690,7 @@ fn reload_menus_on_asset_change(
                 .iter()
                 .map(|(name, _)| name.clone())
                 .collect();
-            while let Some(top) = world
-                .resource::<MenuManager>()
-                .open_menus
-                .len()
-                .checked_sub(1)
-            {
-                close_menu_at(world, top);
-            }
+            while close_top_menu(world) {}
             for name in names {
                 open_menu_in_world(world, &name);
             }
@@ -738,38 +714,16 @@ fn handle_menu_commands(
             match cmd {
                 MenuCmd::Open(name) => open_menu_in_world(world, &name),
                 MenuCmd::Close(Some(name)) => {
-                    if let Some(i) = world
-                        .resource::<MenuManager>()
-                        .open_menus
-                        .iter()
-                        .rposition(|(n, _)| n == &name)
-                    {
-                        close_menu_at(world, i);
-                    }
+                    close_menu_by_name(world, &name);
                 }
                 MenuCmd::Close(None) => {
-                    if let Some(top) = world
-                        .resource::<MenuManager>()
-                        .open_menus
-                        .len()
-                        .checked_sub(1)
-                    {
-                        close_menu_at(world, top);
-                    }
+                    close_top_menu(world);
                 }
             }
         }
         for name in toggle_list {
-            let pos = world
-                .resource::<MenuManager>()
-                .open_menus
-                .iter()
-                .rposition(|(n, _)| n == &name);
-            match pos {
-                Some(i) => {
-                    close_menu_at(world, i);
-                }
-                None => open_menu_in_world(world, &name),
+            if !close_menu_by_name(world, &name) {
+                open_menu_in_world(world, &name);
             }
         }
     });
@@ -821,11 +775,7 @@ fn dispatch_modifier_changes(
     }
 
     let mods = crate::input::current_modifier_flags(&keys);
-    let mut pressed: Vec<String> = keys
-        .get_pressed()
-        .map(|k| format!("{k:?}"))
-        .collect();
-
+    let mut pressed: Vec<String> = keys.get_pressed().map(|k| format!("{k:?}")).collect();
     for mb in mouse_buttons.get_pressed() {
         if let Some(name) = mouse_button_name(*mb) {
             pressed.push(name.to_string());
@@ -842,10 +792,7 @@ fn dispatch_modifier_changes(
     pressed.sort();
     pressed.dedup();
 
-    let mut just_pressed: Vec<String> = keys
-        .get_just_pressed()
-        .map(|k| format!("{k:?}"))
-        .collect();
+    let mut just_pressed: Vec<String> = keys.get_just_pressed().map(|k| format!("{k:?}")).collect();
     for mb in mouse_buttons.get_just_pressed() {
         if let Some(name) = mouse_button_name(*mb) {
             just_pressed.push(name.to_string());
@@ -984,17 +931,15 @@ fn apply_dom_ops(world: &mut World) {
                     let Some(node) = rt.nodes.get_mut(&id) else {
                         continue;
                     };
-                    let changed = if add {
-                        !node.classes.contains(&cls) && {
-                            node.classes.push(cls);
-                            true
+                    let len = node.classes.len();
+                    if add {
+                        if !node.classes.contains(&cls) {
+                            node.classes.push(cls.clone());
                         }
                     } else {
-                        let len = node.classes.len();
                         node.classes.retain(|c| c != &cls);
-                        node.classes.len() != len
-                    };
-                    changed.then(|| node.classes.clone())
+                    }
+                    (node.classes.len() != len).then(|| node.classes.clone())
                 };
                 if let Some(classes) = updated
                     && let Ok(mut e) = world.get_entity_mut(entity)
@@ -1118,8 +1063,8 @@ fn spawn_node_entity(world: &mut World, id: i64, parent: Entity, spec: NodeSpec)
     e.id()
 }
 
-fn close_menu_at(world: &mut World, pos: usize) -> String {
-    let (name, root) = world.resource_mut::<MenuManager>().open_menus.remove(pos);
+fn close_menu_at(world: &mut World, pos: usize) {
+    let (_, root) = world.resource_mut::<MenuManager>().open_menus.remove(pos);
     if let Ok(e) = world.get_entity_mut(root) {
         // Bevy 0.20 `despawn()` recursively despawns children.
         e.despawn();
@@ -1129,7 +1074,29 @@ fn close_menu_at(world: &mut World, pos: usize) -> String {
         world.resource_mut::<InputFocus>().clear();
         world.resource_mut::<MenuFocusState>().last_focused = None;
     }
-    name
+}
+
+/// Close the topmost open menu; returns whether one was open.
+fn close_top_menu(world: &mut World) -> bool {
+    let Some(top) = world.resource::<MenuManager>().open_menus.len().checked_sub(1) else {
+        return false;
+    };
+    close_menu_at(world, top);
+    true
+}
+
+/// Close the topmost instance of `name`; returns whether it was open.
+fn close_menu_by_name(world: &mut World, name: &str) -> bool {
+    let Some(pos) = world
+        .resource::<MenuManager>()
+        .open_menus
+        .iter()
+        .rposition(|(n, _)| n == name)
+    else {
+        return false;
+    };
+    close_menu_at(world, pos);
+    true
 }
 
 fn open_menu_in_world(world: &mut World, name: &str) {

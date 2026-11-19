@@ -13,14 +13,16 @@ pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
 pub const CAPSULE_RADIUS: f32 = 0.4;
 pub const CAPSULE_HEIGHT: f32 = 1.0;
 
-/// Ground probe `ShapeCaster` geometry (coupled: the probe hangs below the capsule origin).
+/// Ground probe `ShapeCaster` geometry (shares center with the capsule's bottom hemisphere).
 const GROUND_PROBE_RADIUS: f32 = 0.35;
-const GROUND_PROBE_OFFSET_Y: f32 = -0.6;
+const GROUND_PROBE_OFFSET_Y: f32 = -(CAPSULE_HEIGHT * 0.5);
 const GROUND_PROBE_MAX_DISTANCE: f32 = 0.5;
-/// Max probe travel distance that still counts as grounded.
-const GROUND_SNAP_DISTANCE: f32 = 0.45;
-/// Downward velocity applied to keep the character glued to slopes.
-const SLOPE_SNAP_MIN_DISTANCE: f32 = 0.05;
+/// Max capsule-to-ground gap that transitions from airborne to grounded.
+const GROUND_LAND_TOLERANCE: f32 = 0.04;
+/// Max capsule-to-ground gap that stays grounded while following slopes/steps down.
+const GROUND_SNAP_DISTANCE: f32 = 0.35;
+/// Downward velocity applied to keep the character flush with the ground/slopes.
+const SLOPE_SNAP_MIN_DISTANCE: f32 = 0.005;
 const SLOPE_SNAP_SPEED: f32 = 10.0;
 const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
 const MIN_GROUND_NORMAL_Y: f32 = 0.01;
@@ -264,33 +266,44 @@ fn setup_character(world: &mut World) {
 
 fn character_ground_check(
     time: Res<Time>,
-    mut query: Query<(&Character, &ShapeHits, &mut GroundState)>,
+    mut query: Query<(&Character, &ShapeHits, &LinearVelocity, &mut GroundState)>,
 ) {
     let dt = time.delta_secs();
-    for (character, hits, mut ground_state) in &mut query {
+    for (character, hits, velocity, mut ground_state) in &mut query {
         ground_state.jump_cooldown_timer = (ground_state.jump_cooldown_timer - dt).max(0.0);
 
-        if ground_state.jump_cooldown_timer > 0.0 {
+        let can_probe = ground_state.jump_cooldown_timer <= 0.0
+            && (ground_state.is_grounded || velocity.y <= 0.0);
+        let max_gap = if ground_state.is_grounded {
+            GROUND_SNAP_DISTANCE
+        } else {
+            GROUND_LAND_TOLERANCE
+        };
+
+        let hit = can_probe
+            .then(|| {
+                hits.iter_sorted().find_map(|hit| {
+                    if hit.normal1.angle_between(Vec3::Y) > character.max_slope_angle_rad {
+                        return None;
+                    }
+                    let normal = hit.normal1.normalize();
+                    let touch_distance =
+                        (CAPSULE_RADIUS - GROUND_PROBE_RADIUS) / normal.y.max(MIN_GROUND_NORMAL_Y);
+                    let gap = (hit.distance - touch_distance).max(0.0);
+                    (gap <= max_gap).then_some((normal, gap))
+                })
+            })
+            .flatten();
+
+        if let Some((normal, gap)) = hit {
+            ground_state.is_grounded = true;
+            ground_state.ground_normal = normal;
+            ground_state.ground_distance = gap;
+        } else {
             ground_state.is_grounded = false;
             ground_state.ground_normal = Vec3::Y;
             ground_state.ground_distance = 0.0;
-            continue;
         }
-
-        if let Some(hit) = hits.iter_sorted().next() {
-            if hit.distance <= GROUND_SNAP_DISTANCE
-                && hit.normal1.angle_between(Vec3::Y) <= character.max_slope_angle_rad
-            {
-                ground_state.is_grounded = true;
-                ground_state.ground_normal = hit.normal1.normalize();
-                ground_state.ground_distance = hit.distance;
-                continue;
-            }
-        }
-
-        ground_state.is_grounded = false;
-        ground_state.ground_normal = Vec3::Y;
-        ground_state.ground_distance = 0.0;
     }
 }
 
@@ -368,14 +381,10 @@ fn character_physics_move(
         } else {
             velocity.y = 0.0;
         }
+    } else if velocity.y < 0.0 || !jumping {
+        gravity_scale.0 = character.fall_gravity;
     } else {
-        if velocity.y < 0.0 {
-            gravity_scale.0 = character.fall_gravity;
-        } else if !jumping {
-            gravity_scale.0 = character.fall_gravity;
-        } else {
-            gravity_scale.0 = character.base_gravity;
-        }
+        gravity_scale.0 = character.base_gravity;
     }
 
     ground.jump_held_last_frame = jumping;

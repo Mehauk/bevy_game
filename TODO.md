@@ -35,13 +35,14 @@
 - [x] block any movement keys from ever being part of any hotkey chain
   - [x] also handle the case when the movement keys are remapped
     - [x] might also need to throw a warning if trying to remap movement keys to a key that is part of a hotkey chain
-    - [ ] BUG: when trying to move a key shift + f to f it doesnt work (probably doesnt work other way either)
-      - [ ] Also when i click a key to rebind it stays higlighted even when i move to differen un/modifier views
-- [ ] Move all the keybinding `rules` out of the game engine and into the lua script? Im okay with the rules being ephimeral.
+    - [x] BUG: when trying to move a key shift + f to f it doesnt work (probably doesnt work other way either)
+      - [x] Also when i click a key to rebind it stays higlighted even when i move to differen un/modifier views
+- [x] Move all the keybinding `rules` out of the game engine and into the lua script? Im okay with the rules being ephimeral.
+- [x] when remapping a movement key, show lock icons on the illegal placements
 
 # Camera
 - [x] zoom to switch between views + zoom out more (using shift + scroll wheel)
 
 # Terrain
 - [x] Setup atmosphere
-- [ ] I dont touch the floor, jumping also leaves me a little bit off the floor
+- [x] I dont touch the floor, jumping also leaves me a little bit off the floor

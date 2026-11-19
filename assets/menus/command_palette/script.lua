@@ -9,7 +9,8 @@ function on_dom_event(handler, node, payload)
     end
 end
 
-local MAX_ROWS = 15
+local MAX_ROWS = 100     -- cap on filtered entries kept
+local VISIBLE_ROWS = 5   -- rows that fit in .palette-list; keep in sync with style.css
 local current_menu_name = nil
 local all_commands = {}
 local visible = {}
@@ -112,6 +113,43 @@ local function segments_from_matches(candidate, matched)
     return segments
 end
 
+-- Renders only the window of rows that fits in .palette-list. The window is
+-- positioned so the selected row sits at the bottom of the list (Skyrim-console
+-- style) whenever enough rows remain above it to scroll.
+local function render_window()
+    dom.clear(list_el)
+
+    local count = #visible
+    local first = 1
+    if selected_index ~= nil then
+        local max_first = math.max(count - VISIBLE_ROWS + 1, 1)
+        first = math.min(math.max(selected_index - VISIBLE_ROWS + 1, 1), max_first)
+    end
+    local last = math.min(count, first + VISIBLE_ROWS - 1)
+
+    for i = first, last do
+        local entry = visible[i]
+        local row = dom.create(list_el, "node", {
+            class = (i == selected_index) and "row selected" or "row",
+        })
+
+        local name_el = dom.create(row, "text", { class = "cmd-name" })
+        for _, seg in ipairs(segments_from_matches(entry.cmd.name, entry.matched)) do
+            dom.create(name_el, "span", {
+                class = seg.matched and "cmd-match" or "cmd-name",
+                text = seg.text,
+            })
+        end
+
+        local desc = entry.cmd.description
+        if desc ~= nil and desc ~= "" then
+            dom.create(row, "text", { class = "cmd-desc", text = desc })
+        end
+
+        entry.el = row
+    end
+end
+
 local function update_preview()
     if preview_el == nil then return end
     if selected_index ~= nil and visible[selected_index] ~= nil then
@@ -123,13 +161,11 @@ local function update_preview()
 end
 
 local function set_selected(new_idx)
-    if selected_index ~= nil and visible[selected_index] ~= nil then
-        dom.remove_class(visible[selected_index].el, "selected")
+    if new_idx == selected_index then
+        return
     end
     selected_index = new_idx
-    if selected_index ~= nil and visible[selected_index] ~= nil then
-        dom.add_class(visible[selected_index].el, "selected")
-    end
+    render_window()
     update_preview()
 end
 
@@ -165,33 +201,14 @@ local function rebuild_list(raw_input)
         end)
     end
 
-    dom.clear(list_el)
-    visible = {}
-    local count = math.min(#scored, MAX_ROWS)
-    selected_index = (cmd_query ~= "" and count > 0) and 1 or nil
-
-    for i = 1, count do
-        local entry = scored[i]
-        local row = dom.create(list_el, "node", {
-            class = (i == selected_index) and "row selected" or "row",
-        })
-
-        local name_el = dom.create(row, "text", { class = "cmd-name" })
-        for _, seg in ipairs(segments_from_matches(entry.cmd.name, entry.matched)) do
-            dom.create(name_el, "span", {
-                class = seg.matched and "cmd-match" or "cmd-name",
-                text = seg.text,
-            })
-        end
-
-        local desc = entry.cmd.description
-        if desc ~= nil and desc ~= "" then
-            dom.create(row, "text", { class = "cmd-desc", text = desc })
-        end
-
-        visible[i] = { el = row, cmd = entry.cmd }
+    for i = #scored, MAX_ROWS + 1, -1 do
+        scored[i] = nil
     end
 
+    visible = scored
+    selected_index = (cmd_query ~= "" and #visible > 0) and 1 or nil
+
+    render_window()
     update_preview()
 end
 
@@ -203,6 +220,7 @@ function on_menu_ready(menu_name, root_id)
     preview_el = dom.get_by_id(root_id, "suggestion_preview")
 
     dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
+    dom.on(dom.get_by_id(root_id, "backdrop"), "right_click", "on_backdrop_click")
     dom.on(search_el, "text_change", "on_search_change")
     dom.on(search_el, "key_down", "on_search_key")
 

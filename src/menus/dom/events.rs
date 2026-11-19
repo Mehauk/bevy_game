@@ -9,6 +9,7 @@ use bevy::{
     input::keyboard::KeyboardInput,
     input_focus::FocusedInput,
     picking::events::{PointerClick, PointerOut, PointerOver},
+    picking::pointer::PointerButton,
     prelude::*,
     text::{EditableText, TextEdit, TextEditChange},
 };
@@ -84,7 +85,13 @@ impl DomEventCtx<'_, '_> {
 }
 
 pub(crate) fn on_dom_click(mut event: On<PointerClick>, mut ctx: DomEventCtx) {
-    if ctx.emit(event.event_target(), "click", ScriptValue::Unit) {
+    // The secondary button is its own event so menus can use right-click as a
+    // cancel/dismiss gesture without also triggering whatever `click` is bound to.
+    let event_name = match event.button {
+        PointerButton::Secondary => "right_click",
+        _ => "click",
+    };
+    if ctx.emit(event.event_target(), event_name, ScriptValue::Unit) {
         event.propagate(false);
     }
 }

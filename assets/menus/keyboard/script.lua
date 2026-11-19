@@ -106,6 +106,9 @@ local NON_REBIND_KEYS = {
     AltLeft = true, AltRight = true,
     SuperLeft = true, SuperRight = true,
     MouseMotion = true, MouseLeft = true,
+    -- Right-click is the cancel gesture while remapping; MouseRight itself is
+    -- still bindable by left-clicking the R-CLICK widget on the mouse diagram.
+    MouseRight = true,
 }
 
 local function mods_equal(a, b)
@@ -564,6 +567,8 @@ function on_menu_ready(_, root_id)
     local rows_container = dom.get_by_id(root_id, "keyboard_rows")
     local mouse_container = dom.get_by_id(root_id, "mouse_slots")
     dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
+    dom.on(dom.get_by_id(root_id, "backdrop"), "right_click", "on_backdrop_click")
+    dom.on(root_id, "right_click", "on_right_click")
 
     dom.clear(rows_container)
     key_widgets = {}
@@ -748,7 +753,7 @@ function on_key_widget_click(node_id)
             }
             refresh_keyboard()
             show_rebind_message(
-                "Press any key/button or click a key to remap '" .. b.label .. "' (Esc to cancel)",
+                "Press any key/button or click a key to remap '" .. b.label .. "' (Esc / right-click to cancel)",
                 nil
             )
         else
@@ -762,5 +767,13 @@ function on_backdrop_click()
         cancel_remapping()
     else
         menus.close_top()
+    end
+end
+
+-- Right-click anywhere in the menu cancels an in-progress rebind; outside a
+-- rebind it does nothing (the backdrop handles its own right-click to close).
+function on_right_click()
+    if remapping_source ~= nil then
+        cancel_remapping()
     end
 end

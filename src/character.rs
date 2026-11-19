@@ -27,6 +27,8 @@ const SLOPE_SNAP_SPEED: f32 = 10.0;
 const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
 const MIN_GROUND_NORMAL_Y: f32 = 0.01;
 const HORIZ_VEL_EPSILON: f32 = 0.001;
+/// Walk-speed delta assumed by `increase_speed` when no argument is given.
+const DEFAULT_SPEED_DELTA: f32 = 2.0;
 
 pub struct CharacterPlugin;
 
@@ -72,6 +74,9 @@ struct AlignToCamera;
 #[action_output(bool)]
 struct Jump;
 
+/// Bound and labelled so the keyboard overlay shows what Ctrl does, but crouching is not
+/// implemented — nothing reads this action. Left in place rather than removed so the overlay
+/// binding (and the user's expectation of it) is unchanged; see `refactor.md`.
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Crouch;
@@ -124,6 +129,68 @@ pub fn camera_relative_direction(move_vec: Vec2, cam_yaw: f32) -> Vec3 {
     let forward = yaw_rot * Vec3::NEG_Z;
     let right = yaw_rot * Vec3::X;
     right * move_vec.x + forward * move_vec.y
+}
+
+/// Distance the ground probe must travel before it is touching a surface with the given
+/// normal. The probe sphere is smaller than the capsule, so on a slope the probe touches
+/// later than the capsule body would — this is that correction.
+fn ground_touch_distance(normal_y: f32) -> f32 {
+    (CAPSULE_RADIUS - GROUND_PROBE_RADIUS) / normal_y.max(MIN_GROUND_NORMAL_Y)
+}
+
+/// Vertical gap between the capsule surface and the ground hit by the probe.
+fn ground_gap(hit_distance: f32, normal_y: f32) -> f32 {
+    (hit_distance - ground_touch_distance(normal_y)).max(0.0)
+}
+
+/// A surface is walkable while its normal stays within the character's max slope angle
+/// of straight up.
+fn is_walkable(normal: Vec3, max_slope_angle_rad: f32) -> bool {
+    normal.angle_between(Vec3::Y) <= max_slope_angle_rad
+}
+
+/// Ramp horizontal velocity toward `target`, capped so the change this step never exceeds
+/// `accel * dt`. Lands exactly on the target when close enough, so movement does not
+/// asymptotically crawl into full speed.
+fn accelerate_toward(current: Vec3, target: Vec3, accel: f32, dt: f32) -> Vec3 {
+    let diff = target - current;
+    let max_change = accel * dt;
+    if diff.length_squared() <= max_change * max_change {
+        target
+    } else {
+        current + diff.normalize() * max_change
+    }
+}
+
+/// A jump fires on the press *edge* only, and only while grounded with the cooldown
+/// spent — so holding the key does not bunny-hop.
+fn jump_fires(jumping: bool, held_last_frame: bool, grounded: bool, cooldown_left: f32) -> bool {
+    jumping && !held_last_frame && grounded && cooldown_left <= 0.0
+}
+
+/// Gravity while airborne is heavier once the character is falling or has released the
+/// jump key, which is what makes a short tap produce a short hop.
+fn air_gravity_scale(velocity_y: f32, jumping: bool, character: &Character) -> f32 {
+    if velocity_y < 0.0 || !jumping {
+        character.fall_gravity
+    } else {
+        character.base_gravity
+    }
+}
+
+/// Vertical velocity that keeps the character riding a slope instead of drifting off it.
+fn slope_tangent_y(vx: f32, vz: f32, normal: Vec3) -> f32 {
+    -(vx * normal.x + vz * normal.z) / normal.y
+}
+
+/// Downward speed used to close a `gap` to the ground when stepping down, ramped so the
+/// character settles without snapping or bouncing.
+fn slope_snap_speed(gap: f32) -> f32 {
+    if gap > SLOPE_SNAP_MIN_DISTANCE {
+        ((gap - SLOPE_SNAP_MIN_DISTANCE) * SLOPE_SNAP_SPEED).min(SLOPE_SNAP_MAX_SPEED)
+    } else {
+        0.0
+    }
 }
 
 fn spawn_translation(terrain: Option<&TerrainMap>) -> Vec3 {
@@ -283,13 +350,11 @@ fn character_ground_check(
         let hit = can_probe
             .then(|| {
                 hits.iter_sorted().find_map(|hit| {
-                    if hit.normal1.angle_between(Vec3::Y) > character.max_slope_angle_rad {
+                    let normal = hit.normal1.normalize();
+                    if !is_walkable(normal, character.max_slope_angle_rad) {
                         return None;
                     }
-                    let normal = hit.normal1.normalize();
-                    let touch_distance =
-                        (CAPSULE_RADIUS - GROUND_PROBE_RADIUS) / normal.y.max(MIN_GROUND_NORMAL_Y);
-                    let gap = (hit.distance - touch_distance).max(0.0);
+                    let gap = ground_gap(hit.distance, normal.y);
                     (gap <= max_gap).then_some((normal, gap))
                 })
             })
@@ -312,7 +377,6 @@ fn character_physics_move(
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
     jump_action: Single<&Action<Jump>>,
-    _crouch_action: Single<&Action<Crouch>>,
     cam_rig: Option<Single<&CameraRig>>,
     character_query: Single<(
         &Character,
@@ -344,21 +408,17 @@ fn character_physics_move(
         character.air_acceleration
     };
 
-    let mut current_horiz = Vec3::new(velocity.x, 0.0, velocity.z);
-    let diff = target_horiz - current_horiz;
-    let max_change = accel * dt;
-    if diff.length_squared() <= max_change * max_change {
-        current_horiz = target_horiz;
-    } else {
-        current_horiz += diff.normalize() * max_change;
-    }
+    let current_horiz = Vec3::new(velocity.x, 0.0, velocity.z);
+    let new_horiz = accelerate_toward(current_horiz, target_horiz, accel, dt);
+    velocity.x = new_horiz.x;
+    velocity.z = new_horiz.z;
 
-    velocity.x = current_horiz.x;
-    velocity.z = current_horiz.z;
-
-    let jump_just_pressed = jumping && !ground.jump_held_last_frame;
-
-    if jump_just_pressed && ground.is_grounded && ground.jump_cooldown_timer <= 0.0 {
+    if jump_fires(
+        jumping,
+        ground.jump_held_last_frame,
+        ground.is_grounded,
+        ground.jump_cooldown_timer,
+    ) {
         velocity.y = character.jump_speed;
         ground.is_grounded = false;
         ground.jump_cooldown_timer = character.jump_cooldown;
@@ -369,22 +429,13 @@ fn character_physics_move(
         let has_horiz_vel =
             velocity.x.abs() > HORIZ_VEL_EPSILON || velocity.z.abs() > HORIZ_VEL_EPSILON;
         if has_horiz_vel && ground.ground_normal.y > MIN_GROUND_NORMAL_Y {
-            let slope_tangent_y = -(velocity.x * ground.ground_normal.x + velocity.z * ground.ground_normal.z)
-                / ground.ground_normal.y;
-            let snap = if ground.ground_distance > SLOPE_SNAP_MIN_DISTANCE {
-                ((ground.ground_distance - SLOPE_SNAP_MIN_DISTANCE) * SLOPE_SNAP_SPEED)
-                    .min(SLOPE_SNAP_MAX_SPEED)
-            } else {
-                0.0
-            };
-            velocity.y = slope_tangent_y - snap;
+            velocity.y = slope_tangent_y(velocity.x, velocity.z, ground.ground_normal)
+                - slope_snap_speed(ground.ground_distance);
         } else {
             velocity.y = 0.0;
         }
-    } else if velocity.y < 0.0 || !jumping {
-        gravity_scale.0 = character.fall_gravity;
     } else {
-        gravity_scale.0 = character.base_gravity;
+        gravity_scale.0 = air_gravity_scale(velocity.y, jumping, character);
     }
 
     ground.jump_held_last_frame = jumping;
@@ -458,56 +509,147 @@ fn respawn_character(
     gravity.0 = character.base_gravity;
 }
 
-fn set_character_speed(
-    args: Res<CommandArgs>,
-    mut character_query: Query<&mut Character>,
-) {
-    let Ok(mut character) = character_query.single_mut() else {
+/// Run `edit` against the single player character, warning once if it is missing.
+///
+/// Takes a callback rather than returning a `Mut` so the borrow stays local to this call.
+fn with_player_character(query: &mut Query<&mut Character>, edit: impl FnOnce(&mut Character)) {
+    let Ok(mut character) = query.single_mut() else {
         warn!("No character found for speed command");
         return;
     };
+    edit(&mut character);
+}
 
-    if args.args.is_empty() {
-        info!(
-            "Current speed: walk={:.1}, sprint={:.1}. Usage: speed <walk> [sprint]",
-            character.walk_speed, character.sprint_speed
-        );
-        return;
-    }
-
-    if let Some(walk) = args.get_f32(0) {
-        character.walk_speed = walk;
-        if let Some(sprint) = args.get_f32(1) {
-            character.sprint_speed = sprint;
-        } else {
-            character.sprint_speed = walk * 2.0;
+fn set_character_speed(args: Res<CommandArgs>, mut character_query: Query<&mut Character>) {
+    with_player_character(&mut character_query, |character| {
+        if args.args.is_empty() {
+            info!(
+                "Current speed: walk={:.1}, sprint={:.1}. Usage: speed <walk> [sprint]",
+                character.walk_speed, character.sprint_speed
+            );
+            return;
         }
+
+        let Some(walk) = args.get_f32(0) else {
+            warn!("Invalid speed parameter: {:?}", args.args);
+            return;
+        };
+        character.walk_speed = walk;
+        // Sprint defaults to twice walk, so a one-argument call stays internally consistent.
+        character.sprint_speed = args.get_f32(1).unwrap_or(walk * 2.0);
         info!(
             "Set character speed -> walk: {:.1}, sprint: {:.1}",
             character.walk_speed, character.sprint_speed
         );
-    } else {
-        warn!("Invalid speed parameter: {:?}", args.args);
-    }
+    });
 }
 
-fn increase_character_speed(
-    args: Res<CommandArgs>,
-    mut character_query: Query<&mut Character>,
-) {
-    let Ok(mut character) = character_query.single_mut() else {
-        warn!("No character found for speed command");
-        return;
-    };
+fn increase_character_speed(args: Res<CommandArgs>, mut character_query: Query<&mut Character>) {
+    with_player_character(&mut character_query, |character| {
+        let walk_add = args.get_f32(0).unwrap_or(DEFAULT_SPEED_DELTA);
+        let sprint_add = args.get_f32(1).unwrap_or(walk_add * 2.0);
 
-    let walk_add = args.get_f32(0).unwrap_or(2.0);
-    let sprint_add = args.get_f32(1).unwrap_or(walk_add * 2.0);
+        character.walk_speed += walk_add;
+        character.sprint_speed += sprint_add;
 
-    character.walk_speed += walk_add;
-    character.sprint_speed += sprint_add;
+        info!(
+            "Increased character speed (+{:.1}, +{:.1}) -> walk: {:.1}, sprint: {:.1}",
+            walk_add, sprint_add, character.walk_speed, character.sprint_speed
+        );
+    });
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    info!(
-        "Increased character speed (+{:.1}, +{:.1}) -> walk: {:.1}, sprint: {:.1}",
-        walk_add, sprint_add, character.walk_speed, character.sprint_speed
-    );
+    const SLOPE_45: Vec3 = Vec3::new(0.707_106_8, 0.707_106_8, 0.0);
+    const SLOPE_60: Vec3 = Vec3::new(0.866_025_4, 0.5, 0.0);
+
+    #[test]
+    fn forward_follows_the_camera() {
+        // With yaw 0, pushing the stick forward must move down -Z (Bevy's forward).
+        let dir = camera_relative_direction(Vec2::new(0.0, 1.0), 0.0);
+        assert!(dir.z < -0.99, "expected -Z, got {dir}");
+        assert!(dir.x.abs() < 1e-6);
+
+        // Turning the camera 90° left must carry the movement vector with it.
+        let turned = camera_relative_direction(Vec2::new(0.0, 1.0), 90f32.to_radians());
+        assert!(turned.x < -0.99, "expected -X, got {turned}");
+    }
+
+    #[test]
+    fn acceleration_is_capped_per_step() {
+        let out = accelerate_toward(Vec3::ZERO, Vec3::X * 6.0, 60.0, 1.0 / 60.0);
+        assert!(
+            (out.x - 1.0).abs() < 1e-5,
+            "should gain at most accel*dt this step, got {out}"
+        );
+    }
+
+    #[test]
+    fn acceleration_lands_exactly_on_target_when_close() {
+        // Without this the character asymptotically crawls and never quite reaches speed.
+        let out = accelerate_toward(Vec3::X * 5.5, Vec3::X * 6.0, 60.0, 1.0 / 60.0);
+        assert_eq!(out, Vec3::X * 6.0);
+    }
+
+    #[test]
+    fn acceleration_with_no_accel_is_a_no_op() {
+        assert_eq!(accelerate_toward(Vec3::X * 3.0, Vec3::X * 6.0, 0.0, 1.0), Vec3::X * 3.0);
+    }
+
+    #[test]
+    fn jump_requires_a_press_edge() {
+        assert!(jump_fires(true, false, true, 0.0));
+        assert!(!jump_fires(true, true, true, 0.0), "holding the key must not bunny-hop");
+        assert!(!jump_fires(false, false, true, 0.0));
+    }
+
+    #[test]
+    fn jump_requires_ground_and_a_spent_cooldown() {
+        assert!(!jump_fires(true, false, false, 0.0), "airborne");
+        assert!(!jump_fires(true, false, true, 0.1), "cooldown pending");
+    }
+
+    #[test]
+    fn gravity_is_heavier_once_falling_or_released() {
+        let c = Character::default();
+        assert_eq!(air_gravity_scale(1.0, true, &c), c.base_gravity);
+        assert_eq!(air_gravity_scale(1.0, false, &c), c.fall_gravity);
+        assert_eq!(air_gravity_scale(-1.0, true, &c), c.fall_gravity);
+    }
+
+    #[test]
+    fn ground_gap_matches_the_probe_offset_on_flat_ground() {
+        let touch = ground_touch_distance(1.0);
+        assert!((touch - (CAPSULE_RADIUS - GROUND_PROBE_RADIUS)).abs() < 1e-6);
+        assert!(ground_gap(touch, 1.0).abs() < 1e-6, "touching means zero gap");
+        assert!((ground_gap(touch + 0.2, 1.0) - 0.2).abs() < 1e-6);
+        assert_eq!(ground_gap(0.0, 1.0), 0.0, "gap must never go negative");
+    }
+
+    #[test]
+    fn walkability_respects_the_slope_limit() {
+        let max = Character::default().max_slope_angle_rad;
+        assert!(is_walkable(Vec3::Y, max), "flat ground");
+        assert!(is_walkable(SLOPE_45, max), "45deg is under the 50deg limit");
+        assert!(!is_walkable(SLOPE_60, max), "60deg is over the limit");
+        assert!(!is_walkable(Vec3::X, max), "vertical wall");
+    }
+
+    #[test]
+    fn slope_tangent_holds_velocity_on_the_surface() {
+        assert!(slope_tangent_y(1.0, 0.0, Vec3::Y).abs() < 1e-9, "flat ground has no vertical term");
+        let v = slope_tangent_y(1.0, 0.0, SLOPE_45);
+        assert!((v + 1.0).abs() < 1e-4, "moving +X up a 45deg slope should give -1, got {v}");
+    }
+
+    #[test]
+    fn slope_snap_ramps_and_caps() {
+        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE), 0.0);
+        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE / 2.0), 0.0);
+        let mid = slope_snap_speed(0.1);
+        assert!(mid > 0.0 && mid < SLOPE_SNAP_MAX_SPEED, "should ramp between the bounds");
+        assert_eq!(slope_snap_speed(100.0), SLOPE_SNAP_MAX_SPEED, "must cap, or steps slam");
+    }
 }

@@ -39,6 +39,7 @@
       - [x] Also when i click a key to rebind it stays higlighted even when i move to differen un/modifier views
 - [x] Move all the keybinding `rules` out of the game engine and into the lua script? Im okay with the rules being ephimeral.
 - [x] when remapping a movement key, show lock icons on the illegal placements
+- [ ] when remapping keys, right click should cancel
 
 # Camera
 - [x] zoom to switch between views + zoom out more (using shift + scroll wheel)

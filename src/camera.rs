@@ -7,7 +7,7 @@ use bevy::{
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
-    input::{ContextActive, GameplayInput, HotkeyLabel},
+    input::InputAppExt,
     menus::MenuManager,
     utils::commands::{CommandAppExt, command},
 };
@@ -27,11 +27,6 @@ impl Plugin for CameraPlugin {
                 CameraSystems::UpdateTransform.before(TransformSystems::Propagate),
             )
             .add_systems(Startup, setup_camera)
-            .add_observer(on_grab_cursor)
-            .add_observer(on_release_cursor)
-            .add_observer(on_toggle_view_mode)
-            .add_observer(on_camera_look)
-            .add_observer(on_camera_zoom)
             .add_systems(
                 PostUpdate,
                 (
@@ -40,11 +35,42 @@ impl Plugin for CameraPlugin {
                 ),
             );
 
-        command!(
-            app,
-            "toggle between first and third person view",
-            toggle_view_mode
+        // Camera bindings hang off the shared gameplay context, so they are gated by menu
+        // focus exactly like every other gameplay action.
+        app.register_gameplay_action::<Look, _, _, _>(
+            "Camera Look",
+            ActionSettings::default(),
+            [Binding::mouse_motion()],
+            on_camera_look,
+        )
+        .register_gameplay_hotkey::<ToggleViewMode, _, _, _>(
+            "Toggle 1st/3rd View",
+            camera_hotkey(),
+            [KeyCode::KeyF.with_mod_keys(ModKeys::SHIFT).into()],
+            on_toggle_view_mode,
+        )
+        .register_gameplay_hotkey::<GrabCursor, _, _, _>(
+            "Grab Cursor",
+            camera_hotkey(),
+            [MouseButton::Left.into()],
+            on_grab_cursor,
+        )
+        .register_gameplay_hotkey::<ReleaseCursor, _, _, _>(
+            "Unlock Cursor",
+            camera_hotkey(),
+            [KeyCode::Escape.into()],
+            on_release_cursor,
+        )
+        .register_gameplay_action::<ZoomCamera, _, _, _>(
+            "Zoom Camera",
+            camera_hotkey(),
+            [Binding::MouseWheel {
+                mod_keys: ModKeys::SHIFT | ModKeys::CONTROL,
+            }],
+            on_camera_zoom,
         );
+
+        command!(app, "toggle between first and third person view", toggle_view_mode);
     }
 }
 
@@ -106,6 +132,47 @@ impl Default for CameraRig {
     }
 }
 
+/// Pitch is clamped short of vertical so the camera never flips.
+const PITCH_LIMIT: f32 = 1.35;
+/// Scroll deltas below this are treated as noise.
+const ZOOM_EPSILON: f32 = 0.01;
+/// Keep the camera this far clear of geometry it would otherwise clip through.
+const CAMERA_CLIP_MARGIN: f32 = 0.05;
+/// …but never closer to the target than this.
+const MIN_CAMERA_CLIP: f32 = 0.4;
+
+impl CameraRig {
+    /// Apply a mouse-look delta, clamping pitch so the camera cannot flip over.
+    pub fn apply_look(&mut self, delta: Vec2) {
+        self.yaw -= delta.x * self.sensitivity;
+        self.pitch = (self.pitch - delta.y * self.sensitivity).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    /// Step the zoom one scroll tick. Zooming in past [`MIN_THIRD_PERSON_DIST`] collapses
+    /// into first person; zooming out of first person pops back to third person just
+    /// outside that distance, so the two modes hand off without a dead zone.
+    pub fn apply_zoom(&mut self, scroll_y: f32) {
+        if scroll_y.abs() < ZOOM_EPSILON {
+            return;
+        }
+
+        if scroll_y > 0.0 {
+            if self.view_mode == ViewMode::ThirdPerson {
+                self.distance -= ZOOM_STEP;
+                if self.distance < MIN_THIRD_PERSON_DIST {
+                    self.distance = MIN_THIRD_PERSON_DIST;
+                    self.view_mode = ViewMode::FirstPerson;
+                }
+            }
+        } else if self.view_mode == ViewMode::FirstPerson {
+            self.view_mode = ViewMode::ThirdPerson;
+            self.distance = MIN_THIRD_PERSON_DIST + ZOOM_STEP;
+        } else {
+            self.distance = (self.distance + ZOOM_STEP).min(MAX_ZOOM_DIST);
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct CameraTarget {
     pub offset: Vec3,
@@ -119,77 +186,22 @@ impl Default for CameraTarget {
     }
 }
 
-fn spawn_gameplay_action<A: InputAction>(
-    commands: &mut Commands,
-    cam_entity: Entity,
-    label: &'static str,
-    reset: bool,
-    binding: Binding,
-) {
-    let action = commands
-        .spawn((
-            Action::<A>::new(),
-            ActionOf::<GameplayInput>::new(cam_entity),
-            ActionSettings {
-                require_reset: reset,
-                ..default()
-            },
-            HotkeyLabel(label),
-        ))
-        .id();
-    commands.spawn((binding, BindingOf(action)));
+/// Camera hotkeys fire once per press but stay visible to other input contexts, so the
+/// character keeps receiving its own bindings while the camera is being driven.
+fn camera_hotkey() -> ActionSettings {
+    ActionSettings {
+        require_reset: true,
+        ..default()
+    }
 }
 
 fn setup_camera(mut commands: Commands) {
-    let cam_entity = commands
-        .spawn((
-            MainCamera,
-            Camera3d::default(),
-            CameraRig::default(),
-            Transform::default(),
-            GameplayInput,
-            ContextActive(true),
-            ContextActivity::<GameplayInput>::ACTIVE,
-        ))
-        .id();
-
-    spawn_gameplay_action::<Look>(
-        &mut commands,
-        cam_entity,
-        "Camera Look",
-        false,
-        Binding::mouse_motion(),
-    );
-    spawn_gameplay_action::<ToggleViewMode>(
-        &mut commands,
-        cam_entity,
-        "Toggle 1st/3rd View",
-        true,
-        Binding::from(KeyCode::KeyF.with_mod_keys(ModKeys::SHIFT)),
-    );
-    spawn_gameplay_action::<GrabCursor>(
-        &mut commands,
-        cam_entity,
-        "Grab Cursor",
-        true,
-        Binding::from(MouseButton::Left),
-    );
-    spawn_gameplay_action::<ReleaseCursor>(
-        &mut commands,
-        cam_entity,
-        "Unlock Cursor",
-        true,
-        Binding::from(KeyCode::Escape),
-    );
-    spawn_gameplay_action::<ZoomCamera>(
-        &mut commands,
-        cam_entity,
-        "Zoom Camera",
-        true,
-        Binding::MouseWheel {
-            mod_keys: ModKeys::SHIFT | ModKeys::CONTROL,
-        },
-    );
+    commands.spawn((
+        MainCamera,
+        Camera3d::default(),
+        CameraRig::default(),
+        Transform::default(),
+    ));
 }
 
 fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
@@ -240,39 +252,15 @@ fn on_camera_look(
     if cursor_options.grab_mode != CursorGrabMode::Locked || event.value == Vec2::ZERO {
         return;
     }
-    rig.yaw -= event.value.x * rig.sensitivity;
-    rig.pitch = (rig.pitch - event.value.y * rig.sensitivity).clamp(-1.35, 1.35);
+    rig.apply_look(event.value);
 }
 
 const MIN_THIRD_PERSON_DIST: f32 = 1.2;
 const MAX_ZOOM_DIST: f32 = 36.0;
 const ZOOM_STEP: f32 = 2.0;
 
-fn on_camera_zoom(
-    event: On<Fire<ZoomCamera>>,
-    mut rig: Single<&mut CameraRig>,
-) {
-    let scroll_y = event.value.y;
-    if scroll_y.abs() < 0.01 {
-        return;
-    }
-
-    if scroll_y > 0.0 {
-        // Zoom in; going past the minimum distance collapses into first person.
-        if rig.view_mode == ViewMode::ThirdPerson {
-            rig.distance -= ZOOM_STEP;
-            if rig.distance < MIN_THIRD_PERSON_DIST {
-                rig.distance = MIN_THIRD_PERSON_DIST;
-                rig.view_mode = ViewMode::FirstPerson;
-            }
-        }
-    } else if rig.view_mode == ViewMode::FirstPerson {
-        // Zoom out from first person pops back to third person at the minimum distance.
-        rig.view_mode = ViewMode::ThirdPerson;
-        rig.distance = MIN_THIRD_PERSON_DIST + ZOOM_STEP;
-    } else {
-        rig.distance = (rig.distance + ZOOM_STEP).min(MAX_ZOOM_DIST);
-    }
+fn on_camera_zoom(event: On<Fire<ZoomCamera>>, mut rig: Single<&mut CameraRig>) {
+    rig.apply_zoom(event.value.y);
 }
 
 fn sync_camera_transform(
@@ -322,12 +310,141 @@ fn sync_camera_transform(
                     &config,
                     &filter,
                 ) {
-                    target_dist = (hit.distance - 0.05).max(0.4);
+                    target_dist = occluded_distance(hit.distance);
                 }
             }
 
             cam_transform.translation = eye_pivot + cam_dir * target_dist;
             cam_transform.look_at(eye_pivot, Vec3::Y);
         }
+    }
+}
+
+/// Pull the camera back to just short of the geometry it hit, never closer to the target
+/// than [`MIN_CAMERA_CLIP`].
+fn occluded_distance(hit_distance: f32) -> f32 {
+    (hit_distance - CAMERA_CLIP_MARGIN).max(MIN_CAMERA_CLIP)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rig_at(distance: f32, mode: ViewMode) -> CameraRig {
+        CameraRig {
+            distance,
+            view_mode: mode,
+            ..default()
+        }
+    }
+
+    #[test]
+    fn look_scales_by_sensitivity() {
+        let mut rig = CameraRig::default();
+        let (yaw, pitch) = (rig.yaw, rig.pitch);
+        rig.apply_look(Vec2::new(100.0, 100.0));
+        assert!((rig.yaw - (yaw - 100.0 * rig.sensitivity)).abs() < 1e-6);
+        assert!((rig.pitch - (pitch - 100.0 * rig.sensitivity)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn look_clamps_pitch_both_ways() {
+        let mut rig = CameraRig::default();
+        for _ in 0..10_000 {
+            rig.apply_look(Vec2::new(0.0, -1000.0));
+        }
+        assert!((rig.pitch - PITCH_LIMIT).abs() < 1e-6, "pitch should clamp at +limit");
+
+        let mut rig = CameraRig::default();
+        for _ in 0..10_000 {
+            rig.apply_look(Vec2::new(0.0, 1000.0));
+        }
+        assert!((rig.pitch + PITCH_LIMIT).abs() < 1e-6, "pitch should clamp at -limit");
+    }
+
+    #[test]
+    fn look_leaves_yaw_unbounded() {
+        // Yaw must wrap freely; clamping it would make the camera stick after a full turn.
+        let mut rig = CameraRig::default();
+        rig.apply_look(Vec2::new(1e6, 0.0));
+        assert!(rig.yaw.abs() > PITCH_LIMIT);
+    }
+
+    #[test]
+    fn zoom_below_epsilon_is_ignored() {
+        let mut rig = CameraRig::default();
+        let before = rig.distance;
+        rig.apply_zoom(0.0);
+        rig.apply_zoom(ZOOM_EPSILON * 0.5);
+        assert_eq!(rig.distance, before);
+    }
+
+    #[test]
+    fn zoom_in_steps_down_then_collapses_to_first_person() {
+        let mut rig = rig_at(6.0, ViewMode::ThirdPerson);
+        rig.apply_zoom(1.0);
+        assert_eq!(rig.distance, 6.0 - ZOOM_STEP);
+        assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
+
+        rig.apply_zoom(1.0);
+        assert_eq!(rig.distance, 6.0 - 2.0 * ZOOM_STEP);
+        assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
+
+        // This step would undershoot the minimum, so it clamps and collapses instead.
+        rig.apply_zoom(1.0);
+        assert_eq!(rig.distance, MIN_THIRD_PERSON_DIST);
+        assert_eq!(rig.view_mode, ViewMode::FirstPerson);
+    }
+
+    #[test]
+    fn zooming_in_further_while_first_person_does_not_go_negative() {
+        let mut rig = rig_at(MIN_THIRD_PERSON_DIST, ViewMode::FirstPerson);
+        for _ in 0..10 {
+            rig.apply_zoom(1.0);
+        }
+        assert_eq!(rig.distance, MIN_THIRD_PERSON_DIST);
+        assert_eq!(rig.view_mode, ViewMode::FirstPerson);
+    }
+
+    #[test]
+    fn zoom_out_of_first_person_hands_back_to_third_person() {
+        let mut rig = rig_at(MIN_THIRD_PERSON_DIST, ViewMode::FirstPerson);
+        rig.apply_zoom(-1.0);
+        assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
+        assert_eq!(rig.distance, MIN_THIRD_PERSON_DIST + ZOOM_STEP);
+    }
+
+    #[test]
+    fn zoom_out_clamps_at_the_far_limit() {
+        let mut rig = rig_at(MAX_ZOOM_DIST, ViewMode::ThirdPerson);
+        for _ in 0..10 {
+            rig.apply_zoom(-1.0);
+        }
+        assert_eq!(rig.distance, MAX_ZOOM_DIST);
+        assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
+    }
+
+    #[test]
+    fn zoom_round_trips_through_first_person() {
+        // Zooming all the way in and one step out must land in third person, not stall.
+        let mut rig = rig_at(6.0, ViewMode::ThirdPerson);
+        for _ in 0..10 {
+            rig.apply_zoom(1.0);
+        }
+        assert_eq!(rig.view_mode, ViewMode::FirstPerson);
+        rig.apply_zoom(-1.0);
+        assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
+        assert!(rig.distance > MIN_THIRD_PERSON_DIST);
+    }
+
+    #[test]
+    fn occluded_distance_keeps_a_margin_and_a_floor() {
+        assert_eq!(occluded_distance(10.0), 10.0 - CAMERA_CLIP_MARGIN);
+        assert_eq!(occluded_distance(0.0), MIN_CAMERA_CLIP);
+        assert_eq!(occluded_distance(0.02), MIN_CAMERA_CLIP);
+        assert_eq!(
+            occluded_distance(MIN_CAMERA_CLIP + CAMERA_CLIP_MARGIN),
+            MIN_CAMERA_CLIP
+        );
     }
 }

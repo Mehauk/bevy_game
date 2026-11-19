@@ -34,6 +34,11 @@ fn main() {
             FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
+            // Plugin order is load-bearing: a plugin that registers a command or a menu
+            // requires the resource/messages its provider `build()` installs to already
+            // exist, because `register_system` initialises its `SystemParam`s immediately.
+            //   CommandRegistryPlugin  -> anything using `command!` or `register_command`
+            //   MenuPlugin             -> the per-menu plugins (they write `ToggleMenu`)
             CommandRegistryPlugin,
             InputPlugin,
             MenuPlugin,

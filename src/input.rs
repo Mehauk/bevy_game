@@ -1,16 +1,26 @@
+//! Input layer: hotkey *contexts* (gameplay vs menu), the derived hotkey registry,
+//! keybind remapping, and the `input` Lua namespace.
+//!
+//! Contexts are driven by a single rule — gameplay input is active while no menu is open,
+//! menu input is active while one is — evaluated in [`sync_context_activity`] and pushed
+//! onto the entities that own each context.
+
+pub mod hotkeys;
+pub mod keys;
+pub mod remap;
+mod scripting;
+
+pub use hotkeys::HotkeyRegistry;
+pub use keys::{current_modifier_flags, modifier_entries, modifier_map, mouse_button_name};
+pub use remap::{RemapBindingMessage, RemapStatus};
+
 use bevy::{
     ecs::{relationship::Relationship, system::IntoObserverSystem},
     prelude::*,
 };
 use bevy_enhanced_input::prelude::*;
-use bevy_mod_scripting::bindings::{
-    InteropError, WorldExtensions,
-    function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
-    script_value::ScriptValue,
-};
 
 use crate::menus::{MenuManager, MenuUpdateSystems};
-use crate::utils::{script_map, script_str};
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InputUpdateSystems {
@@ -52,15 +62,47 @@ impl Plugin for InputPlugin {
             )
             .add_systems(
                 Update,
-                handle_remap_bindings.in_set(InputUpdateSystems::ProcessRemap),
+                remap::handle_remap_bindings.in_set(InputUpdateSystems::ProcessRemap),
             )
             .add_systems(
                 Update,
-                sync_hotkey_registry.in_set(InputUpdateSystems::SyncHotkeyRegistry),
+                hotkeys::sync_hotkey_registry.in_set(InputUpdateSystems::SyncHotkeyRegistry),
             );
 
-        register_input_namespace(app);
+        scripting::register_input_namespace(app);
     }
+}
+
+/// Marker: this entity owns the gameplay input context.
+#[derive(Component, Default, Clone)]
+pub struct GameplayInput;
+
+/// Marker: this entity owns the menu input context.
+#[derive(Component, Default, Clone)]
+pub struct MenuInput;
+
+/// Marks a binding as a movement key, which the remap rules treat as modifier-free.
+#[derive(Component, Default, Clone, Copy, Debug)]
+pub struct MovementBinding;
+
+/// The entity that owns the shared gameplay context (camera and menu hotkeys hang off it).
+#[derive(Resource)]
+pub struct GameplayInputEntity(pub Entity);
+
+/// Human-readable name shown in the keyboard overlay for an action or binding.
+#[derive(Component, Clone, Copy, Default)]
+pub struct HotkeyLabel(pub &'static str);
+
+/// Mirror of context activity as a component, so it can be queried and observed.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub struct ContextActive(pub bool);
+
+/// Denormalised context info copied onto each action, so the registry can report
+/// `{ context, active }` without walking back to the context entity.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub struct ActionContext {
+    pub name: &'static str,
+    pub active: bool,
 }
 
 fn setup_gameplay_input(mut commands: Commands) {
@@ -70,177 +112,96 @@ fn setup_gameplay_input(mut commands: Commands) {
     commands.insert_resource(GameplayInputEntity(gameplay_entity));
 }
 
-#[derive(Component, Default, Clone)]
-pub struct GameplayInput;
-
-#[derive(Component, Default, Clone)]
-pub struct MenuInput;
-
-#[derive(Component, Default, Clone, Copy, Debug)]
-pub struct MovementBinding;
-
-#[derive(Resource)]
-pub struct GameplayInputEntity(pub Entity);
-
-#[derive(Component, Clone, Copy, Default)]
-pub struct HotkeyLabel(pub &'static str);
-
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub struct ContextActive(pub bool);
-
-#[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub struct ActionContext {
-    pub name: &'static str,
-    pub active: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct HotkeyEntry {
-    pub key: String,
-    pub label: String,
-    pub context: String,
-    pub active: bool,
-    pub is_movement: bool,
-    pub ctrl: bool,
-    pub shift: bool,
-    pub alt: bool,
-    pub super_key: bool,
-}
-
-#[derive(Resource, Default)]
-pub struct HotkeyRegistry {
-    pub entries: Vec<HotkeyEntry>,
-}
-
-#[derive(Resource, Default, Clone, Debug)]
-pub struct RemapStatus {
-    pub success: bool,
-    pub message: String,
-    pub version: u64,
-}
-
-impl RemapStatus {
-    pub fn set_success(&mut self, message: String) {
-        self.success = true;
-        self.message = message;
-        self.version = self.version.wrapping_add(1);
-    }
-
-    pub fn set_error(&mut self, message: String) {
-        self.success = false;
-        self.message = message;
-        self.version = self.version.wrapping_add(1);
-    }
-}
-
-#[derive(Message, Clone, Debug)]
-pub struct RemapBindingMessage {
-    pub source_key: String,
-    pub source_mods: ModKeys,
-    pub target_key: String,
-    pub target_mods: ModKeys,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InputCode {
-    Key(KeyCode),
-    Mouse(MouseButton),
-    MouseWheel,
-    MouseMotion,
-}
-
-impl InputCode {
-    pub fn to_binding(&self, mod_keys: ModKeys) -> Binding {
-        match *self {
-            InputCode::Key(key) => Binding::Keyboard { key, mod_keys },
-            InputCode::Mouse(button) => Binding::MouseButton { button, mod_keys },
-            InputCode::MouseWheel => Binding::MouseWheel { mod_keys },
-            InputCode::MouseMotion => Binding::MouseMotion { mod_keys },
-        }
-    }
-}
-
-pub fn parse_input_code(code: &str) -> Option<InputCode> {
-    match code {
-        "MouseLeft" | "Left" | "MouseButton1" => Some(InputCode::Mouse(MouseButton::Left)),
-        "MouseRight" | "Right" | "MouseButton2" => Some(InputCode::Mouse(MouseButton::Right)),
-        "MouseMiddle" | "Middle" | "MouseButton3" => Some(InputCode::Mouse(MouseButton::Middle)),
-        "MouseBack" | "Back" | "MouseButton4" => Some(InputCode::Mouse(MouseButton::Back)),
-        "MouseForward" | "Forward" | "MouseButton5" => Some(InputCode::Mouse(MouseButton::Forward)),
-        "MouseWheel" => Some(InputCode::MouseWheel),
-        "MouseMotion" => Some(InputCode::MouseMotion),
-        key_str => parse_key_code(key_str).map(InputCode::Key),
-    }
-}
-
-/// Generates `string => KeyCode` arms from bare variant names, so the parse string
-/// can never drift from the variant it maps to.
-macro_rules! parse_key_variants {
-    ($s:expr, $($variant:ident),+ $(,)?) => {
-        match $s {
-            $(stringify!($variant) => Some(KeyCode::$variant),)+
-            _ => None,
-        }
+pub fn set_context_active<C: Component>(commands: &mut Commands, entity: Entity, active: bool) {
+    let activity = if active {
+        ContextActivity::<C>::ACTIVE
+    } else {
+        ContextActivity::<C>::INACTIVE
     };
+    commands
+        .entity(entity)
+        .insert((activity, ContextActive(active)));
 }
 
-pub fn parse_key_code(s: &str) -> Option<KeyCode> {
-    parse_key_variants!(s,
-        KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
-        KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
-        Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
-        F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-        Escape, Space, Enter, Tab, Backspace, CapsLock,
-        ShiftLeft, ShiftRight, ControlLeft, ControlRight,
-        AltLeft, AltRight, SuperLeft, SuperRight,
-        Backquote, Minus, Equal, BracketLeft, BracketRight, Backslash,
-        Semicolon, Quote, Comma, Period, Slash,
-        ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
-    )
-}
+/// Push menu-open state onto the two input contexts. Runs in `PreUpdate` and only emits
+/// commands when the state actually flips.
+fn sync_context_activity(
+    menu_manager: Res<MenuManager>,
+    mut prev_open: Local<Option<bool>>,
+    q_gameplay: Query<Entity, With<GameplayInput>>,
+    q_menu: Query<Entity, With<MenuInput>>,
+    mut commands: Commands,
+) {
+    let open = menu_manager.any_open();
+    if *prev_open == Some(open) {
+        return;
+    }
+    *prev_open = Some(open);
 
-/// Canonical display name for a mouse button, shared by binding serialization and
-/// the menu input dispatcher. `Other(4)`/`Other(5)` are treated as Back/Forward.
-pub fn mouse_button_name(button: MouseButton) -> Option<&'static str> {
-    match button {
-        MouseButton::Left => Some("MouseLeft"),
-        MouseButton::Right => Some("MouseRight"),
-        MouseButton::Middle => Some("MouseMiddle"),
-        MouseButton::Back | MouseButton::Other(4) => Some("MouseBack"),
-        MouseButton::Forward | MouseButton::Other(5) => Some("MouseForward"),
-        MouseButton::Other(_) => None,
+    for entity in &q_gameplay {
+        set_context_active::<GameplayInput>(&mut commands, entity, !open);
+    }
+    for entity in &q_menu {
+        set_context_active::<MenuInput>(&mut commands, entity, open);
     }
 }
 
-pub fn binding_key_and_mods(binding: &Binding) -> Option<(String, ModKeys)> {
-    match binding {
-        Binding::Keyboard { key, mod_keys } => Some((format!("{key:?}"), *mod_keys)),
-        Binding::MouseButton { button, mod_keys } => {
-            let s = mouse_button_name(*button)
-                .map(str::to_string)
-                .unwrap_or_else(|| match *button {
-                    MouseButton::Other(n) => format!("MouseButton{n}"),
-                    _ => "MouseButton".to_string(),
-                });
-            Some((s, *mod_keys))
-        }
-        Binding::MouseWheel { mod_keys } => Some(("MouseWheel".to_string(), *mod_keys)),
-        Binding::MouseMotion { mod_keys } => Some(("MouseMotion".to_string(), *mod_keys)),
-        _ => None,
+/// Spawn `A` on the shared gameplay context with `settings`, plus one binding entity per
+/// binding. Shared by both registration entry points below.
+fn spawn_gameplay_action<A: InputAction>(
+    commands: &mut Commands,
+    context: Entity,
+    label: &'static str,
+    settings: ActionSettings,
+    bindings: &[Binding],
+) {
+    let action = commands
+        .spawn((
+            Action::<A>::new(),
+            ActionOf::<GameplayInput>::new(context),
+            settings,
+            HotkeyLabel(label),
+        ))
+        .id();
+
+    for binding in bindings {
+        commands.spawn((binding.clone(), BindingOf(action)));
     }
 }
 
 pub trait InputAppExt {
+    /// Mirror a context entity's [`ContextActive`] onto every action owned by that context.
     fn register_hotkey_context<C: Component>(&mut self, name: &'static str) -> &mut Self;
 
+    /// Register a **value** action (mouse look, scroll zoom): `observer` sees `Fire<A>` and
+    /// reads `event.value` for as long as the action is active.
+    ///
+    /// `settings` is explicit rather than defaulted: `consume_input` decides whether the
+    /// binding is hidden from every other context once fired, and `require_reset` decides
+    /// whether a held binding re-fires — both change behaviour invisibly if guessed at.
     fn register_gameplay_action<A, B, O, M>(
         &mut self,
         label: &'static str,
+        settings: ActionSettings,
         bindings: B,
         observer: O,
     ) -> &mut Self
     where
-        A: InputAction<Output = bool> + Send + Sync + 'static,
+        A: InputAction + Send + Sync + 'static,
+        B: IntoIterator<Item = Binding>,
+        O: IntoObserverSystem<Fire<A>, M>;
+
+    /// Register a **one-shot** hotkey (toggle a menu, switch view): `observer` sees
+    /// `Start<A>` once per press.
+    fn register_gameplay_hotkey<A, B, O, M>(
+        &mut self,
+        label: &'static str,
+        settings: ActionSettings,
+        bindings: B,
+        observer: O,
+    ) -> &mut Self
+    where
+        A: InputAction + Send + Sync + 'static,
         B: IntoIterator<Item = Binding>,
         O: IntoObserverSystem<Start<A>, M>;
 }
@@ -275,335 +236,65 @@ impl InputAppExt for App {
     fn register_gameplay_action<A, B, O, M>(
         &mut self,
         label: &'static str,
+        settings: ActionSettings,
         bindings: B,
         observer: O,
     ) -> &mut Self
     where
-        A: InputAction<Output = bool> + Send + Sync + 'static,
+        A: InputAction + Send + Sync + 'static,
+        B: IntoIterator<Item = Binding>,
+        O: IntoObserverSystem<Fire<A>, M>,
+    {
+        register_action::<A, _, Fire<A>, _, _>(self, label, settings, bindings, observer)
+    }
+
+    fn register_gameplay_hotkey<A, B, O, M>(
+        &mut self,
+        label: &'static str,
+        settings: ActionSettings,
+        bindings: B,
+        observer: O,
+    ) -> &mut Self
+    where
+        A: InputAction + Send + Sync + 'static,
         B: IntoIterator<Item = Binding>,
         O: IntoObserverSystem<Start<A>, M>,
     {
-        let bindings: Vec<Binding> = bindings.into_iter().collect();
-        self.add_observer(observer).add_systems(
-            Startup,
-            move |mut commands: Commands, gameplay: Res<GameplayInputEntity>| {
-                let action = commands
-                    .spawn((
-                        Action::<A>::new(),
-                        ActionOf::<GameplayInput>::new(gameplay.0),
-                        ActionSettings {
-                            consume_input: true,
-                            require_reset: true,
-                            ..default()
-                        },
-                        HotkeyLabel(label),
-                    ))
-                    .id();
-
-                for binding in &bindings {
-                    commands.spawn((binding.clone(), BindingOf(action)));
-                }
-            },
-        )
+        register_action::<A, _, Start<A>, _, _>(self, label, settings, bindings, observer)
     }
 }
 
-pub fn set_context_active<C: Component>(commands: &mut Commands, entity: Entity, active: bool) {
-    let activity = if active {
-        ContextActivity::<C>::ACTIVE
-    } else {
-        ContextActivity::<C>::INACTIVE
-    };
-    commands
-        .entity(entity)
-        .insert((activity, ContextActive(active)));
-}
-
-fn sync_context_activity(
-    menu_manager: Res<MenuManager>,
-    mut prev_open: Local<Option<bool>>,
-    q_gameplay: Query<Entity, With<GameplayInput>>,
-    q_menu: Query<Entity, With<MenuInput>>,
-    mut commands: Commands,
-) {
-    let open = menu_manager.any_open();
-    if *prev_open == Some(open) {
-        return;
-    }
-    *prev_open = Some(open);
-
-    for entity in &q_gameplay {
-        set_context_active::<GameplayInput>(&mut commands, entity, !open);
-    }
-    for entity in &q_menu {
-        set_context_active::<MenuInput>(&mut commands, entity, open);
-    }
-}
-
-fn sync_hotkey_registry(
-    // Changed<T> also fires on insertion, so Added<T> arms would be redundant.
-    q_changed: Query<
-        (),
-        Or<(
-            Changed<Binding>,
-            Changed<BindingOf>,
-            Changed<HotkeyLabel>,
-            Changed<ActionContext>,
-            Changed<MovementBinding>,
-        )>,
-    >,
-    mut removed_bindings: RemovedComponents<Binding>,
-    mut removed_labels: RemovedComponents<HotkeyLabel>,
-    q_bindings: Query<(
-        &Binding,
-        &BindingOf,
-        Option<&HotkeyLabel>,
-        Option<&MovementBinding>,
-    )>,
-    q_actions: Query<(Option<&HotkeyLabel>, Option<&ActionContext>)>,
-    mut registry: ResMut<HotkeyRegistry>,
-) {
-    if q_changed.is_empty()
-        && removed_bindings.read().next().is_none()
-        && removed_labels.read().next().is_none()
-    {
-        return;
-    }
-
-    let mut entries = Vec::new();
-    for (binding, binding_of, binding_label, movement) in &q_bindings {
-        let Some((key_str, mod_keys)) = binding_key_and_mods(binding) else {
-            continue;
-        };
-
-        let (action_label, action_ctx) = q_actions
-            .get(binding_of.get())
-            .ok()
-            .unwrap_or((None, None));
-        let label = binding_label
-            .or(action_label)
-            .map(|l| l.0)
-            .unwrap_or("Bound");
-        let (context, active) = action_ctx.map_or(("unknown", true), |c| (c.name, c.active));
-
-        entries.push(HotkeyEntry {
-            key: key_str,
-            label: label.to_string(),
-            context: context.to_string(),
-            active,
-            is_movement: movement.is_some(),
-            ctrl: mod_keys.contains(ModKeys::CONTROL),
-            shift: mod_keys.contains(ModKeys::SHIFT),
-            alt: mod_keys.contains(ModKeys::ALT),
-            super_key: mod_keys.contains(ModKeys::SUPER),
-        });
-    }
-    registry.entries = entries;
-}
-
-#[derive(Clone)]
-struct BindingSnapshot {
-    entity: Entity,
-    key: String,
-    mods: ModKeys,
-    label: Option<String>,
-}
-
-impl BindingSnapshot {
-    fn display_label(&self) -> String {
-        self.label.clone().unwrap_or_else(|| self.key.clone())
-    }
-}
-
-fn handle_remap_bindings(
-    mut messages: MessageReader<RemapBindingMessage>,
-    q_bindings: Query<(Entity, &Binding, &BindingOf, Option<&HotkeyLabel>)>,
-    q_actions: Query<Option<&HotkeyLabel>>,
-    mut commands: Commands,
-    mut remap_status: ResMut<RemapStatus>,
-) {
-    for msg in messages.read() {
-        let binding_snapshots: Vec<BindingSnapshot> = q_bindings
-            .iter()
-            .filter_map(|(e, b, b_of, lbl)| {
-                let (key, mods) = binding_key_and_mods(b)?;
-                let action_label = q_actions.get(b_of.get()).ok().flatten();
-                Some(BindingSnapshot {
-                    entity: e,
-                    key,
-                    mods,
-                    label: lbl.or(action_label).map(|l| l.0.to_string()),
-                })
-            })
-            .collect();
-
-        let find = |key: &str, mods: ModKeys, exclude: Option<Entity>| {
-            binding_snapshots.iter().find(|s| {
-                Some(s.entity) != exclude
-                    && s.key.eq_ignore_ascii_case(key)
-                    && s.mods == mods
-            })
-        };
-
-        let Some(source) = find(&msg.source_key, msg.source_mods, None).cloned() else {
-            remap_status.set_error(format!("Source binding '{}' not found", msg.source_key));
-            continue;
-        };
-
-        let Some(target_code) = parse_input_code(&msg.target_key) else {
-            remap_status.set_error(format!("Unknown key or button '{}'", msg.target_key));
-            continue;
-        };
-
-        let target = find(&msg.target_key, msg.target_mods, Some(source.entity)).cloned();
-        let source_label = source.display_label();
-
-        let result = match target {
-            None => {
-                commands
-                    .entity(source.entity)
-                    .insert(target_code.to_binding(msg.target_mods));
-                Ok(format!("Remapped '{source_label}' to '{}'", msg.target_key))
-            }
-            Some(target) => match parse_input_code(&source.key) {
-                Some(source_code) => {
-                    commands
-                        .entity(source.entity)
-                        .insert(target_code.to_binding(target.mods));
-                    commands
-                        .entity(target.entity)
-                        .insert(source_code.to_binding(source.mods));
-                    Ok(format!(
-                        "Swapped '{source_label}' ({}) <-> '{}' ({})",
-                        source.key,
-                        target.display_label(),
-                        target.key
-                    ))
-                }
-                None => Err(format!("Unknown key or button '{}'", source.key)),
-            },
-        };
-
-        match result {
-            Ok(message) => {
-                info!("{message}");
-                remap_status.set_success(message);
-            }
-            Err(message) => {
-                warn!("{message}");
-                remap_status.set_error(message);
-            }
-        }
-    }
-}
-
-pub fn parse_mod_keys(val: &ScriptValue) -> ModKeys {
-    let mut mods = ModKeys::empty();
-    if let ScriptValue::Map(map) = val {
-        for (name, flag) in [
-            ("ctrl", ModKeys::CONTROL),
-            ("shift", ModKeys::SHIFT),
-            ("alt", ModKeys::ALT),
-            ("super", ModKeys::SUPER),
-        ] {
-            if map.get(name).is_some_and(|v| matches!(v, ScriptValue::Bool(true))) {
-                mods |= flag;
-            }
-        }
-    }
-    mods
-}
-
-pub fn current_modifier_flags(keys: &ButtonInput<KeyCode>) -> ModKeys {
-    let mut mods = ModKeys::empty();
-    for (pair, flag) in [
-        ([KeyCode::ControlLeft, KeyCode::ControlRight], ModKeys::CONTROL),
-        ([KeyCode::ShiftLeft, KeyCode::ShiftRight], ModKeys::SHIFT),
-        ([KeyCode::AltLeft, KeyCode::AltRight], ModKeys::ALT),
-        ([KeyCode::SuperLeft, KeyCode::SuperRight], ModKeys::SUPER),
-    ] {
-        if keys.any_pressed(pair) {
-            mods |= flag;
-        }
-    }
-    mods
-}
-
-pub fn modifier_map(mods: ModKeys) -> ScriptValue {
-    script_map([
-        ("ctrl", ScriptValue::Bool(mods.contains(ModKeys::CONTROL))),
-        ("shift", ScriptValue::Bool(mods.contains(ModKeys::SHIFT))),
-        ("alt", ScriptValue::Bool(mods.contains(ModKeys::ALT))),
-        ("super", ScriptValue::Bool(mods.contains(ModKeys::SUPER))),
-    ])
-}
-
-fn register_input_namespace(app: &mut App) {
-    NamespaceBuilder::in_namespace(app.world_mut(), "input")
-        .register(
-            "list_bindings",
-            |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
-                ctx.world()?.with_resource(|reg: &HotkeyRegistry| {
-                    let list = reg
-                        .entries
-                        .iter()
-                        .map(|entry| {
-                            script_map([
-                                ("key", script_str(&entry.key)),
-                                ("label", script_str(&entry.label)),
-                                ("context", script_str(&entry.context)),
-                                ("active", ScriptValue::Bool(entry.active)),
-                                ("is_movement", ScriptValue::Bool(entry.is_movement)),
-                                ("ctrl", ScriptValue::Bool(entry.ctrl)),
-                                ("shift", ScriptValue::Bool(entry.shift)),
-                                ("alt", ScriptValue::Bool(entry.alt)),
-                                ("super", ScriptValue::Bool(entry.super_key)),
-                            ])
-                        })
-                        .collect();
-                    ScriptValue::List(list)
-                })
-            },
-        )
-        .register(
-            "active_modifiers",
-            |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
-                ctx.world()?.with_resource(|keys: &ButtonInput<KeyCode>| {
-                    modifier_map(current_modifier_flags(keys))
-                })
-            },
-        )
-        .register(
-            "remap",
-            |ctx: FunctionCallContext,
-             source_key: String,
-             source_mods: ScriptValue,
-             target_key: String,
-             target_mods: ScriptValue|
-             -> Result<(), InteropError> {
-                let source_m = parse_mod_keys(&source_mods);
-                let target_m = parse_mod_keys(&target_mods);
-                let _ = ctx.world()?.with_resource_mut(|mut writer: Mut<Messages<RemapBindingMessage>>| {
-                    writer.write(RemapBindingMessage {
-                        source_key,
-                        source_mods: source_m,
-                        target_key,
-                        target_mods: target_m,
-                    });
-                });
-                Ok(())
-            },
-        )
-        .register(
-            "remap_status",
-            |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
-                ctx.world()?.with_resource(|status: &RemapStatus| {
-                    script_map([
-                        ("success", ScriptValue::Bool(status.success)),
-                        ("message", script_str(&status.message)),
-                        ("version", ScriptValue::Integer(status.version as i64)),
-                    ])
-                })
-            },
-        );
+/// Attach `observer` to `A` and spawn the action on the shared gameplay context at startup.
+///
+/// `E` is the enhanced-input event the observer listens for (`Fire<A>` for value actions,
+/// `Start<A>` for one-shot hotkeys). The two trait entry points pin it explicitly so call
+/// sites never have to name it, and so a `Fire` observer can never be registered as a
+/// one-shot hotkey or vice versa.
+fn register_action<'a, A, B, E, O, M>(
+    app: &'a mut App,
+    label: &'static str,
+    settings: ActionSettings,
+    bindings: B,
+    observer: O,
+) -> &'a mut App
+where
+    A: InputAction + Send + Sync + 'static,
+    B: IntoIterator<Item = Binding>,
+    E: Event,
+    O: IntoObserverSystem<E, M>,
+{
+    let bindings: Vec<Binding> = bindings.into_iter().collect();
+    app.add_observer(observer).add_systems(
+        Startup,
+        move |mut commands: Commands, gameplay: Res<GameplayInputEntity>| {
+            spawn_gameplay_action::<A>(
+                &mut commands,
+                gameplay.0,
+                label,
+                settings,
+                &bindings,
+            );
+        },
+    );
+    app
 }

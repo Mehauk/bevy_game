@@ -39,7 +39,7 @@ Modifier sets are maps: `{ ctrl = false, shift = false, alt = false, super = fal
 | --- | --- |
 | `click` | none |
 | `hover_enter` / `hover_exit` | none |
-| `key_down` | `{ key, ctrl, shift, alt, repeat }` |
+| `key_down` | `{ key, ctrl, shift, alt, super, repeat }` |
 | `text_change` | the new text string |
 
 ## `dom` namespace

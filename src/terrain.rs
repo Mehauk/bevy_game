@@ -90,6 +90,47 @@ impl Default for TerrainFog {
 #[derive(Component)]
 struct SkyBox;
 
+/// Height-band boundaries, as normalized 0..1 upper edges. Each band's width is *derived*
+/// from these edges so the three widths cannot drift out of sync with the boundaries they
+/// span (a hand-copied width silently mis-colours every vertex in the band).
+const VALLEY_BAND: f32 = 0.45;
+const SLOPE_BAND: f32 = 0.72;
+const HILLSIDE_BAND: f32 = SLOPE_BAND - VALLEY_BAND;
+const RIDGE_BAND: f32 = 1.0 - SLOPE_BAND;
+
+const VALLEY_COLOUR: Color = Color::srgb(0.20, 0.34, 0.16);
+const HILLSIDE_COLOUR: Color = Color::srgb(0.28, 0.42, 0.20);
+const SLOPE_ROCK_COLOUR: Color = Color::srgb(0.38, 0.36, 0.31);
+const RIDGE_COLOUR: Color = Color::srgb(0.48, 0.46, 0.43);
+
+/// Map a world-space height to 0..1 across the terrain's amplitude range.
+fn normalized_height(y: f32, amplitude: f32) -> f32 {
+    ((y / amplitude) * 0.5 + 0.5).clamp(0.0, 1.0)
+}
+
+/// Vertex colour for a normalized height in 0..1: valley floor blends into hillside, then
+/// rock, then ridge. Each band blends across its own width, so there are no hard seams.
+/// Blending happens in linear space, which is what keeps the mid-tones from going muddy.
+fn height_colour(h: f32) -> LinearRgba {
+    let (from, to, t) = if h < VALLEY_BAND {
+        (VALLEY_COLOUR, HILLSIDE_COLOUR, h / VALLEY_BAND)
+    } else if h < SLOPE_BAND {
+        (
+            HILLSIDE_COLOUR,
+            SLOPE_ROCK_COLOUR,
+            (h - VALLEY_BAND) / HILLSIDE_BAND,
+        )
+    } else {
+        (
+            SLOPE_ROCK_COLOUR,
+            RIDGE_COLOUR,
+            (h - SLOPE_BAND) / RIDGE_BAND,
+        )
+    };
+    let (from, to) = (from.to_linear(), to.to_linear());
+    from.mix(&to, t)
+}
+
 fn setup_terrain(
     mut commands: Commands,
     terrain_map: Res<TerrainMap>,
@@ -103,17 +144,6 @@ fn setup_terrain(
             .subdivisions(terrain_map.subdivisions),
     );
 
-    let valley = Color::srgb(0.20, 0.34, 0.16).to_linear();
-    let hillside = Color::srgb(0.28, 0.42, 0.20).to_linear();
-    let slope_rock = Color::srgb(0.38, 0.36, 0.31).to_linear();
-    let ridge = Color::srgb(0.48, 0.46, 0.43).to_linear();
-
-    // Height bands (normalized 0..1) and their widths; widths must equal the band gaps.
-    const VALLEY_BAND: f32 = 0.45;
-    const SLOPE_BAND: f32 = 0.72;
-    const HILLSIDE_BAND: f32 = 0.27; // SLOPE_BAND - VALLEY_BAND
-    const RIDGE_BAND: f32 = 0.28; // 1.0 - SLOPE_BAND
-
     let mut colors = Vec::new();
     if let Some(VertexAttributeValues::Float32x3(positions)) =
         terrain.attribute_mut(Mesh::ATTRIBUTE_POSITION)
@@ -122,16 +152,8 @@ fn setup_terrain(
         for pos in positions.iter_mut() {
             let y = terrain_map.height_at(pos[0], pos[2]);
             pos[1] = y;
-
-            let h = ((y / terrain_map.amplitude) * 0.5 + 0.5).clamp(0.0, 1.0);
-            let color = if h < VALLEY_BAND {
-                valley.mix(&hillside, h / VALLEY_BAND)
-            } else if h < SLOPE_BAND {
-                hillside.mix(&slope_rock, (h - VALLEY_BAND) / HILLSIDE_BAND)
-            } else {
-                slope_rock.mix(&ridge, (h - SLOPE_BAND) / RIDGE_BAND)
-            };
-            colors.push(color.to_f32_array());
+            let h = normalized_height(y, terrain_map.amplitude);
+            colors.push(height_colour(h).to_f32_array());
         }
     }
 
@@ -221,15 +243,93 @@ fn sync_skybox_to_camera(
 
 const DEFAULT_FOG_ALPHA: f32 = 1.0;
 const DEFAULT_FOG_LIGHT_ALPHA: f32 = 0.5;
+/// An alpha above this counts as "on" when toggling, so a faded-out value toggles back on.
+const FOG_ON_THRESHOLD: f32 = 0.05;
+
+/// Flip a fog colour between fully off and `on_alpha`.
+fn toggle_fog_alpha(color: &mut Color, on_alpha: f32) {
+    color.set_alpha(if color.alpha() > FOG_ON_THRESHOLD {
+        0.0
+    } else {
+        on_alpha
+    });
+}
 
 fn toggle_atmospheric_fog(mut terrain_fog: ResMut<TerrainFog>) {
-    let cur = terrain_fog.0.color.alpha();
-    let target = if cur > 0.05 { 0.0 } else { DEFAULT_FOG_ALPHA };
-    terrain_fog.0.color.set_alpha(target);
+    toggle_fog_alpha(&mut terrain_fog.0.color, DEFAULT_FOG_ALPHA);
 }
 
 fn toggle_fog_light_influence(mut terrain_fog: ResMut<TerrainFog>) {
-    let cur = terrain_fog.0.directional_light_color.alpha();
-    let target = if cur > 0.05 { 0.0 } else { DEFAULT_FOG_LIGHT_ALPHA };
-    terrain_fog.0.directional_light_color.set_alpha(target);
+    toggle_fog_alpha(&mut terrain_fog.0.directional_light_color, DEFAULT_FOG_LIGHT_ALPHA);
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colour_bands_tile_the_unit_range_exactly() {
+        assert!(VALLEY_BAND < SLOPE_BAND, "band edges must be ordered");
+        let total = VALLEY_BAND + HILLSIDE_BAND + RIDGE_BAND;
+        assert!((total - 1.0).abs() < 1e-6, "bands must tile 0..1 exactly, got {total}");
+    }
+
+    #[test]
+    fn normalized_height_spans_and_clamps_to_zero_one() {
+        assert!((normalized_height(0.0, 22.0) - 0.5).abs() < 1e-6, "mid height is mid range");
+        assert_eq!(normalized_height(22.0, 22.0), 1.0);
+        assert_eq!(normalized_height(-22.0, 22.0), 0.0);
+        assert_eq!(normalized_height(1000.0, 22.0), 1.0, "must clamp above");
+        assert_eq!(normalized_height(-1000.0, 22.0), 0.0, "must clamp below");
+    }
+
+    #[test]
+    fn height_colour_is_continuous_across_band_boundaries() {
+        // A discontinuity here would show up as a hard ring painted on the terrain.
+        for edge in [VALLEY_BAND, SLOPE_BAND] {
+            let below = height_colour(edge - 1e-4).to_f32_array();
+            let above = height_colour(edge + 1e-4).to_f32_array();
+            let delta: f32 = (0..3).map(|i| (below[i] - above[i]).abs()).sum();
+            assert!(delta < 0.01, "colour jumps at band edge {edge}: delta {delta}");
+        }
+    }
+
+    #[test]
+    fn height_colour_endpoints_are_the_outer_band_colours() {
+        assert_eq!(
+            height_colour(0.0).to_f32_array(),
+            VALLEY_COLOUR.to_linear().to_f32_array()
+        );
+        assert_eq!(
+            height_colour(1.0).to_f32_array(),
+            RIDGE_COLOUR.to_linear().to_f32_array()
+        );
+    }
+
+    #[test]
+    fn terrain_height_is_deterministic_and_varied() {
+        let map = TerrainMap::default();
+        assert_eq!(
+            map.height_at(12.5, -3.25),
+            map.height_at(12.5, -3.25),
+            "height must be a pure function of x,z"
+        );
+        assert!(map.height_at(12.5, -3.25).is_finite());
+        assert_ne!(map.height_at(0.0, 0.0), map.height_at(40.0, 40.0), "terrain must vary");
+    }
+
+    #[test]
+    fn fog_toggle_round_trips() {
+        let mut color = Color::srgba(0.1, 0.2, 0.3, DEFAULT_FOG_ALPHA);
+        toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
+        assert_eq!(color.alpha(), 0.0, "on -> off");
+        toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
+        assert_eq!(color.alpha(), DEFAULT_FOG_ALPHA, "off -> on");
+    }
+
+    #[test]
+    fn a_faded_fog_counts_as_off() {
+        let mut color = Color::srgba(0.1, 0.2, 0.3, FOG_ON_THRESHOLD / 2.0);
+        toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
+        assert_eq!(color.alpha(), DEFAULT_FOG_ALPHA, "a near-zero alpha must toggle back on");
+    }
 }

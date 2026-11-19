@@ -27,10 +27,13 @@ macro_rules! command {
 
 pub use crate::command;
 
+/// The parameters of the command currently being run.
+///
+/// Written immediately before each command system runs, so a command can only ever observe
+/// its own arguments (see [`handle_run_commands`]).
 #[derive(Resource, Default, Clone, Debug)]
 pub struct CommandArgs {
-    pub raw: String,
-    pub command: String,
+    /// Whitespace-separated tokens after the command name.
     pub args: Vec<String>,
 }
 
@@ -166,10 +169,16 @@ impl CommandRegistry {
     }
 }
 
+/// Resolve and run each requested command, in the order requested.
+///
+/// Each run is queued as a world closure rather than issued with `commands.run_system`,
+/// because [`CommandArgs`] is a single shared resource: writing it here and deferring the run
+/// would let a second command issued in the same frame overwrite the arguments before the
+/// first system had executed. Queuing writes the arguments immediately before *their* run, so
+/// a command can only ever observe its own.
 fn handle_run_commands(
     mut commands: Commands,
     registry: Res<CommandRegistry>,
-    mut command_args: ResMut<CommandArgs>,
     mut reader: MessageReader<RunCommand>,
 ) {
     for msg in reader.read() {
@@ -180,17 +189,146 @@ fn handle_run_commands(
 
         // Command names never contain whitespace, so the first token is always the name.
         let mut parts = trimmed.split_whitespace();
-        let Some(first) = parts.next() else { continue };
+        let Some(name) = parts.next() else { continue };
         let args: Vec<String> = parts.map(String::from).collect();
-        let raw_args = trimmed[first.len()..].trim().to_string();
 
-        if let Some(entry) = registry.find_command(first) {
-            command_args.raw = raw_args;
-            command_args.command = entry.name.clone();
-            command_args.args = args;
-            commands.run_system(entry.system_id);
-        } else {
+        let Some(entry) = registry.find_command(name) else {
             warn!("Unknown command '{}'", trimmed);
+            continue;
+        };
+
+        let system_id = entry.system_id;
+        commands.queue(move |world: &mut World| {
+            *world.resource_mut::<CommandArgs>() = CommandArgs { args };
+            if let Err(err) = world.run_system(system_id) {
+                warn!("Command failed to run: {err}");
+            }
+        });
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sys(world: &mut World) -> SystemId {
+        world.register_system(|| {})
+    }
+
+    #[test]
+    fn lookup_ignores_case() {
+        let mut world = World::new();
+        let id = sys(&mut world);
+        let mut reg = CommandRegistry::default();
+        reg.register("character>Respawn".into(), "d", id);
+        assert!(reg.get("CHARACTER>RESPAWN").is_some());
+        assert!(reg.get("character>Respawn").is_some());
+        assert!(reg.get("nope").is_none());
+    }
+
+    #[test]
+    fn suffix_lookup_matches_only_the_last_segment() {
+        let mut world = World::new();
+        let id = sys(&mut world);
+        let mut reg = CommandRegistry::default();
+        reg.register("character>respawn_character".into(), "d", id);
+
+        // This is what the palette actually types, so it is the load-bearing behaviour.
+        assert!(reg.find_command("respawn_character").is_some());
+        assert!(reg.find_command("RESPAWN_CHARACTER").is_some());
+        assert!(reg.find_command("character").is_none(), "a namespace segment is not a command");
+    }
+
+    #[test]
+    fn re_registering_a_name_replaces_it_rather_than_duplicating() {
+        let mut world = World::new();
+        let first = sys(&mut world);
+        let second = sys(&mut world);
+        let mut reg = CommandRegistry::default();
+        reg.register("dev>toggle".into(), "first", first);
+        reg.register("dev>toggle".into(), "second", second);
+
+        assert_eq!(reg.commands.len(), 1, "a re-registered command must not appear twice");
+        let entry = reg.get("dev>toggle").unwrap();
+        assert_eq!(entry.description, "second");
+        assert_eq!(entry.system_id, second);
+    }
+
+    #[test]
+    fn commands_stay_sorted_by_name() {
+        let mut world = World::new();
+        let id = sys(&mut world);
+        let mut reg = CommandRegistry::default();
+        for name in ["zulu", "alpha", "mike"] {
+            reg.register(name.into(), "d", id);
         }
+        let names: Vec<&str> = reg.commands.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "mike", "zulu"]);
+    }
+
+    #[test]
+    fn args_parse_positionally() {
+        let args = CommandArgs {
+            args: vec!["10".to_string(), "nope".to_string()],
+        };
+        assert_eq!(args.get_f32(0), Some(10.0));
+        assert_eq!(args.get_f32(1), None, "unparseable is None, not a panic");
+        assert_eq!(args.get_f32(9), None, "out of range is None");
+    }
+
+    fn a_registered_command() {}
+
+    #[test]
+    fn command_macro_derives_its_name_from_the_module_path() {
+        // The palette shows this name and the user types its last segment, so the derivation
+        // is a user-facing contract: moving a command's module renames it. This test is the
+        // guard rail for that (a real regression was nearly shipped during the refactor).
+        let mut app = App::new();
+        app.init_resource::<CommandRegistry>();
+        command!(app, "does nothing", a_registered_command);
+
+        let reg = app.world().resource::<CommandRegistry>();
+        let name = reg.commands[0].name.as_str();
+        assert_eq!(name, "utils>commands>tests>a_registered_command");
+        assert_eq!(
+            reg.find_command("a_registered_command").map(|c| c.name.as_str()),
+            Some(name),
+            "the last segment is what the user types"
+        );
+    }
+
+    #[derive(Resource, Default)]
+    struct Seen(Vec<String>);
+
+    #[test]
+    fn two_commands_in_one_frame_each_see_their_own_args() {
+        // `CommandArgs` is one shared resource, so writing it and *then* deferring the run
+        // let the second command clobber the first one's arguments. Each run must observe
+        // exactly its own.
+        let mut app = App::new();
+        app.init_resource::<CommandRegistry>()
+            .init_resource::<CommandArgs>()
+            .init_resource::<Seen>()
+            .add_message::<RunCommand>()
+            .add_systems(Update, handle_run_commands);
+
+        app.register_command("test>first", "d", |args: Res<CommandArgs>, mut seen: ResMut<Seen>| {
+            seen.0.push(format!("first:{}", args.args.join(",")));
+        });
+        app.register_command(
+            "test>second",
+            "d",
+            |args: Res<CommandArgs>, mut seen: ResMut<Seen>| {
+                seen.0.push(format!("second:{}", args.args.join(",")));
+            },
+        );
+
+        {
+            let world = app.world_mut();
+            world.resource_mut::<Messages<RunCommand>>().write(RunCommand("first a b".into()));
+            world.resource_mut::<Messages<RunCommand>>().write(RunCommand("second c d".into()));
+        }
+        app.update();
+
+        assert_eq!(app.world().resource::<Seen>().0, vec!["first:a,b", "second:c,d"]);
     }
 }

@@ -56,6 +56,7 @@ impl Plugin for CommandRegistryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandArgs>()
+            .init_resource::<CommandHistory>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);
 
@@ -96,12 +97,36 @@ impl Plugin for CommandRegistryPlugin {
                         writer.write(RunCommand(name));
                     })
                 },
+            )
+            .register(
+                "history",
+                |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
+                    let world = ctx.world()?;
+                    world.with_resource(|history: &CommandHistory| {
+                        let list: Vec<ScriptValue> =
+                            history.lines.iter().map(|l| script_str(l)).collect();
+                        ScriptValue::List(VecDeque::from(list))
+                    })
+                },
             );
     }
 }
 
 #[derive(Message, Debug, Clone)]
 pub struct RunCommand(pub String);
+
+/// How many executed command lines the console history keeps.
+const HISTORY_LIMIT: usize = 200;
+
+/// Recently executed command lines, oldest first.
+///
+/// Lives on the world (not in the palette script) so the history survives the menu
+/// closing and reopening — the script, and with it all its Lua state, is recreated
+/// on every open.
+#[derive(Resource, Default)]
+pub struct CommandHistory {
+    pub lines: VecDeque<String>,
+}
 
 pub trait CommandAppExt {
     fn register_command<F, M>(
@@ -195,12 +220,20 @@ impl CommandRegistry {
 fn handle_run_commands(
     mut commands: Commands,
     registry: Res<CommandRegistry>,
+    mut history: ResMut<CommandHistory>,
     mut reader: MessageReader<RunCommand>,
 ) {
     for msg in reader.read() {
         let trimmed = msg.0.trim();
         if trimmed.is_empty() {
             continue;
+        }
+
+        // Recorded before resolution so failed and unknown attempts show up in the
+        // console history too, exactly as they would in a real console.
+        history.lines.push_back(trimmed.to_string());
+        if history.lines.len() > HISTORY_LIMIT {
+            history.lines.pop_front();
         }
 
         // Command names never contain whitespace, so the first token is always the name.
@@ -281,6 +314,58 @@ mod tests {
         assert_eq!(names, vec!["alpha", "mike", "zulu"]);
     }
 
+    fn history_app() -> App {
+        let mut app = App::new();
+        app.init_resource::<CommandRegistry>()
+            .init_resource::<CommandArgs>()
+            .init_resource::<CommandHistory>()
+            .add_message::<RunCommand>()
+            .add_systems(Update, handle_run_commands);
+        app.register_command("test>ok", "d", || {});
+        app
+    }
+
+    #[test]
+    fn history_records_attempts_and_skips_blank_lines() {
+        let mut app = history_app();
+        {
+            let world = app.world_mut();
+            let mut msgs = world.resource_mut::<Messages<RunCommand>>();
+            msgs.write(RunCommand("   ".into()));
+            msgs.write(RunCommand("ok 1".into()));
+            msgs.write(RunCommand("not_a_command".into()));
+        }
+        app.update();
+
+        let lines: Vec<&str> = app
+            .world()
+            .resource::<CommandHistory>()
+            .lines
+            .iter()
+            .map(String::as_str)
+            .collect();
+        // Unknown commands are recorded too — a real console shows what you typed,
+        // not just what worked.
+        assert_eq!(lines, vec!["ok 1", "not_a_command"]);
+    }
+
+    #[test]
+    fn history_drops_oldest_entries_beyond_the_cap() {
+        let mut app = history_app();
+        {
+            let world = app.world_mut();
+            let mut msgs = world.resource_mut::<Messages<RunCommand>>();
+            for i in 0..(HISTORY_LIMIT + 5) {
+                msgs.write(RunCommand(format!("ok {i}")));
+            }
+        }
+        app.update();
+
+        let history = app.world().resource::<CommandHistory>();
+        assert_eq!(history.lines.len(), HISTORY_LIMIT);
+        assert_eq!(history.lines.front().unwrap(), "ok 5", "the five oldest lines are gone");
+    }
+
     #[test]
     fn args_parse_positionally() {
         let args = CommandArgs {
@@ -323,6 +408,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandArgs>()
+            .init_resource::<CommandHistory>()
             .init_resource::<Seen>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);

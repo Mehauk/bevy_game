@@ -79,6 +79,7 @@ impl Plugin for MenuPlugin {
                     dispatch_menu_ready,
                     dispatch::dispatch_modifier_changes,
                     dispatch::dispatch_remap_results,
+                    dom::events::dispatch_dom_wheel,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
                     event_handler::<OnDomEvent, LuaScriptingPlugin>,
                     event_handler::<OnMenuModifiersChanged, LuaScriptingPlugin>,

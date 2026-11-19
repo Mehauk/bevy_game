@@ -36,12 +36,13 @@ Modifier sets are maps: `{ ctrl = false, shift = false, alt = false, super = fal
 
 `on_dom_event` payload by event type:
 
-| Event                        | Payload                                    |
-| ---------------------------- | ------------------------------------------ |
-| `click`                      | none                                       |
-| `hover_enter` / `hover_exit` | none                                       |
-| `key_down`                   | `{ key, ctrl, shift, alt, super, repeat }` |
-| `text_change`                | the new text string                        |
+| Event                        | Payload                                                                                  |
+| ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `click`                      | none                                                                                     |
+| `hover_enter` / `hover_exit` | none                                                                                     |
+| `key_down`                   | `{ key, ctrl, shift, alt, super, repeat }`                                               |
+| `text_change`                | the new text string                                                                      |
+| `wheel`                      | `{ delta_y }` — positive scrolls up (away from you); fires on the node the mouse is over |
 
 ## `state` namespace
 
@@ -55,19 +56,19 @@ Modifier sets are maps: `{ ctrl = false, shift = false, alt = false, super = fal
 
 Operates on the menu's DOM (ids are integers returned by `get_by_id`/`create`/`html`).
 
-| Function                                               | Description                                                                                                                                                                            |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dom.get_by_id(scope_id, id)`                          | Find a node by its HTML `id` within the menu of `scope_id`. Returns the node id or `nil`.                                                                                              |
-| `dom.create(parent_id, tag, opts)`                     | Create a node under `parent_id`. `opts`: `{ id, class, text, autofocus, mouse }`. Returns the new node id.                                                                             |
-| `dom.html(parent_id, html)`                            | Parse an HTML/XML snippet and queue it under `parent_id`. Returns the root node id of the subtree.                                                                                     |
-| `dom.clear(id)`                                        | Remove all children of a node.                                                                                                                                                         |
-| `dom.remove(id)`                                       | Remove a node (and its subtree).                                                                                                                                                       |
-| `dom.set_text(id, text)`                               | Set the text of a `text`/`span` node.                                                                                                                                                  |
-| `dom.set_value(id, text)`                              | Replace the contents of an `input` node.                                                                                                                                               |
-| `dom.add_class(id, cls)` / `dom.remove_class(id, cls)` | Toggle a CSS class (styling via bevy_flair `ClassList`).                                                                                                                               |
-| `dom.has_class(id, cls)`                               | Returns `true`/`false`.                                                                                                                                                                |
-| `dom.on(id, event, handler)`                           | Bind `click`, `hover_enter`, `hover_exit`, `key_down`, or `text_change` to a global function name, dispatched through `on_dom_event`. `"press"` is accepted as an alias for `"click"`. |
-| `dom.focus(id)` / `dom.blur()`                         | Move / clear keyboard focus.                                                                                                                                                           |
+| Function                                               | Description                                                                                                                                                                                     |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dom.get_by_id(scope_id, id)`                          | Find a node by its HTML `id` within the menu of `scope_id`. Returns the node id or `nil`.                                                                                                       |
+| `dom.create(parent_id, tag, opts)`                     | Create a node under `parent_id`. `opts`: `{ id, class, text, autofocus, mouse }`. Returns the new node id.                                                                                      |
+| `dom.html(parent_id, html)`                            | Parse an HTML/XML snippet and queue it under `parent_id`. Returns the root node id of the subtree.                                                                                              |
+| `dom.clear(id)`                                        | Remove all children of a node.                                                                                                                                                                  |
+| `dom.remove(id)`                                       | Remove a node (and its subtree).                                                                                                                                                                |
+| `dom.set_text(id, text)`                               | Set the text of a `text`/`span` node.                                                                                                                                                           |
+| `dom.set_value(id, text)`                              | Replace the contents of an `input` node.                                                                                                                                                        |
+| `dom.add_class(id, cls)` / `dom.remove_class(id, cls)` | Toggle a CSS class (styling via bevy_flair `ClassList`).                                                                                                                                        |
+| `dom.has_class(id, cls)`                               | Returns `true`/`false`.                                                                                                                                                                         |
+| `dom.on(id, event, handler)`                           | Bind `click`, `hover_enter`, `hover_exit`, `key_down`, `text_change`, or `wheel` to a global function name, dispatched through `on_dom_event`. `"press"` is accepted as an alias for `"click"`. |
+| `dom.focus(id)` / `dom.blur()`                         | Move / clear keyboard focus.                                                                                                                                                                    |
 
 Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
 (`autofocus="true"` grabs focus when the menu opens; `mouse="false"` disables pointer picking).
@@ -87,6 +88,7 @@ Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `commands.list()`    | List of registered commands: `{ name, description }`. Names are `>`-separated module paths, e.g. `character>respawn_character`.              |
 | `commands.run(text)` | Run a command by full name, suffix name (last `>` segment), or `name arg1 arg2`. Args are available to the command system via `CommandArgs`. |
+| `commands.history()` | Recently executed command lines (oldest first, capped at 200). Survives menu close/reopen.                                                   |
 
 ## `menus` namespace
 

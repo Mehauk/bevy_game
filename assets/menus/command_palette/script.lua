@@ -10,15 +10,21 @@ function on_dom_event(handler, node, payload)
     end
 end
 
-local MAX_ROWS = 100     -- cap on filtered entries kept
-local VISIBLE_ROWS = 5   -- rows that fit in .palette-list; keep in sync with style.css
+local MAX_ROWS = 100        -- cap on filtered entries kept
+local SUGGESTION_ROWS = 5   -- rows that fit in .suggestions; keep in sync with style.css
+local HISTORY_ROWS = 6      -- lines that fit in .console-history; keep in sync with style.css
+local WHEEL_LINES = 3       -- history lines scrolled per wheel notch
 local current_menu_name = nil
 local all_commands = {}
 local visible = {}
 local selected_index = nil
 local current_raw_input = ""
 
-local list_el = nil
+local history = {}          -- executed command lines, oldest first (seeded from commands.history())
+local history_scroll = 0    -- lines scrolled up from the newest entry (0 = pinned to the bottom)
+
+local history_el = nil
+local suggestions_el = nil
 local search_el = nil
 local preview_el = nil
 
@@ -114,23 +120,23 @@ local function segments_from_matches(candidate, matched)
     return segments
 end
 
--- Renders only the window of rows that fits in .palette-list. The window is
--- positioned so the selected row sits at the bottom of the list (Skyrim-console
--- style) whenever enough rows remain above it to scroll.
+-- Renders only the window of suggestion rows that fits in the floating popup. The
+-- window is positioned so the selected row sits at the bottom of the popup whenever
+-- enough rows remain above it to scroll (Skyrim-console style).
 local function render_window()
-    dom.clear(list_el)
+    dom.clear(suggestions_el)
 
     local count = #visible
     local first = 1
     if selected_index ~= nil then
-        local max_first = math.max(count - VISIBLE_ROWS + 1, 1)
-        first = math.min(math.max(selected_index - VISIBLE_ROWS + 1, 1), max_first)
+        local max_first = math.max(count - SUGGESTION_ROWS + 1, 1)
+        first = math.min(math.max(selected_index - SUGGESTION_ROWS + 1, 1), max_first)
     end
-    local last = math.min(count, first + VISIBLE_ROWS - 1)
+    local last = math.min(count, first + SUGGESTION_ROWS - 1)
 
     for i = first, last do
         local entry = visible[i]
-        local row = dom.create(list_el, "node", {
+        local row = dom.create(suggestions_el, "node", {
             class = (i == selected_index) and "row selected" or "row",
         })
 
@@ -148,6 +154,41 @@ local function render_window()
         end
 
         entry.el = row
+    end
+end
+
+-- The history window is anchored at the newest end: `history_scroll` lines are
+-- scrolled away at the bottom, so 0 shows the most recent lines hugging the input.
+local function max_history_scroll()
+    return math.max(#history - HISTORY_ROWS, 0)
+end
+
+local function render_history()
+    dom.clear(history_el)
+
+    local last = #history - history_scroll
+    local first = math.max(1, last - HISTORY_ROWS + 1)
+    for i = first, last do
+        dom.create(history_el, "text", { class = "history-line", text = "> " .. history[i] })
+    end
+end
+
+function on_history_wheel(_, payload)
+    local delta = payload.delta_y or 0
+    if delta == 0 then
+        return
+    end
+    -- Wheel up (positive delta) reveals older lines; wheel down returns to the newest.
+    local target = history_scroll + (delta > 0 and WHEEL_LINES or -WHEEL_LINES)
+    history_scroll = math.min(math.max(target, 0), max_history_scroll())
+    render_history()
+end
+
+local function set_suggestions_visible(show)
+    if show then
+        dom.add_class(suggestions_el, "visible")
+    else
+        dom.remove_class(suggestions_el, "visible")
     end
 end
 
@@ -209,6 +250,10 @@ local function rebuild_list(raw_input)
     visible = scored
     selected_index = (cmd_query ~= "" and #visible > 0) and 1 or nil
 
+    -- The autosuggest is a floating popup: it only exists while there is something
+    -- to suggest, so the history stays visible whenever the prompt is empty.
+    set_suggestions_visible(selected_index ~= nil)
+
     render_window()
     update_preview()
 end
@@ -222,12 +267,22 @@ function on_menu_ready(menu_name, root_id)
     state.pause()
     current_menu_name = menu_name
     all_commands = commands.list()
-    list_el = dom.get_by_id(root_id, "palette_list")
+    history_el = dom.get_by_id(root_id, "console_history")
+    suggestions_el = dom.get_by_id(root_id, "suggestions")
     search_el = dom.get_by_id(root_id, "search")
     preview_el = dom.get_by_id(root_id, "suggestion_preview")
 
     dom.on(search_el, "text_change", "on_search_change")
     dom.on(search_el, "key_down", "on_search_key")
+    dom.on(history_el, "wheel", "on_history_wheel")
+
+    -- The script is recreated on every open, so the history lives engine-side.
+    history = {}
+    for _, line in ipairs(commands.history()) do
+        table.insert(history, line)
+    end
+    history_scroll = 0
+    render_history()
 
     rebuild_list("")
 end
@@ -243,16 +298,18 @@ function on_search_key(_, ev)
     if key == "Escape" or (key == "Backquote" and not ev["repeat"]) then
         close_palette()
     elseif key == "ArrowDown" then
-        if count > 0 then
-            if selected_index == nil or selected_index >= count then
+        -- Arrows only drive the suggestion popup; with an empty prompt there is
+        -- nothing selected and the popup is hidden, so they do nothing.
+        if selected_index ~= nil then
+            if selected_index >= count then
                 set_selected(1)
             else
                 set_selected(selected_index + 1)
             end
         end
     elseif key == "ArrowUp" then
-        if count > 0 then
-            if selected_index == nil or selected_index <= 1 then
+        if selected_index ~= nil then
+            if selected_index <= 1 then
                 set_selected(count)
             else
                 set_selected(selected_index - 1)
@@ -282,6 +339,9 @@ function on_search_key(_, ev)
 
         if full_command ~= "" then
             commands.run(full_command)
+            table.insert(history, full_command)
+            history_scroll = 0
+            render_history()
             dom.set_value(search_el, "")
             rebuild_list("")
         end

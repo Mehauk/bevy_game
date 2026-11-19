@@ -7,8 +7,11 @@
 use bevy::{
     ecs::system::SystemParam,
     input::keyboard::KeyboardInput,
+    input::mouse::MouseWheel,
     input_focus::FocusedInput,
     picking::events::{PointerClick, PointerOut, PointerOver},
+    picking::hover::HoverMap,
+    picking::pointer::PointerId,
     picking::pointer::PointerButton,
     prelude::*,
     text::{EditableText, TextEdit, TextEditChange},
@@ -102,6 +105,45 @@ pub(crate) fn on_dom_hover_enter(event: On<PointerOver>, mut ctx: DomEventCtx) {
 
 pub(crate) fn on_dom_hover_exit(event: On<PointerOut>, mut ctx: DomEventCtx) {
     ctx.emit(event.event_target(), "hover_exit", ScriptValue::Unit);
+}
+
+/// Bridge raw mouse-wheel messages to the DOM node the pointer is over as `wheel` events.
+///
+/// Picking has no wheel event, so we take the hover stack from the last picking update and
+/// hand the wheel to the deepest node that bound a `wheel` handler. The UI hit stack is a
+/// chain of ancestors, so the deepest bound handler is the one the cursor is really over.
+pub(crate) fn dispatch_dom_wheel(
+    mut mouse_wheel: MessageReader<MouseWheel>,
+    hover_map: Option<Res<HoverMap>>,
+    mut ctx: DomEventCtx,
+) {
+    let mut delta_y = 0.0;
+    for ev in mouse_wheel.read() {
+        delta_y += ev.y;
+    }
+    if delta_y == 0.0 {
+        return;
+    }
+
+    let Some(map) = hover_map else { return };
+    let Some(hovered) = map.get(&PointerId::Mouse) else {
+        return;
+    };
+
+    let mut best: Option<(usize, Entity)> = None;
+    for &entity in hovered.keys() {
+        let Some((handler_entity, _)) = ctx.find_handler(entity, "wheel") else {
+            continue;
+        };
+        let depth = ctx.parents.iter_ancestors(handler_entity).count();
+        if best.is_none_or(|(best_depth, _)| depth > best_depth) {
+            best = Some((depth, handler_entity));
+        }
+    }
+    if let Some((_, target)) = best {
+        let payload = script_map([("delta_y", ScriptValue::Float(delta_y as f64))]);
+        ctx.emit(target, "wheel", payload);
+    }
 }
 
 pub(crate) fn on_dom_key_input(

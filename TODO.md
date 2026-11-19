@@ -26,7 +26,11 @@
 - [x] clicking outside the view should not close the menu (if there was any rust code that did this remove it (probably no longer needed))
 - [x] leaving the menu with esc or re-pressing ~ should not leave the mouse uncaptured
 - [x] entering a command should not close the console/menu
-- [ ] Rework the console to have a scrollable history above the text input and move the suggestions to a floating autosuggest that only shows up once you start typing over the history. 
+- [x] Rework the console to have a scrollable history above the text input (scrollable by mouse wheel while mouse is overing the history section) and move the suggestions to a floating autosuggest that only shows up once you start typing over the history. 
+- [ ] Any command that also returns a value should be debug printed under it
+  - [ ] to the right of this message should be a copy button icon, which when pressed copies the exact command and its response
+- [ ] pressing up/down without typing anything should instead use command history
+- [ ] ctrl + v should paste whats on the clipboard into the text
 
 # Hotkeys
 - [x] use bevy_enhanced_input
@@ -56,6 +60,7 @@
 # Terrain
 - [x] Setup atmosphere
 - [x] I dont touch the floor, jumping also leaves me a little bit off the floor
+- [ ] Setup https://docs.rs/meshless_voronoi/latest/meshless_voronoi/ to split the map into cells. modify each cell to have some base height (which can be negative too).
 
 # Pause and resume
 - [x] when ~ menu is open pause the game exactly as it is, when the menu is closed, resume.

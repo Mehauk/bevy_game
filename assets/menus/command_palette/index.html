@@ -1,5 +1,5 @@
 <node id="overlay" class="overlay">
-    <node id="backdrop" class="backdrop" />
+    <node class="backdrop" />
     <node class="bottom-sheet">
         <node class="console-header">
             <node class="header-left">
@@ -7,13 +7,12 @@
             </node>
             <text class="console-hint">[↑/↓] Select | [Tab] Autocomplete | [Enter] Execute | [Esc/~] Close</text>
         </node>
-        <node id="palette_list" class="palette-list" />
-        <node class="input-section">
+        <node id="console_history" class="console-history" />
+        <node id="suggestions" class="suggestions" />
+        <node class="input-row">
+            <text class="prompt-symbol">&gt;</text>
+            <input id="search" class="console-input" autofocus="true" />
             <text id="suggestion_preview" class="suggestion-preview"></text>
-            <node class="input-row">
-                <text class="prompt-symbol">&gt;</text>
-                <input id="search" class="console-input" autofocus="true" />
-            </node>
         </node>
     </node>
 </node>

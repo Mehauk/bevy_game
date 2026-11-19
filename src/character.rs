@@ -1,12 +1,11 @@
-use bevy::{
-    prelude::*,
-    window::{CursorGrabMode, CursorOptions, PrimaryWindow},
-};
+use avian3d::prelude::*;
+use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
+    camera::{CameraRig, CameraSystems, CameraTarget},
     input::{ContextActive, GameplayInput, HotkeyLabel},
-    menus::MenuManager,
+    terrain::TerrainMap,
     utils::commands::{CommandAppExt, command},
 };
 
@@ -14,33 +13,23 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<WantedCursorLock>()
-            .add_systems(Startup, setup_character)
-            .add_observer(on_grab_cursor)
-            .add_observer(on_release_cursor)
-            .add_observer(on_toggle_view_mode)
-            .add_observer(on_character_look)
-            .add_systems(Update, (character_move, sync_camera_and_body).chain())
-            .add_systems(PostUpdate, sync_cursor_with_menus);
+        app.add_systems(Startup, setup_character)
+            .add_systems(FixedUpdate, (character_ground_check, character_physics_move).chain())
+            .add_systems(Update, character_rotate_body)
+            .add_systems(
+                PostUpdate,
+                sync_body_visibility
+                    .after(CameraSystems::UpdateTransform)
+                    .before(TransformSystems::Propagate),
+            );
 
-        command!(
-            app,
-            "toggle between first and third person view",
-            toggle_view_mode
-        );
+        command!(app, "Respawn character", respawn_character);
     }
 }
-
-#[derive(Resource, Default)]
-struct WantedCursorLock(bool);
 
 #[derive(InputAction)]
 #[action_output(Vec2)]
 struct Move;
-
-#[derive(InputAction)]
-#[action_output(Vec2)]
-struct Look;
 
 #[derive(InputAction)]
 #[action_output(bool)]
@@ -52,57 +41,44 @@ struct AlignToCamera;
 
 #[derive(InputAction)]
 #[action_output(bool)]
-struct ToggleViewMode;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-struct GrabCursor;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-struct ReleaseCursor;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ViewMode {
-    FirstPerson,
-    #[default]
-    ThirdPerson,
-}
+struct Jump;
 
 #[derive(Component, Clone)]
 pub struct Character {
-    pub yaw: f32,
-    pub pitch: f32,
     pub walk_speed: f32,
     pub sprint_speed: f32,
+    pub jump_speed: f32,
     pub turn_speed: f32,
-    pub sensitivity: f32,
-    pub third_person_distance: f32,
-    pub eye_height_offset: f32,
-    pub view_mode: ViewMode,
+    pub acceleration: f32,
+    pub air_acceleration: f32,
+    pub jump_cooldown: f32,
 }
 
 impl Default for Character {
     fn default() -> Self {
         Self {
-            yaw: 0.0,
-            pitch: -0.25,
             walk_speed: 6.0,
             sprint_speed: 12.0,
+            jump_speed: 11.0,
             turn_speed: 12.0,
-            sensitivity: 0.0025,
-            third_person_distance: 6.0,
-            eye_height_offset: 0.65,
-            view_mode: ViewMode::ThirdPerson,
+            acceleration: 60.0,
+            air_acceleration: 15.0,
+            jump_cooldown: 0.0,
         }
     }
 }
 
-#[derive(Component)]
-struct CharacterBody;
+#[derive(Component, Default)]
+pub struct GroundState {
+    pub is_grounded: bool,
+    pub ground_normal: Vec3,
+    pub hit_distance: f32,
+    pub jump_cooldown_timer: f32,
+    pub jump_held_last_frame: bool, 
+}
 
 #[derive(Component)]
-struct CharacterCamera;
+struct CharacterBody;
 
 fn setup_character(world: &mut World) {
     let capsule_mesh = world
@@ -122,12 +98,15 @@ fn setup_character(world: &mut World) {
         require_reset: true,
         ..default()
     };
-    let toggle_view: Binding = KeyCode::KeyF.with_mod_keys(ModKeys::SHIFT).into();
+    let spawn_y = world
+        .get_resource::<TerrainMap>()
+        .map_or(0.0, |t| t.height_at(0.0, 0.0))
+        + 1.5;
 
     let mut char_entity = world
         .spawn_scene(bsn! {
             Character
-            Transform::from_xyz(0.0, 0.9, 0.0)
+            Transform::from_xyz(0.0, spawn_y, 0.0)
             Visibility::default()
             GameplayInput
             Actions<GameplayInput> [
@@ -151,11 +130,6 @@ fn setup_character(world: &mut World) {
                     ~Negate::all()
                 ]
                 --
-                Action::<Look>::new()
-                Bindings [
-                    Binding::mouse_motion()
-                ]
-                --
                 Action::<Sprint>::new()
                 reset_settings
                 HotkeyLabel("Sprint")
@@ -174,33 +148,40 @@ fn setup_character(world: &mut World) {
                     Binding(KeyCode::AltRight)
                 ]
                 --
-                Action::<ToggleViewMode>::new()
+                Action::<Jump>::new()
                 reset_settings
-                HotkeyLabel("Toggle 1st/3rd View")
+                HotkeyLabel("Jump")
                 Bindings [
-                    toggle_view
-                ]
-                --
-                Action::<GrabCursor>::new()
-                reset_settings
-                Bindings [
-                    Binding(MouseButton::Left)
-                ]
-                --
-                Action::<ReleaseCursor>::new()
-                reset_settings
-                HotkeyLabel("Unlock Cursor")
-                Bindings [
-                    Binding(KeyCode::Escape)
+                    Binding(KeyCode::Space)
                 ]
             ]
         })
         .unwrap();
 
+    let entity_id = char_entity.id();
+
     char_entity
         .insert((
+            CameraTarget::default(),
             ContextActive(true),
             ContextActivity::<GameplayInput>::ACTIVE,
+            RigidBody::Dynamic,
+            Collider::capsule(0.4, 1.0),
+            LockedAxes::ROTATION_LOCKED,
+            Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
+            Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
+            LinearVelocity::default(),
+            GravityScale(2.5),
+            GroundState::default(),
+            TransformInterpolation,
+            ShapeCaster::new(
+                Collider::sphere(0.35),
+                Vec3::new(0.0, -0.6, 0.0),
+                Quat::IDENTITY,
+                Dir3::NEG_Y,
+            )
+            .with_max_distance(0.5)
+            .with_query_filter(SpatialQueryFilter::from_excluded_entities([entity_id])),
         ))
         .with_children(|parent| {
             parent
@@ -218,158 +199,192 @@ fn setup_character(world: &mut World) {
                         Transform::from_xyz(0.0, 0.45, -0.35),
                     ));
                 });
-
-            parent.spawn((CharacterCamera, Camera3d::default(), Transform::default()));
         });
 }
 
-fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
-    wanted_lock.0 = true;
-}
-
-fn on_release_cursor(
-    _event: On<Start<ReleaseCursor>>,
-    mut wanted_lock: ResMut<WantedCursorLock>,
-) {
-    wanted_lock.0 = false;
-}
-
-fn sync_cursor_with_menus(
-    wanted_lock: Res<WantedCursorLock>,
-    menu_manager: Res<MenuManager>,
-    mut prev_locked: Local<Option<bool>>,
-    mut cursor_options: Single<&mut CursorOptions, With<PrimaryWindow>>,
-) {
-    let should_lock = wanted_lock.0 && !menu_manager.any_open();
-    if *prev_locked == Some(should_lock) {
-        return;
-    }
-    *prev_locked = Some(should_lock);
-
-    if should_lock {
-        cursor_options.visible = false;
-        cursor_options.grab_mode = CursorGrabMode::Locked;
-    } else {
-        cursor_options.visible = true;
-        cursor_options.grab_mode = CursorGrabMode::None;
-    }
-}
-
-fn toggle_view_mode(mut character: Single<&mut Character>) {
-    character.view_mode = match character.view_mode {
-        ViewMode::FirstPerson => ViewMode::ThirdPerson,
-        ViewMode::ThirdPerson => ViewMode::FirstPerson,
-    };
-}
-
-fn on_toggle_view_mode(_event: On<Start<ToggleViewMode>>, character: Single<&mut Character>) {
-    toggle_view_mode(character);
-}
-
-fn on_character_look(
-    event: On<Fire<Look>>,
-    cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
-    mut character: Single<&mut Character>,
-) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked || event.value == Vec2::ZERO {
-        return;
-    }
-    character.yaw -= event.value.x * character.sensitivity;
-    character.pitch =
-        (character.pitch - event.value.y * character.sensitivity).clamp(-1.35, 1.35);
-}
-
-fn character_move(
+fn character_ground_check(
     time: Res<Time>,
+    mut query: Query<(&ShapeHits, &mut GroundState), With<Character>>,
+) {
+    let dt = time.delta_secs();
+    for (hits, mut ground_state) in &mut query {
+        ground_state.jump_cooldown_timer = (ground_state.jump_cooldown_timer - dt).max(0.0);
+
+        // While jumping upward during cooldown, stay ungrounded
+        if ground_state.jump_cooldown_timer > 0.0 {
+            ground_state.is_grounded = false;
+            ground_state.ground_normal = Vec3::Y;
+            ground_state.hit_distance = f32::MAX;
+            continue;
+        }
+
+        if let Some(hit) = hits.iter_sorted().next() {
+            // Only consider it grounded if hit is close enough and slope isn't a wall
+            if hit.distance <= 0.45 && hit.normal1.angle_between(Vec3::Y) <= 50.0_f32.to_radians() {
+                ground_state.is_grounded = true;
+                ground_state.ground_normal = hit.normal1.normalize();
+                ground_state.hit_distance = hit.distance;
+                continue;
+            }
+        }
+
+        ground_state.is_grounded = false;
+        ground_state.ground_normal = Vec3::Y;
+        ground_state.hit_distance = f32::MAX;
+    }
+}
+
+fn character_physics_move(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
-    align_action: Single<&Action<AlignToCamera>>,
-    character_query: Single<
-        (&Character, &mut Transform),
-        (Without<CharacterBody>, Without<CharacterCamera>),
-    >,
-    mut body_transform: Single<
-        &mut Transform,
-        (
-            With<CharacterBody>,
-            Without<Character>,
-            Without<CharacterCamera>,
-        ),
-    >,
+    jump_action: Single<&Action<Jump>>,
+    cam_rig: Option<Single<&CameraRig>>,
+    character_query: Single<(
+        &Character,
+        &mut GroundState,
+        &mut LinearVelocity,
+        &mut GravityScale, // <--- Add GravityScale here
+    )>,
 ) {
-    let (character, mut transform) = character_query.into_inner();
+    let (character, mut ground, mut velocity, mut gravity_scale) = character_query.into_inner();
+    let dt = time.delta_secs();
+
     let move_vec = ***move_action;
     let sprinting = ***sprint_action;
-    let alt_held = ***align_action;
+    let jumping = ***jump_action;
+    let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
 
-    let yaw_rot = Quat::from_rotation_y(character.yaw);
+    let yaw_rot = Quat::from_rotation_y(cam_yaw);
+    let forward = yaw_rot * Vec3::NEG_Z;
+    let right = yaw_rot * Vec3::X;
+    let move_dir = (right * move_vec.x + forward * move_vec.y).normalize_or_zero();
+
+    let target_speed = if sprinting {
+        character.sprint_speed
+    } else {
+        character.walk_speed
+    };
+    let target_horiz = move_dir * target_speed;
+
+    let accel = if ground.is_grounded {
+        character.acceleration
+    } else {
+        character.air_acceleration
+    };
+
+    let mut current_horiz = Vec3::new(velocity.x, 0.0, velocity.z);
+    let diff = target_horiz - current_horiz;
+    let max_change = accel * dt;
+    if diff.length_squared() <= max_change * max_change {
+        current_horiz = target_horiz;
+    } else {
+        current_horiz += diff.normalize() * max_change;
+    }
+
+    velocity.x = current_horiz.x;
+    velocity.z = current_horiz.z;
+
+    let ctrl_held = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+    let jump_just_pressed = jumping && !ground.jump_held_last_frame;
+
+    if jump_just_pressed && ground.is_grounded && !ctrl_held && ground.jump_cooldown_timer <= 0.0 {
+        // Immediate launch only on a fresh press
+        velocity.y = character.jump_speed;
+        ground.is_grounded = false;
+        ground.jump_cooldown_timer = 0.2;
+        gravity_scale.0 = 2.5;
+    } else if ground.is_grounded {
+        gravity_scale.0 = 2.5;
+
+        // Anti-bounce: prevent upward rebound when grounded
+        if velocity.y > 0.0 {
+            velocity.y = 0.0;
+        }
+
+        // Stick to downslopes
+        if move_dir != Vec3::ZERO && ground.ground_normal.y > 0.01 {
+            let slope_tangent_y = -(velocity.x * ground.ground_normal.x + velocity.z * ground.ground_normal.z)
+                / ground.ground_normal.y;
+            if slope_tangent_y < 0.0 {
+                velocity.y = slope_tangent_y;
+            }
+        }
+    } else {
+        // Airborne: asymmetric gravity
+        if velocity.y < 0.0 {
+            // Fall faster (3.5x gravity)
+            gravity_scale.0 = 3.5;
+        } else if !jumping {
+            // Cut jump short if player releases Space early
+            gravity_scale.0 = 3.5;
+        } else {
+            // Rising with Space held
+            gravity_scale.0 = 2.5;
+        }
+    }
+
+    // Remember whether Space was held this frame
+    ground.jump_held_last_frame = jumping;
+}
+
+fn character_rotate_body(
+    time: Res<Time>,
+    move_action: Single<&Action<Move>>,
+    align_action: Single<&Action<AlignToCamera>>,
+    cam_rig: Option<Single<&CameraRig>>,
+    cam_target: Single<&CameraTarget, With<Character>>,
+    character: Single<&Character>,
+    mut body_transform: Single<&mut Transform, (With<CharacterBody>, Without<Character>)>,
+) {
+    let move_vec = ***move_action;
+    let alt_held = ***align_action;
+    let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
+    let yaw_rot = Quat::from_rotation_y(cam_yaw);
+
+    if cam_target.first_person {
+        body_transform.rotation = yaw_rot;
+        return;
+    }
+
+    if alt_held {
+        let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
+        body_transform.rotation = body_transform.rotation.slerp(yaw_rot, turn_alpha);
+        return;
+    }
+
     let forward = yaw_rot * Vec3::NEG_Z;
     let right = yaw_rot * Vec3::X;
     let direction = right * move_vec.x + forward * move_vec.y;
-
     if direction != Vec3::ZERO {
         let move_dir = direction.normalize();
-        let speed = if sprinting {
-            character.sprint_speed
-        } else {
-            character.walk_speed
-        };
-        transform.translation += move_dir * speed * time.delta_secs();
-
-        if character.view_mode == ViewMode::ThirdPerson && !alt_held {
-            let target_yaw = (-move_dir.x).atan2(-move_dir.z);
-            let target_rot = Quat::from_rotation_y(target_yaw);
-            let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
-            body_transform.rotation = body_transform.rotation.slerp(target_rot, turn_alpha);
-        }
-    }
-
-    if character.view_mode == ViewMode::FirstPerson {
-        body_transform.rotation = yaw_rot;
-    } else if alt_held {
+        let target_yaw = (-move_dir.x).atan2(-move_dir.z);
+        let target_rot = Quat::from_rotation_y(target_yaw);
         let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
-        body_transform.rotation = body_transform.rotation.slerp(yaw_rot, turn_alpha);
+        body_transform.rotation = body_transform.rotation.slerp(target_rot, turn_alpha);
     }
 }
 
-fn sync_camera_and_body(
-    character_query: Single<
-        (&Character, &Transform),
-        (Without<CharacterCamera>, Without<CharacterBody>),
-    >,
-    mut camera_transform: Single<
-        &mut Transform,
-        (
-            With<CharacterCamera>,
-            Without<Character>,
-            Without<CharacterBody>,
-        ),
-    >,
+fn sync_body_visibility(
+    target: Single<&CameraTarget, With<Character>>,
     mut body_visibility: Single<&mut Visibility, With<CharacterBody>>,
 ) {
-    let (character, char_transform) = *character_query;
-    let eye_pivot = Vec3::new(0.0, character.eye_height_offset, 0.0);
-    let cam_yaw_rot = Quat::from_rotation_y(character.yaw);
-    let cam_pitch_rot = Quat::from_rotation_x(character.pitch);
-
-    match character.view_mode {
-        ViewMode::FirstPerson => {
-            **body_visibility = Visibility::Hidden;
-            camera_transform.translation = eye_pivot;
-            camera_transform.rotation = cam_yaw_rot * cam_pitch_rot;
-        }
-        ViewMode::ThirdPerson => {
-            **body_visibility = Visibility::Visible;
-            let offset = cam_yaw_rot
-                * cam_pitch_rot
-                * Vec3::new(0.0, 0.0, character.third_person_distance);
-
-            let mut cam_pos = eye_pivot + offset;
-            let min_local_y = -char_transform.translation.y + 0.25;
-            cam_pos.y = cam_pos.y.max(min_local_y);
-
-            camera_transform.translation = cam_pos;
-            camera_transform.look_at(eye_pivot, Vec3::Y);
-        }
+    let desired = if target.first_person {
+        Visibility::Hidden
+    } else {
+        Visibility::Visible
+    };
+    if **body_visibility != desired {
+        **body_visibility = desired;
     }
+}
+
+fn respawn_character(
+    terrain: Option<Res<TerrainMap>>,
+    mut query: Single<(&mut Transform, &mut LinearVelocity), With<Character>>,
+) {
+    let spawn_y = terrain.as_ref().map_or(0.0, |t| t.height_at(0.0, 0.0)) + 2.0;
+    query.0.translation = Vec3::new(0.0, spawn_y, 0.0);
+    query.1.0 = Vec3::ZERO;
 }

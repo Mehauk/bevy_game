@@ -1,8 +1,9 @@
+mod camera;
 mod character;
 mod input;
 mod menus;
-mod utils;
 mod terrain;
+mod utils;
 
 use bevy::{
     asset::io::AssetSourceBuilder,
@@ -12,6 +13,7 @@ use bevy::{
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 
+use camera::CameraPlugin;
 use character::CharacterPlugin;
 use input::InputPlugin;
 use menus::{
@@ -19,6 +21,7 @@ use menus::{
 };
 use terrain::TerrainPlugin;
 use utils::{DevUtilsPlugin, commands::CommandRegistryPlugin};
+use avian3d::prelude::*;
 
 fn main() {
     let _ = std::fs::create_dir_all("mods");
@@ -27,6 +30,7 @@ fn main() {
         .register_asset_source("mods", AssetSourceBuilder::platform_default("mods", None))
         .add_plugins((
             DefaultPlugins,
+            PhysicsPlugins::default(),
             FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
@@ -36,6 +40,7 @@ fn main() {
             CommandMenuPlugin,
             KeyboardMenuPlugin,
             DevUtilsPlugin,
+            CameraPlugin,
             CharacterPlugin,
             TerrainPlugin,
         ))

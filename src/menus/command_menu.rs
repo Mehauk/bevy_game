@@ -15,7 +15,7 @@ impl Plugin for CommandMenuPlugin {
             id: "command_palette",
             hotkey_label: "Command Palette",
             command: None,
-            bindings: vec![KeyCode::Space.with_mod_keys(ModKeys::CONTROL).into()],
+            bindings: vec![Binding::from(KeyCode::Backquote)],
         });
     }
 }

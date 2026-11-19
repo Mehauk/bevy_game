@@ -2,10 +2,16 @@
     <node id="backdrop" class="backdrop" />
     <node class="panel">
         <node class="header">
-            <text class="title">Keyboard Shortcuts</text>
+            <text class="title">Keyboard &amp; Mouse Shortcuts</text>
             <text id="mod_indicator" class="mod-indicator">Modifiers: None</text>
         </node>
-        <node id="keyboard_rows" class="keyboard-rows" />
+        <node class="shortcuts-container">
+            <node id="keyboard_rows" class="keyboard-rows" />
+            <node class="mouse-panel">
+                <text class="mouse-title">5-Button Mouse</text>
+                <node id="mouse_slots" class="mouse-slots" />
+            </node>
+        </node>
         <text class="hint">Hold Shift / Ctrl / Alt (or click modifier keys) to preview bindings | Esc to close</text>
     </node>
 </node>

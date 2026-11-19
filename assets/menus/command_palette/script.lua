@@ -9,15 +9,16 @@ function on_dom_event(handler, node, payload)
     end
 end
 
-local MAX_ROWS = 20
+local MAX_ROWS = 15
 local current_menu_name = nil
 local all_commands = {}
 local visible = {}
 local selected_index = nil
-local current_query = ""
+local current_raw_input = ""
 
 local list_el = nil
 local search_el = nil
+local preview_el = nil
 
 local function fuzzy_match(candidate, query)
     if query == "" then
@@ -111,6 +112,16 @@ local function segments_from_matches(candidate, matched)
     return segments
 end
 
+local function update_preview()
+    if preview_el == nil then return end
+    if selected_index ~= nil and visible[selected_index] ~= nil then
+        local cmd = visible[selected_index].cmd
+        dom.set_text(preview_el, "Tab: " .. cmd.name)
+    else
+        dom.set_text(preview_el, "")
+    end
+end
+
 local function set_selected(new_idx)
     if selected_index ~= nil and visible[selected_index] ~= nil then
         dom.remove_class(visible[selected_index].el, "selected")
@@ -119,20 +130,33 @@ local function set_selected(new_idx)
     if selected_index ~= nil and visible[selected_index] ~= nil then
         dom.add_class(visible[selected_index].el, "selected")
     end
+    update_preview()
 end
 
-local function rebuild_list(query)
-    current_query = string.lower((query or ""):match("^%s*(.-)%s*$"))
+local function parse_input_line(raw)
+    local trimmed = (raw or ""):match("^%s*(.-)%s*$")
+    local space_pos = string.find(trimmed, "%s+")
+    if space_pos ~= nil then
+        local cmd = string.sub(trimmed, 1, space_pos - 1)
+        local args = string.sub(trimmed, space_pos)
+        return cmd, args
+    end
+    return trimmed, ""
+end
+
+local function rebuild_list(raw_input)
+    current_raw_input = raw_input or ""
+    local cmd_query, args = parse_input_line(current_raw_input)
     local scored = {}
 
     for _, cmd in ipairs(all_commands) do
-        local s, m = fuzzy_match(cmd.name, current_query)
+        local s, m = fuzzy_match(cmd.name, cmd_query)
         if s ~= nil then
             table.insert(scored, { cmd = cmd, score = s, matched = m })
         end
     end
 
-    if current_query ~= "" then
+    if cmd_query ~= "" then
         table.sort(scored, function(a, b)
             if a.score ~= b.score then
                 return a.score > b.score
@@ -144,7 +168,7 @@ local function rebuild_list(query)
     dom.clear(list_el)
     visible = {}
     local count = math.min(#scored, MAX_ROWS)
-    selected_index = (current_query ~= "" and count > 0) and 1 or nil
+    selected_index = (cmd_query ~= "" and count > 0) and 1 or nil
 
     for i = 1, count do
         local entry = scored[i]
@@ -167,6 +191,8 @@ local function rebuild_list(query)
 
         visible[i] = { el = row, cmd = entry.cmd }
     end
+
+    update_preview()
 end
 
 function on_menu_ready(menu_name, root_id)
@@ -174,6 +200,7 @@ function on_menu_ready(menu_name, root_id)
     all_commands = commands.list()
     list_el = dom.get_by_id(root_id, "palette_list")
     search_el = dom.get_by_id(root_id, "search")
+    preview_el = dom.get_by_id(root_id, "suggestion_preview")
 
     dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
     dom.on(search_el, "text_change", "on_search_change")
@@ -212,25 +239,30 @@ function on_search_key(_, ev)
         end
     elseif key == "Tab" then
         if selected_index ~= nil and visible[selected_index] ~= nil then
-            dom.set_value(search_el, visible[selected_index].cmd.name)
+            local _, args = parse_input_line(current_raw_input)
+            local cmd_name = visible[selected_index].cmd.name
+            local new_val = cmd_name .. args
+            if args == "" then
+                new_val = cmd_name .. " "
+            end
+            dom.set_value(search_el, new_val)
         end
     elseif key == "Enter" then
-        local target = nil
+        local full_command = current_raw_input:match("^%s*(.-)%s*$")
         if selected_index ~= nil and visible[selected_index] ~= nil then
-            target = visible[selected_index].cmd.name
-        elseif current_query ~= "" then
-            for _, cmd in ipairs(all_commands) do
-                if string.lower(cmd.name) == current_query then
-                    target = cmd.name
-                    break
-                end
+            local _, args = parse_input_line(current_raw_input)
+            local cmd_name = visible[selected_index].cmd.name
+            if args ~= "" then
+                full_command = cmd_name .. args
+            else
+                full_command = cmd_name
             end
         end
 
-        if target ~= nil then
+        if full_command ~= "" then
             menus.close(current_menu_name)
-            commands.run(target)
-        elseif current_query == "" then
+            commands.run(full_command)
+        else
             menus.close(current_menu_name)
         end
     end

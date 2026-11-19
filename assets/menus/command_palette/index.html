@@ -1,11 +1,17 @@
 <node id="overlay" class="overlay">
     <node id="backdrop" class="backdrop" />
-    <node class="panel">
-        <text class="title">Command Palette</text>
-        <node class="search-box">
-            <input id="search" class="search-input" autofocus="true" />
+    <node class="bottom-sheet">
+        <node class="console-header">
+            <node class="header-left">
+                <text class="console-tag">CONSOLE</text>
+                <text id="suggestion_preview" class="suggestion-preview"></text>
+            </node>
+            <text class="console-hint">[↑/↓] Select | [Tab] Autocomplete | [Enter] Execute | [Esc] Close</text>
         </node>
         <node id="palette_list" class="palette-list" />
-        <text class="hint">Up/Down select | Tab autofill | Enter run | Esc close</text>
+        <node class="input-row">
+            <text class="prompt-symbol">&gt;</text>
+            <input id="search" class="console-input" autofocus="true" />
+        </node>
     </node>
 </node>

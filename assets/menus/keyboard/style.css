@@ -39,6 +39,12 @@
     color: #7FA8FF;
 }
 
+.shortcuts-container {
+    flex-direction: row;
+    column-gap: 14px;
+    align-items: flex-start;
+}
+
 .keyboard-rows {
     flex-direction: column;
     row-gap: 5px;
@@ -50,6 +56,180 @@
     align-items: center;
 }
 
+/* Mouse Panel & Chassis */
+.mouse-panel {
+    width: 215px;
+    padding: 10px 8px;
+    flex-direction: column;
+    row-gap: 8px;
+    background-color: #191B24;
+    border-width: 1px;
+    border-color: #2F3345;
+    border-radius: 8px;
+    align-items: center;
+}
+
+.mouse-title {
+    font-size: 13px;
+    color: #8C94A8;
+}
+
+.mouse-slots {
+    width: 100%;
+    flex-direction: column;
+    align-items: center;
+}
+
+.mouse-device {
+    flex-direction: row;
+    align-items: flex-start;
+    column-gap: 5px;
+}
+
+/* Side Thumb Buttons (Left Flank) */
+.mouse-thumb-col {
+    flex-direction: column;
+    row-gap: 6px;
+    margin-top: 58px;
+}
+
+.mouse-thumb-btn {
+    width: 38px;
+    height: 48px;
+    padding: 4px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    background-color: #222532;
+    border-width: 1px;
+    border-color: #35394A;
+    border-radius: 6px 2px 2px 6px;
+}
+
+/* Mouse Body */
+.mouse-body {
+    width: 148px;
+    padding: 5px;
+    flex-direction: column;
+    row-gap: 5px;
+    background-color: #14161F;
+    border-width: 2px;
+    border-color: #35394A;
+    border-radius: 26px 26px 22px 22px;
+    align-items: center;
+}
+
+.mouse-top-row {
+    width: 100%;
+    height: 105px;
+    flex-direction: row;
+    column-gap: 4px;
+    justify-content: space-between;
+    align-items: stretch;
+}
+
+.mouse-btn-left {
+    width: 46px;
+    height: 100%;
+    padding: 4px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    background-color: #222532;
+    border-width: 1px;
+    border-color: #35394A;
+    border-radius: 18px 4px 4px 6px;
+}
+
+.mouse-wheel-col {
+    width: 38px;
+    height: 100%;
+    flex-direction: column;
+    row-gap: 4px;
+    justify-content: space-between;
+}
+
+.mouse-wheel-btn {
+    width: 100%;
+    height: 48px;
+    padding: 3px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    background-color: #222532;
+    border-width: 1px;
+    border-color: #35394A;
+    border-radius: 4px;
+}
+
+.mouse-wheel-scroll {
+    width: 100%;
+    height: 48px;
+    padding: 3px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    background-color: #222532;
+    border-width: 1px;
+    border-color: #3D4866;
+    border-radius: 4px;
+}
+
+.mouse-btn-right {
+    width: 46px;
+    height: 100%;
+    padding: 4px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    background-color: #222532;
+    border-width: 1px;
+    border-color: #35394A;
+    border-radius: 4px 18px 6px 4px;
+}
+
+.mouse-palm {
+    width: 100%;
+    height: 125px;
+    padding: 6px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    background-color: #1E212D;
+    border-width: 1px;
+    border-color: #303546;
+    border-radius: 6px 6px 18px 18px;
+}
+
+/* Mouse Bound State Highlights */
+.mouse-thumb-btn.bound,
+.mouse-btn-left.bound,
+.mouse-wheel-btn.bound,
+.mouse-wheel-scroll.bound,
+.mouse-btn-right.bound,
+.mouse-palm.bound {
+    background-color: #243C68;
+    border-color: #5C94FF;
+}
+
+.mouse-thumb-btn.bound .key-cap,
+.mouse-thumb-btn.bound .mouse-cap-small,
+.mouse-btn-left.bound .key-cap,
+.mouse-wheel-btn.bound .key-cap,
+.mouse-wheel-btn.bound .mouse-cap-small,
+.mouse-wheel-scroll.bound .key-cap,
+.mouse-wheel-scroll.bound .mouse-cap-small,
+.mouse-btn-right.bound .key-cap,
+.mouse-palm.bound .key-cap {
+    color: #FFFFFF;
+}
+
+.mouse-cap-small {
+    font-size: 9px;
+    color: #B6BCD0;
+}
+
+/* Keyboard Keys */
 .key {
     height: 54px;
     padding: 4px 5px;
@@ -94,7 +274,6 @@
     flex-shrink: 0;
 }
 
-/* Fixed keycap widths */
 .w-1 {
     width: 54px;
 }

@@ -6,7 +6,7 @@ use crate::{
     camera::{CameraRig, CameraSystems, CameraTarget},
     input::{ContextActive, GameplayInput, HotkeyLabel},
     terrain::TerrainMap,
-    utils::commands::{CommandAppExt, command},
+    utils::commands::{CommandAppExt, CommandArgs, command},
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
@@ -28,6 +28,16 @@ impl Plugin for CharacterPlugin {
             );
 
         command!(app, "Respawn character", respawn_character);
+        command!(
+            app,
+            "Set walk and sprint speed: <walk> [sprint] (e.g. 'speed 10 20')",
+            set_character_speed
+        );
+        command!(
+            app,
+            "Increase character speed: <walk_add> [sprint_add] (e.g. 'increase_speed 2 4')",
+            increase_character_speed
+        );
     }
 }
 
@@ -86,9 +96,11 @@ impl Default for Character {
 pub struct GroundState {
     pub is_grounded: bool,
     pub ground_normal: Vec3,
+    pub ground_distance: f32,
     pub jump_cooldown_timer: f32,
     pub jump_held_last_frame: bool,
 }
+
 
 #[derive(Component)]
 struct CharacterBody;
@@ -242,6 +254,7 @@ fn character_ground_check(
         if ground_state.jump_cooldown_timer > 0.0 {
             ground_state.is_grounded = false;
             ground_state.ground_normal = Vec3::Y;
+            ground_state.ground_distance = 0.0;
             continue;
         }
 
@@ -249,12 +262,14 @@ fn character_ground_check(
             if hit.distance <= 0.45 && hit.normal1.angle_between(Vec3::Y) <= character.max_slope_angle_rad {
                 ground_state.is_grounded = true;
                 ground_state.ground_normal = hit.normal1.normalize();
+                ground_state.ground_distance = hit.distance;
                 continue;
             }
         }
 
         ground_state.is_grounded = false;
         ground_state.ground_normal = Vec3::Y;
+        ground_state.ground_distance = 0.0;
     }
 }
 
@@ -263,7 +278,7 @@ fn character_physics_move(
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
     jump_action: Single<&Action<Jump>>,
-    crouch_action: Single<&Action<Crouch>>,
+    _crouch_action: Single<&Action<Crouch>>,
     cam_rig: Option<Single<&CameraRig>>,
     character_query: Single<(
         &Character,
@@ -278,7 +293,6 @@ fn character_physics_move(
     let move_vec = ***move_action;
     let sprinting = ***sprint_action;
     let jumping = ***jump_action;
-    let crouching = ***crouch_action;
     let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
 
     let move_dir = camera_relative_direction(move_vec, cam_yaw).normalize_or_zero();
@@ -310,24 +324,28 @@ fn character_physics_move(
 
     let jump_just_pressed = jumping && !ground.jump_held_last_frame;
 
-    if jump_just_pressed && ground.is_grounded && !crouching && ground.jump_cooldown_timer <= 0.0 {
+    if jump_just_pressed && ground.is_grounded && ground.jump_cooldown_timer <= 0.0 {
         velocity.y = character.jump_speed;
         ground.is_grounded = false;
         ground.jump_cooldown_timer = character.jump_cooldown;
         gravity_scale.0 = character.base_gravity;
     } else if ground.is_grounded {
-        gravity_scale.0 = character.base_gravity;
+        // While grounded, zero gravity so the character doesn't slide down frictionless slopes
+        gravity_scale.0 = 0.0;
 
-        if velocity.y > 0.0 {
-            velocity.y = 0.0;
-        }
-
-        if move_dir != Vec3::ZERO && ground.ground_normal.y > 0.01 {
+        let has_horiz_vel = velocity.x.abs() > 0.001 || velocity.z.abs() > 0.001;
+        if has_horiz_vel && ground.ground_normal.y > 0.01 {
             let slope_tangent_y = -(velocity.x * ground.ground_normal.x + velocity.z * ground.ground_normal.z)
                 / ground.ground_normal.y;
-            if slope_tangent_y < 0.0 {
-                velocity.y = slope_tangent_y;
-            }
+            // Snap gently if slightly above the ground to remain glued over crests
+            let snap = if ground.ground_distance > 0.05 {
+                ((ground.ground_distance - 0.05) * 10.0).min(4.0)
+            } else {
+                0.0
+            };
+            velocity.y = slope_tangent_y - snap;
+        } else {
+            velocity.y = 0.0;
         }
     } else {
         if velocity.y < 0.0 {
@@ -407,4 +425,56 @@ fn respawn_character(
     velocity.0 = Vec3::ZERO;
     *ground = GroundState::default();
     gravity.0 = character.base_gravity;
+}
+
+fn set_character_speed(
+    args: Res<CommandArgs>,
+    mut character_query: Query<&mut Character>,
+) {
+    let Ok(mut character) = character_query.single_mut() else {
+        return;
+    };
+
+    if args.args.is_empty() {
+        info!(
+            "Current speed: walk={:.1}, sprint={:.1}. Usage: speed <walk> [sprint]",
+            character.walk_speed, character.sprint_speed
+        );
+        return;
+    }
+
+    if let Some(walk) = args.get_f32(0) {
+        character.walk_speed = walk;
+        if let Some(sprint) = args.get_f32(1) {
+            character.sprint_speed = sprint;
+        } else {
+            character.sprint_speed = walk * 2.0;
+        }
+        info!(
+            "Set character speed -> walk: {:.1}, sprint: {:.1}",
+            character.walk_speed, character.sprint_speed
+        );
+    } else {
+        warn!("Invalid speed parameter: {:?}", args.args);
+    }
+}
+
+fn increase_character_speed(
+    args: Res<CommandArgs>,
+    mut character_query: Query<&mut Character>,
+) {
+    let Ok(mut character) = character_query.single_mut() else {
+        return;
+    };
+
+    let walk_add = args.get_f32(0).unwrap_or(2.0);
+    let sprint_add = args.get_f32(1).unwrap_or(walk_add * 2.0);
+
+    character.walk_speed += walk_add;
+    character.sprint_speed += sprint_add;
+
+    info!(
+        "Increased character speed (+{:.1}, +{:.1}) -> walk: {:.1}, sprint: {:.1}",
+        walk_add, sprint_add, character.walk_speed, character.sprint_speed
+    );
 }

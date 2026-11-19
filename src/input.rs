@@ -199,6 +199,11 @@ impl InputAppExt for App {
                     .spawn((
                         Action::<A>::new(),
                         ActionOf::<GlobalInput>::new(global.0),
+                        ActionSettings {
+                            consume_input: true,
+                            require_reset: true,
+                            ..default()
+                        },
                         HotkeyLabel(label),
                     ))
                     .id();
@@ -229,6 +234,11 @@ impl InputAppExt for App {
                     .spawn((
                         Action::<A>::new(),
                         ActionOf::<GameplayInput>::new(gameplay.0),
+                        ActionSettings {
+                            consume_input: true,
+                            require_reset: true,
+                            ..default()
+                        },
                         HotkeyLabel(label),
                     ))
                     .id();
@@ -301,9 +311,27 @@ fn sync_hotkey_registry(
 
     let mut entries = Vec::new();
     for (binding, binding_of, binding_label) in &q_bindings {
-        let Binding::Keyboard { key, mod_keys } = *binding else {
-            continue;
+        let (key_str, mod_keys) = match *binding {
+            Binding::Keyboard { key, mod_keys } => (format!("{key:?}"), mod_keys),
+            Binding::MouseButton { button, mod_keys } => {
+                let s = match button {
+                    MouseButton::Left => "MouseLeft".to_string(),
+                    MouseButton::Right => "MouseRight".to_string(),
+                    MouseButton::Middle => "MouseMiddle".to_string(),
+                    MouseButton::Back => "MouseBack".to_string(),
+                    MouseButton::Forward => "MouseForward".to_string(),
+                    MouseButton::Other(4) => "MouseBack".to_string(),
+                    MouseButton::Other(5) => "MouseForward".to_string(),
+                    MouseButton::Other(n) => format!("MouseButton{n}"),
+                    _ => format!("{button:?}"),
+                };
+                (s, mod_keys)
+            }
+            Binding::MouseWheel { mod_keys } => ("MouseWheel".to_string(), mod_keys),
+            Binding::MouseMotion { mod_keys } => ("MouseMotion".to_string(), mod_keys),
+            _ => continue,
         };
+
         let (action_label, action_ctx) = q_actions
             .get(binding_of.get())
             .ok()
@@ -315,7 +343,7 @@ fn sync_hotkey_registry(
         let (context, active) = action_ctx.map_or(("unknown", true), |c| (c.name, c.active));
 
         entries.push(HotkeyEntry {
-            key: format!("{key:?}"),
+            key: key_str,
             label: label.to_string(),
             context: context.to_string(),
             active,

@@ -25,11 +25,29 @@ macro_rules! command {
 
 pub use crate::command;
 
+#[derive(Resource, Default, Clone, Debug)]
+pub struct CommandArgs {
+    pub raw: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+impl CommandArgs {
+    pub fn get_f32(&self, index: usize) -> Option<f32> {
+        self.args.get(index).and_then(|s| s.parse::<f32>().ok())
+    }
+
+    pub fn get_str(&self, index: usize) -> Option<&str> {
+        self.args.get(index).map(|s| s.as_str())
+    }
+}
+
 pub struct CommandRegistryPlugin;
 
 impl Plugin for CommandRegistryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CommandRegistry>()
+            .init_resource::<CommandArgs>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);
 
@@ -141,18 +159,54 @@ impl CommandRegistry {
             .iter()
             .find(|c| c.name.eq_ignore_ascii_case(name))
     }
+
+    pub fn find_command(&self, name: &str) -> Option<&CommandEntry> {
+        if let Some(entry) = self.get(name) {
+            return Some(entry);
+        }
+
+        self.commands.iter().find(|c| {
+            if let Some(suffix) = c.name.rsplit('>').next() {
+                suffix.eq_ignore_ascii_case(name)
+            } else {
+                false
+            }
+        })
+    }
 }
 
 fn handle_run_commands(
     mut commands: Commands,
     registry: Res<CommandRegistry>,
+    mut command_args: ResMut<CommandArgs>,
     mut reader: MessageReader<RunCommand>,
 ) {
     for msg in reader.read() {
-        if let Some(entry) = registry.get(&msg.0) {
+        let trimmed = msg.0.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(entry) = registry.find_command(trimmed) {
+            command_args.raw = String::new();
+            command_args.command = entry.name.clone();
+            command_args.args.clear();
+            commands.run_system(entry.system_id);
+            continue;
+        }
+
+        let mut parts = trimmed.split_whitespace();
+        let Some(first) = parts.next() else { continue };
+        let args: Vec<String> = parts.map(String::from).collect();
+        let raw_args = trimmed[first.len()..].trim().to_string();
+
+        if let Some(entry) = registry.find_command(first) {
+            command_args.raw = raw_args;
+            command_args.command = entry.name.clone();
+            command_args.args = args;
             commands.run_system(entry.system_id);
         } else {
-            warn!("Unknown command '{}'", msg.0);
+            warn!("Unknown command '{}'", trimmed);
         }
     }
 }

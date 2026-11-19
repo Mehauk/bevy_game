@@ -31,6 +31,7 @@ impl Plugin for CameraPlugin {
             .add_observer(on_release_cursor)
             .add_observer(on_toggle_view_mode)
             .add_observer(on_camera_look)
+            .add_observer(on_camera_zoom)
             .add_systems(
                 PostUpdate,
                 (
@@ -65,6 +66,10 @@ struct GrabCursor;
 #[derive(InputAction)]
 #[action_output(bool)]
 struct ReleaseCursor;
+
+#[derive(InputAction)]
+#[action_output(Vec2)]
+struct ZoomCamera;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -138,6 +143,7 @@ fn setup_camera(mut commands: Commands) {
         .spawn((
             Action::<Look>::new(),
             ActionOf::<GameplayInput>::new(cam_entity),
+            HotkeyLabel("Camera Look"),
         ))
         .id();
     commands.spawn((Binding::mouse_motion(), BindingOf(look_action)));
@@ -160,6 +166,7 @@ fn setup_camera(mut commands: Commands) {
             Action::<GrabCursor>::new(),
             ActionOf::<GameplayInput>::new(cam_entity),
             reset_settings,
+            HotkeyLabel("Grab Cursor"),
         ))
         .id();
     commands.spawn((Binding::from(MouseButton::Left), BindingOf(grab_action)));
@@ -173,6 +180,22 @@ fn setup_camera(mut commands: Commands) {
         ))
         .id();
     commands.spawn((Binding::from(KeyCode::Escape), BindingOf(release_action)));
+
+    // Zoom Camera bound exclusively to Shift + MouseWheel
+    let zoom_action = commands
+        .spawn((
+            Action::<ZoomCamera>::new(),
+            ActionOf::<GameplayInput>::new(cam_entity),
+            reset_settings,
+            HotkeyLabel("Zoom Camera"),
+        ))
+        .id();
+    commands.spawn((
+        Binding::MouseWheel {
+            mod_keys: ModKeys::SHIFT,
+        },
+        BindingOf(zoom_action),
+    ));
 }
 
 fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
@@ -225,6 +248,45 @@ fn on_camera_look(
     }
     rig.yaw -= event.value.x * rig.sensitivity;
     rig.pitch = (rig.pitch - event.value.y * rig.sensitivity).clamp(-1.35, 1.35);
+}
+
+const MIN_THIRD_PERSON_DIST: f32 = 1.2;
+const MAX_ZOOM_DIST: f32 = 36.0;
+const ZOOM_STEP: f32 = 2.0;
+
+fn on_camera_zoom(
+    event: On<Fire<ZoomCamera>>,
+    mut rig: Single<&mut CameraRig>,
+) {
+    let scroll_y = event.value.y;
+    if scroll_y.abs() < 0.01 {
+        return;
+    }
+
+    if scroll_y > 0.0 {
+        // Zoom in
+        match rig.view_mode {
+            ViewMode::FirstPerson => {}
+            ViewMode::ThirdPerson => {
+                rig.distance -= ZOOM_STEP;
+                if rig.distance < MIN_THIRD_PERSON_DIST {
+                    rig.distance = MIN_THIRD_PERSON_DIST;
+                    rig.view_mode = ViewMode::FirstPerson;
+                }
+            }
+        }
+    } else {
+        // Zoom out
+        match rig.view_mode {
+            ViewMode::FirstPerson => {
+                rig.view_mode = ViewMode::ThirdPerson;
+                rig.distance = MIN_THIRD_PERSON_DIST + ZOOM_STEP;
+            }
+            ViewMode::ThirdPerson => {
+                rig.distance = (rig.distance + ZOOM_STEP).min(MAX_ZOOM_DIST);
+            }
+        }
+    }
 }
 
 fn sync_camera_transform(

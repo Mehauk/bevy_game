@@ -76,6 +76,14 @@ local LAYOUT = {
     },
 }
 
+local ALIASES = {
+    ["MouseBack"]    = { "MouseBack", "Back", "MouseButton4" },
+    ["MouseForward"] = { "MouseForward", "Forward", "MouseButton5" },
+    ["MouseLeft"]    = { "MouseLeft", "Left", "MouseButton1" },
+    ["MouseRight"]   = { "MouseRight", "Right", "MouseButton2" },
+    ["MouseMiddle"]  = { "MouseMiddle", "Middle", "MouseButton3" },
+}
+
 local WIDTH_CHARS = {
     ["w-1"] = 7, ["w-125"] = 9, ["w-15"] = 11, ["w-175"] = 13,
     ["w-2"] = 16, ["w-225"] = 18, ["w-275"] = 22, ["w-625"] = 48,
@@ -114,7 +122,7 @@ local function truncate_two_lines(text, max_cols)
     local lines = { "" }
     local line_idx = 1
 
-    for wi, word in ipairs(words) do
+    for _, word in ipairs(words) do
         local cur = lines[line_idx]
         local candidate = (cur == "") and word or (cur .. " " .. word)
         if #candidate <= max_cols then
@@ -147,10 +155,6 @@ local function truncate_two_lines(text, max_cols)
             end
             lines[2] = base .. "..."
             return table.concat(lines, "\n")
-        end
-
-        if line_idx == 2 and wi < #words then
-            -- continue loop; next word will either fit or trigger ellipsis
         end
     end
 
@@ -194,6 +198,15 @@ local function refresh_keyboard()
 
     for _, kw in ipairs(key_widgets) do
         local entry = lookup[kw.code]
+        if entry == nil and ALIASES[kw.code] ~= nil then
+            for _, alias in ipairs(ALIASES[kw.code]) do
+                if lookup[alias] ~= nil then
+                    entry = lookup[alias]
+                    break
+                end
+            end
+        end
+
         if entry ~= nil then
             dom.add_class(kw.el, "bound")
             dom.set_text(kw.desc_el, truncate_two_lines(entry.label, kw.max_cols))
@@ -218,6 +231,7 @@ function on_menu_ready(_, root_id)
 
     mod_indicator_el = dom.get_by_id(root_id, "mod_indicator")
     local rows_container = dom.get_by_id(root_id, "keyboard_rows")
+    local mouse_container = dom.get_by_id(root_id, "mouse_slots")
     dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
 
     dom.clear(rows_container)
@@ -248,6 +262,59 @@ function on_menu_ready(_, root_id)
                 })
             end
         end
+    end
+
+    if mouse_container ~= nil then
+        dom.clear(mouse_container)
+
+        local mouse_device = dom.create(mouse_container, "node", { class = "mouse-device" })
+
+        -- Thumb column (left side: M5 Forward, M4 Back)
+        local thumb_col = dom.create(mouse_device, "node", { class = "mouse-thumb-col" })
+
+        local m5_el = dom.create(thumb_col, "node", { class = "mouse-thumb-btn" })
+        dom.create(m5_el, "text", { class = "mouse-cap-small", text = "M5 FWD" })
+        local m5_desc = dom.create(m5_el, "text", { class = "key-desc", text = "" })
+
+        local m4_el = dom.create(thumb_col, "node", { class = "mouse-thumb-btn" })
+        dom.create(m4_el, "text", { class = "mouse-cap-small", text = "M4 BACK" })
+        local m4_desc = dom.create(m4_el, "text", { class = "key-desc", text = "" })
+
+        -- Mouse main chassis
+        local body_el = dom.create(mouse_device, "node", { class = "mouse-body" })
+
+        -- Top buttons row
+        local top_row = dom.create(body_el, "node", { class = "mouse-top-row" })
+
+        local ml_el = dom.create(top_row, "node", { class = "mouse-btn-left" })
+        dom.create(ml_el, "text", { class = "key-cap", text = "L-CLICK" })
+        local ml_desc = dom.create(ml_el, "text", { class = "key-desc", text = "" })
+
+        local wheel_col = dom.create(top_row, "node", { class = "mouse-wheel-col" })
+        local mm_el = dom.create(wheel_col, "node", { class = "mouse-wheel-btn" })
+        dom.create(mm_el, "text", { class = "mouse-cap-small", text = "M-CLICK" })
+        local mm_desc = dom.create(mm_el, "text", { class = "key-desc", text = "" })
+
+        local mw_el = dom.create(wheel_col, "node", { class = "mouse-wheel-scroll" })
+        dom.create(mw_el, "text", { class = "mouse-cap-small", text = "SCROLL" })
+        local mw_desc = dom.create(mw_el, "text", { class = "key-desc", text = "" })
+
+        local mr_el = dom.create(top_row, "node", { class = "mouse-btn-right" })
+        dom.create(mr_el, "text", { class = "key-cap", text = "R-CLICK" })
+        local mr_desc = dom.create(mr_el, "text", { class = "key-desc", text = "" })
+
+        -- Palm / Motion
+        local palm_el = dom.create(body_el, "node", { class = "mouse-palm" })
+        dom.create(palm_el, "text", { class = "key-cap", text = "AIM / LOOK" })
+        local palm_desc = dom.create(palm_el, "text", { class = "key-desc", text = "" })
+
+        table.insert(key_widgets, { code = "MouseForward", el = m5_el, desc_el = m5_desc, max_cols = 5 })
+        table.insert(key_widgets, { code = "MouseBack",    el = m4_el, desc_el = m4_desc, max_cols = 5 })
+        table.insert(key_widgets, { code = "MouseLeft",    el = ml_el, desc_el = ml_desc, max_cols = 6 })
+        table.insert(key_widgets, { code = "MouseMiddle",  el = mm_el, desc_el = mm_desc, max_cols = 5 })
+        table.insert(key_widgets, { code = "MouseWheel",   el = mw_el, desc_el = mw_desc, max_cols = 5 })
+        table.insert(key_widgets, { code = "MouseRight",   el = mr_el, desc_el = mr_desc, max_cols = 6 })
+        table.insert(key_widgets, { code = "MouseMotion",  el = palm_el, desc_el = palm_desc, max_cols = 14 })
     end
 
     refresh_keyboard()

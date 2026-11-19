@@ -9,9 +9,18 @@ use bevy_mod_scripting::bindings::{
 
 #[macro_export]
 macro_rules! command {
-    ($app:expr, $desc:expr, $path:path) => {
-        $app.register_command(stringify!($path).replace("::", ">"), $desc, $path)
-    };
+    ($app:expr, $desc:expr, $path:path) => {{
+        let raw_path = stringify!($path).replace(' ', "");
+        let full_name = if let Some(stripped) = raw_path.strip_prefix("crate::") {
+            stripped.replace("::", ">")
+        } else {
+            let mod_path = module_path!()
+                .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+                .unwrap_or(module_path!());
+            format!("{mod_path}>{raw_path}").replace("::", ">")
+        };
+        $app.register_command(full_name, $desc, $path)
+    }};
 }
 
 pub use crate::command;
@@ -30,7 +39,7 @@ impl Plugin for CommandRegistryPlugin {
                 |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
                     let world = ctx.world()?;
                     world.with_resource(|registry: &CommandRegistry| {
-                        let list: VecDeque<ScriptValue> = registry
+                        let list: Vec<ScriptValue> = registry
                             .commands
                             .iter()
                             .map(|cmd| {
@@ -46,7 +55,7 @@ impl Plugin for CommandRegistryPlugin {
                                 ScriptValue::Map(map)
                             })
                             .collect();
-                        ScriptValue::List(list)
+                        ScriptValue::List(VecDeque::from(list))
                     })
                 },
             )

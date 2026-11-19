@@ -40,7 +40,10 @@ impl Plugin for InputPlugin {
                     .chain()
                     .before(MenuUpdateSystems),
             )
-            .add_systems(PreStartup, setup_global_input)
+            .add_systems(
+                PreStartup,
+                (setup_global_input, setup_gameplay_input),
+            )
             .add_systems(
                 PreUpdate,
                 sync_context_activity.before(EnhancedInputSystems::Update),
@@ -69,6 +72,17 @@ fn setup_global_input(mut commands: Commands) {
     commands.insert_resource(GlobalInputEntity(global_entity));
 }
 
+fn setup_gameplay_input(mut commands: Commands) {
+    let gameplay_entity = commands
+        .spawn((
+            GameplayInput,
+            ContextActive(true),
+            ContextActivity::<GameplayInput>::ACTIVE,
+        ))
+        .id();
+    commands.insert_resource(GameplayInputEntity(gameplay_entity));
+}
+
 #[derive(Component, Default, Clone)]
 pub struct GameplayInput;
 
@@ -80,6 +94,9 @@ pub struct MenuInput;
 
 #[derive(Resource)]
 pub struct GlobalInputEntity(pub Entity);
+
+#[derive(Resource)]
+pub struct GameplayInputEntity(pub Entity);
 
 #[derive(Component, Clone, Copy, Default)]
 pub struct HotkeyLabel(pub &'static str);
@@ -114,6 +131,17 @@ pub trait InputAppExt {
     fn register_hotkey_context<C: Component>(&mut self, name: &'static str) -> &mut Self;
 
     fn register_global_action<A, B, O, M>(
+        &mut self,
+        label: &'static str,
+        bindings: B,
+        observer: O,
+    ) -> &mut Self
+    where
+        A: InputAction<Output = bool> + Send + Sync + 'static,
+        B: IntoIterator<Item = Binding>,
+        O: IntoObserverSystem<Start<A>, M>;
+
+    fn register_gameplay_action<A, B, O, M>(
         &mut self,
         label: &'static str,
         bindings: B,
@@ -171,6 +199,36 @@ impl InputAppExt for App {
                     .spawn((
                         Action::<A>::new(),
                         ActionOf::<GlobalInput>::new(global.0),
+                        HotkeyLabel(label),
+                    ))
+                    .id();
+
+                for binding in &bindings {
+                    commands.spawn((binding.clone(), BindingOf(action)));
+                }
+            },
+        )
+    }
+
+    fn register_gameplay_action<A, B, O, M>(
+        &mut self,
+        label: &'static str,
+        bindings: B,
+        observer: O,
+    ) -> &mut Self
+    where
+        A: InputAction<Output = bool> + Send + Sync + 'static,
+        B: IntoIterator<Item = Binding>,
+        O: IntoObserverSystem<Start<A>, M>,
+    {
+        let bindings: Vec<Binding> = bindings.into_iter().collect();
+        self.add_observer(observer).add_systems(
+            Startup,
+            move |mut commands: Commands, gameplay: Res<GameplayInputEntity>| {
+                let action = commands
+                    .spawn((
+                        Action::<A>::new(),
+                        ActionOf::<GameplayInput>::new(gameplay.0),
                         HotkeyLabel(label),
                     ))
                     .id();

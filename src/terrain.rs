@@ -8,7 +8,7 @@ use bevy::{
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 use crate::{
-    camera::CameraSystems,
+    camera::{CameraSystems, MainCamera},
     utils::commands::{CommandAppExt, command},
 };
 
@@ -90,16 +90,6 @@ impl Default for TerrainFog {
 #[derive(Component)]
 struct SkyBox;
 
-fn lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    let t = t.clamp(0.0, 1.0);
-    [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
-        a[3] + (b[3] - a[3]) * t,
-    ]
-}
-
 fn setup_terrain(
     mut commands: Commands,
     terrain_map: Res<TerrainMap>,
@@ -113,10 +103,10 @@ fn setup_terrain(
             .subdivisions(terrain_map.subdivisions),
     );
 
-    let valley = Color::srgb(0.20, 0.34, 0.16).to_linear().to_f32_array();
-    let hillside = Color::srgb(0.28, 0.42, 0.20).to_linear().to_f32_array();
-    let slope_rock = Color::srgb(0.38, 0.36, 0.31).to_linear().to_f32_array();
-    let ridge = Color::srgb(0.48, 0.46, 0.43).to_linear().to_f32_array();
+    let valley = Color::srgb(0.20, 0.34, 0.16).to_linear();
+    let hillside = Color::srgb(0.28, 0.42, 0.20).to_linear();
+    let slope_rock = Color::srgb(0.38, 0.36, 0.31).to_linear();
+    let ridge = Color::srgb(0.48, 0.46, 0.43).to_linear();
 
     let mut colors = Vec::new();
     if let Some(VertexAttributeValues::Float32x3(positions)) =
@@ -129,20 +119,19 @@ fn setup_terrain(
 
             let h = ((y / terrain_map.amplitude) * 0.5 + 0.5).clamp(0.0, 1.0);
             let color = if h < 0.45 {
-                lerp_rgba(valley, hillside, h / 0.45)
+                valley.mix(&hillside, h / 0.45)
             } else if h < 0.72 {
-                lerp_rgba(hillside, slope_rock, (h - 0.45) / 0.27)
+                hillside.mix(&slope_rock, (h - 0.45) / 0.27)
             } else {
-                lerp_rgba(slope_rock, ridge, (h - 0.72) / 0.28)
+                slope_rock.mix(&ridge, (h - 0.72) / 0.28)
             };
-            colors.push(color);
+            colors.push(color.to_f32_array());
         }
     }
 
     terrain.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     terrain.compute_normals();
 
-    // Create the trimesh collider directly from the modified mesh
     let collider = Collider::trimesh_from_mesh(&terrain)
         .expect("Terrain mesh must create a trimesh collider");
 
@@ -175,7 +164,6 @@ fn setup_atmosphere(
     }
     .build();
 
-    // Sun
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.98, 0.95, 0.82),
@@ -186,7 +174,6 @@ fn setup_atmosphere(
         cascade_shadow_config,
     ));
 
-    // Sky
     commands.spawn((
         SkyBox,
         Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 1.0))),
@@ -218,20 +205,25 @@ fn sync_terrain_fog(
 }
 
 fn sync_skybox_to_camera(
-    camera: Option<Single<&Transform, (With<Camera3d>, Without<SkyBox>)>>,
-    mut skybox: Single<&mut Transform, (With<SkyBox>, Without<Camera3d>)>,
+    camera: Query<&Transform, (With<MainCamera>, Without<SkyBox>)>,
+    mut skybox: Single<&mut Transform, (With<SkyBox>, Without<MainCamera>)>,
 ) {
-    if let Some(cam_transform) = camera {
+    if let Some(cam_transform) = camera.iter().next() {
         skybox.translation = cam_transform.translation;
     }
 }
 
+const DEFAULT_FOG_ALPHA: f32 = 1.0;
+const DEFAULT_FOG_LIGHT_ALPHA: f32 = 0.5;
+
 fn toggle_atmospheric_fog(mut terrain_fog: ResMut<TerrainFog>) {
-    let a = terrain_fog.0.color.alpha();
-    terrain_fog.0.color.set_alpha(1.0 - a);
+    let cur = terrain_fog.0.color.alpha();
+    let target = if cur > 0.05 { 0.0 } else { DEFAULT_FOG_ALPHA };
+    terrain_fog.0.color.set_alpha(target);
 }
 
 fn toggle_fog_light_influence(mut terrain_fog: ResMut<TerrainFog>) {
-    let a = terrain_fog.0.directional_light_color.alpha();
-    terrain_fog.0.directional_light_color.set_alpha(0.5 - a);
+    let cur = terrain_fog.0.directional_light_color.alpha();
+    let target = if cur > 0.05 { 0.0 } else { DEFAULT_FOG_LIGHT_ALPHA };
+    terrain_fog.0.directional_light_color.set_alpha(target);
 }

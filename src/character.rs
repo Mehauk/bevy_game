@@ -9,6 +9,10 @@ use crate::{
     utils::commands::{CommandAppExt, command},
 };
 
+pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
+pub const CAPSULE_RADIUS: f32 = 0.4;
+pub const CAPSULE_HEIGHT: f32 = 1.0;
+
 pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
@@ -43,6 +47,10 @@ struct AlignToCamera;
 #[action_output(bool)]
 struct Jump;
 
+#[derive(InputAction)]
+#[action_output(bool)]
+struct Crouch;
+
 #[derive(Component, Clone)]
 pub struct Character {
     pub walk_speed: f32,
@@ -52,6 +60,9 @@ pub struct Character {
     pub acceleration: f32,
     pub air_acceleration: f32,
     pub jump_cooldown: f32,
+    pub base_gravity: f32,
+    pub fall_gravity: f32,
+    pub max_slope_angle_rad: f32,
 }
 
 impl Default for Character {
@@ -63,7 +74,10 @@ impl Default for Character {
             turn_speed: 12.0,
             acceleration: 60.0,
             air_acceleration: 15.0,
-            jump_cooldown: 0.0,
+            jump_cooldown: 0.2,
+            base_gravity: 2.5,
+            fall_gravity: 3.5,
+            max_slope_angle_rad: 50.0_f32.to_radians(),
         }
     }
 }
@@ -72,18 +86,24 @@ impl Default for Character {
 pub struct GroundState {
     pub is_grounded: bool,
     pub ground_normal: Vec3,
-    pub hit_distance: f32,
     pub jump_cooldown_timer: f32,
-    pub jump_held_last_frame: bool, 
+    pub jump_held_last_frame: bool,
 }
 
 #[derive(Component)]
 struct CharacterBody;
 
+pub fn camera_relative_direction(move_vec: Vec2, cam_yaw: f32) -> Vec3 {
+    let yaw_rot = Quat::from_rotation_y(cam_yaw);
+    let forward = yaw_rot * Vec3::NEG_Z;
+    let right = yaw_rot * Vec3::X;
+    right * move_vec.x + forward * move_vec.y
+}
+
 fn setup_character(world: &mut World) {
     let capsule_mesh = world
         .resource_mut::<Assets<Mesh>>()
-        .add(Capsule3d::new(0.4, 1.0));
+        .add(Capsule3d::new(CAPSULE_RADIUS, CAPSULE_HEIGHT));
     let visor_mesh = world
         .resource_mut::<Assets<Mesh>>()
         .add(Cuboid::new(0.45, 0.18, 0.2));
@@ -101,7 +121,7 @@ fn setup_character(world: &mut World) {
     let spawn_y = world
         .get_resource::<TerrainMap>()
         .map_or(0.0, |t| t.height_at(0.0, 0.0))
-        + 1.5;
+        + CHARACTER_SPAWN_OFFSET_Y;
 
     let mut char_entity = world
         .spawn_scene(bsn! {
@@ -154,6 +174,15 @@ fn setup_character(world: &mut World) {
                 Bindings [
                     Binding(KeyCode::Space)
                 ]
+                --
+                Action::<Crouch>::new()
+                reset_settings
+                HotkeyLabel("Crouch")
+                Bindings [
+                    Binding(KeyCode::ControlLeft)
+                    --
+                    Binding(KeyCode::ControlRight)
+                ]
             ]
         })
         .unwrap();
@@ -166,7 +195,7 @@ fn setup_character(world: &mut World) {
             ContextActive(true),
             ContextActivity::<GameplayInput>::ACTIVE,
             RigidBody::Dynamic,
-            Collider::capsule(0.4, 1.0),
+            Collider::capsule(CAPSULE_RADIUS, CAPSULE_HEIGHT),
             LockedAxes::ROTATION_LOCKED,
             Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
             Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
@@ -204,48 +233,43 @@ fn setup_character(world: &mut World) {
 
 fn character_ground_check(
     time: Res<Time>,
-    mut query: Query<(&ShapeHits, &mut GroundState), With<Character>>,
+    mut query: Query<(&Character, &ShapeHits, &mut GroundState)>,
 ) {
     let dt = time.delta_secs();
-    for (hits, mut ground_state) in &mut query {
+    for (character, hits, mut ground_state) in &mut query {
         ground_state.jump_cooldown_timer = (ground_state.jump_cooldown_timer - dt).max(0.0);
 
-        // While jumping upward during cooldown, stay ungrounded
         if ground_state.jump_cooldown_timer > 0.0 {
             ground_state.is_grounded = false;
             ground_state.ground_normal = Vec3::Y;
-            ground_state.hit_distance = f32::MAX;
             continue;
         }
 
         if let Some(hit) = hits.iter_sorted().next() {
-            // Only consider it grounded if hit is close enough and slope isn't a wall
-            if hit.distance <= 0.45 && hit.normal1.angle_between(Vec3::Y) <= 50.0_f32.to_radians() {
+            if hit.distance <= 0.45 && hit.normal1.angle_between(Vec3::Y) <= character.max_slope_angle_rad {
                 ground_state.is_grounded = true;
                 ground_state.ground_normal = hit.normal1.normalize();
-                ground_state.hit_distance = hit.distance;
                 continue;
             }
         }
 
         ground_state.is_grounded = false;
         ground_state.ground_normal = Vec3::Y;
-        ground_state.hit_distance = f32::MAX;
     }
 }
 
 fn character_physics_move(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
     jump_action: Single<&Action<Jump>>,
+    crouch_action: Single<&Action<Crouch>>,
     cam_rig: Option<Single<&CameraRig>>,
     character_query: Single<(
         &Character,
         &mut GroundState,
         &mut LinearVelocity,
-        &mut GravityScale, // <--- Add GravityScale here
+        &mut GravityScale,
     )>,
 ) {
     let (character, mut ground, mut velocity, mut gravity_scale) = character_query.into_inner();
@@ -254,12 +278,10 @@ fn character_physics_move(
     let move_vec = ***move_action;
     let sprinting = ***sprint_action;
     let jumping = ***jump_action;
+    let crouching = ***crouch_action;
     let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
 
-    let yaw_rot = Quat::from_rotation_y(cam_yaw);
-    let forward = yaw_rot * Vec3::NEG_Z;
-    let right = yaw_rot * Vec3::X;
-    let move_dir = (right * move_vec.x + forward * move_vec.y).normalize_or_zero();
+    let move_dir = camera_relative_direction(move_vec, cam_yaw).normalize_or_zero();
 
     let target_speed = if sprinting {
         character.sprint_speed
@@ -286,24 +308,20 @@ fn character_physics_move(
     velocity.x = current_horiz.x;
     velocity.z = current_horiz.z;
 
-    let ctrl_held = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
     let jump_just_pressed = jumping && !ground.jump_held_last_frame;
 
-    if jump_just_pressed && ground.is_grounded && !ctrl_held && ground.jump_cooldown_timer <= 0.0 {
-        // Immediate launch only on a fresh press
+    if jump_just_pressed && ground.is_grounded && !crouching && ground.jump_cooldown_timer <= 0.0 {
         velocity.y = character.jump_speed;
         ground.is_grounded = false;
-        ground.jump_cooldown_timer = 0.2;
-        gravity_scale.0 = 2.5;
+        ground.jump_cooldown_timer = character.jump_cooldown;
+        gravity_scale.0 = character.base_gravity;
     } else if ground.is_grounded {
-        gravity_scale.0 = 2.5;
+        gravity_scale.0 = character.base_gravity;
 
-        // Anti-bounce: prevent upward rebound when grounded
         if velocity.y > 0.0 {
             velocity.y = 0.0;
         }
 
-        // Stick to downslopes
         if move_dir != Vec3::ZERO && ground.ground_normal.y > 0.01 {
             let slope_tangent_y = -(velocity.x * ground.ground_normal.x + velocity.z * ground.ground_normal.z)
                 / ground.ground_normal.y;
@@ -312,20 +330,15 @@ fn character_physics_move(
             }
         }
     } else {
-        // Airborne: asymmetric gravity
         if velocity.y < 0.0 {
-            // Fall faster (3.5x gravity)
-            gravity_scale.0 = 3.5;
+            gravity_scale.0 = character.fall_gravity;
         } else if !jumping {
-            // Cut jump short if player releases Space early
-            gravity_scale.0 = 3.5;
+            gravity_scale.0 = character.fall_gravity;
         } else {
-            // Rising with Space held
-            gravity_scale.0 = 2.5;
+            gravity_scale.0 = character.base_gravity;
         }
     }
 
-    // Remember whether Space was held this frame
     ground.jump_held_last_frame = jumping;
 }
 
@@ -354,9 +367,7 @@ fn character_rotate_body(
         return;
     }
 
-    let forward = yaw_rot * Vec3::NEG_Z;
-    let right = yaw_rot * Vec3::X;
-    let direction = right * move_vec.x + forward * move_vec.y;
+    let direction = camera_relative_direction(move_vec, cam_yaw);
     if direction != Vec3::ZERO {
         let move_dir = direction.normalize();
         let target_yaw = (-move_dir.x).atan2(-move_dir.z);
@@ -382,9 +393,18 @@ fn sync_body_visibility(
 
 fn respawn_character(
     terrain: Option<Res<TerrainMap>>,
-    mut query: Single<(&mut Transform, &mut LinearVelocity), With<Character>>,
+    query: Single<(
+        &mut Transform,
+        &mut LinearVelocity,
+        &mut GroundState,
+        &mut GravityScale,
+        &Character,
+    )>,
 ) {
-    let spawn_y = terrain.as_ref().map_or(0.0, |t| t.height_at(0.0, 0.0)) + 2.0;
-    query.0.translation = Vec3::new(0.0, spawn_y, 0.0);
-    query.1.0 = Vec3::ZERO;
+    let (mut transform, mut velocity, mut ground, mut gravity, character) = query.into_inner();
+    let spawn_y = terrain.as_ref().map_or(0.0, |t| t.height_at(0.0, 0.0)) + CHARACTER_SPAWN_OFFSET_Y;
+    transform.translation = Vec3::new(0.0, spawn_y, 0.0);
+    velocity.0 = Vec3::ZERO;
+    *ground = GroundState::default();
+    gravity.0 = character.base_gravity;
 }

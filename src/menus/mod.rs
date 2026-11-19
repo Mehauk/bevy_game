@@ -9,10 +9,11 @@ use std::{
 use bevy::{
     ecs::system::SystemParam,
     input::keyboard::KeyboardInput,
-    input_focus::{AutoFocus, FocusedInput, InputFocus},
+    input_focus::{AutoFocus, FocusCause, FocusedInput, InputFocus},
     picking::{
         events::{PointerClick, PointerOut, PointerOver},
         hover::Hovered,
+        Pickable,
     },
     platform::collections::HashMap,
     prelude::*,
@@ -63,6 +64,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<MenuRegistry>()
             .init_resource::<DomRuntime>()
             .init_resource::<HtmlHotReloadState>()
+            .init_resource::<MenuFocusState>()
             .add_message::<ToggleMenu>()
             .add_message::<MenuCmd>()
             .add_systems(Startup, setup_menu_input)
@@ -72,6 +74,7 @@ impl Plugin for MenuPlugin {
                 (
                     reload_menus_on_asset_change,
                     handle_menu_commands,
+                    track_and_maintain_menu_focus,
                     dispatch_menu_ready,
                     dispatch_modifier_changes,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
@@ -98,7 +101,6 @@ pub struct MenuSpec {
 #[derive(Clone)]
 pub struct MenuEntry {
     pub id: &'static str,
-    pub label: &'static str,
 }
 
 #[derive(Resource, Default)]
@@ -107,9 +109,9 @@ pub struct MenuRegistry {
 }
 
 impl MenuRegistry {
-    fn record(&mut self, id: &'static str, label: &'static str) {
+    fn record(&mut self, id: &'static str) {
         if !self.menus.iter().any(|m| m.id == id) {
-            self.menus.push(MenuEntry { id, label });
+            self.menus.push(MenuEntry { id });
         }
     }
 }
@@ -118,13 +120,6 @@ pub trait MenuAppExt {
     fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
         &mut self,
         spec: MenuSpec,
-    ) -> &mut Self;
-
-    fn register_menu_command(
-        &mut self,
-        id: &'static str,
-        command_name: impl Into<String>,
-        description: &'static str,
     ) -> &mut Self;
 }
 
@@ -137,7 +132,7 @@ impl MenuAppExt for App {
         self.init_resource::<MenuRegistry>();
         self.world_mut()
             .resource_mut::<MenuRegistry>()
-            .record(menu_id, spec.hotkey_label);
+            .record(menu_id);
 
         if let Some((cmd_name, desc)) = spec.command {
             self.register_command(cmd_name, desc, move |mut writer: MessageWriter<ToggleMenu>| {
@@ -146,7 +141,7 @@ impl MenuAppExt for App {
         }
 
         if !spec.bindings.is_empty() {
-            self.register_global_action::<A, _, _, _>(
+            self.register_gameplay_action::<A, _, _, _>(
                 spec.hotkey_label,
                 spec.bindings,
                 move |_ev: On<Start<A>>, mut writer: MessageWriter<ToggleMenu>| {
@@ -156,26 +151,6 @@ impl MenuAppExt for App {
         }
 
         self
-    }
-
-    fn register_menu_command(
-        &mut self,
-        id: &'static str,
-        command_name: impl Into<String>,
-        description: &'static str,
-    ) -> &mut Self {
-        self.init_resource::<MenuRegistry>();
-        self.world_mut()
-            .resource_mut::<MenuRegistry>()
-            .record(id, id);
-
-        self.register_command(
-            command_name,
-            description,
-            move |mut writer: MessageWriter<ToggleMenu>| {
-                writer.write(ToggleMenu(id.to_string()));
-            },
-        )
     }
 }
 
@@ -313,7 +288,13 @@ fn register_menu_namespaces(app: &mut App) {
             |ctx: FunctionCallContext, id: i64, event: String, handler: String| {
                 push_dom_op(&ctx, DomOp::BindEvent { id, event, handler })
             },
-        );
+        )
+        .register("focus", |ctx: FunctionCallContext, id: i64| {
+            push_dom_op(&ctx, DomOp::Focus(id))
+        })
+        .register("blur", |ctx: FunctionCallContext| {
+            push_dom_op(&ctx, DomOp::Blur)
+        });
 }
 
 #[derive(Message, Debug, Clone)]
@@ -343,6 +324,11 @@ struct DomHandlers(HashMap<String, String>);
 
 #[derive(Component, Default)]
 struct MenuTextInput(String);
+
+#[derive(Resource, Default)]
+pub struct MenuFocusState {
+    pub last_focused: Option<Entity>,
+}
 
 #[derive(Resource, Default)]
 pub struct MenuManager {
@@ -395,19 +381,28 @@ impl NodeSpec {
             }
         });
 
+        let mouse_input = match attr("mouse") {
+            Some("true") => true,
+            Some("false") => false,
+            _ => matches!(tag.as_str(), "input" | "button"),
+        };
+
         Self {
             tag,
             id: attr("id").map(str::to_string),
             classes: attr("class").map(split_classes).unwrap_or_default(),
             text,
             autofocus: attr("autofocus") == Some("true"),
-            mouse_input: attr("mouse") == Some("true"),
+            mouse_input,
         }
     }
 
     fn from_script_opts(tag: String, opts: ScriptValue) -> Self {
+        let tag_lower = tag.to_ascii_lowercase();
+        let default_mouse = matches!(tag_lower.as_str(), "input" | "button");
         let mut spec = Self {
-            tag: tag.to_ascii_lowercase(),
+            tag: tag_lower,
+            mouse_input: default_mouse,
             ..default()
         };
         let ScriptValue::Map(map) = opts else {
@@ -445,6 +440,8 @@ enum DomOp {
     SetValue { id: i64, text: String },
     SetClass { id: i64, cls: String, add: bool },
     BindEvent { id: i64, event: String, handler: String },
+    Focus(i64),
+    Blur,
 }
 
 struct DomNode {
@@ -564,9 +561,10 @@ impl DomEventCtx<'_, '_> {
         else {
             return false;
         };
-        let (true, Some(script)) = (root.ready_sent, root.script.clone()) else {
+        if !root.ready_sent || root.script.is_none() {
             return false;
-        };
+        }
+        let script = root.script.clone().unwrap();
         let node_id = self.handles.get(target).map_or(0, |h| h.0);
         self.callbacks
             .write(ScriptCallbackMessage::new_for_script_entity(
@@ -659,6 +657,34 @@ fn strip_menu_nav_text_edits(mut q_editable: Query<&mut EditableText, With<MenuT
         editable
             .pending_edits
             .retain(|edit| !matches!(edit, TextEdit::Up(_) | TextEdit::Down(_)));
+    }
+}
+
+fn track_and_maintain_menu_focus(
+    manager: Res<MenuManager>,
+    mut focus: ResMut<InputFocus>,
+    mut state: ResMut<MenuFocusState>,
+    q_inputs: Query<Entity, With<TextInput>>,
+    q_autofocus: Query<Entity, (With<TextInput>, With<AutoFocus>)>,
+) {
+    if !manager.any_open() {
+        state.last_focused = None;
+        return;
+    }
+
+    if let Some(current) = focus.get() {
+        if q_inputs.contains(current) {
+            state.last_focused = Some(current);
+        }
+    } else if let Some(last) = state.last_focused {
+        if q_inputs.contains(last) {
+            focus.set(last, FocusCause::Navigated);
+        } else {
+            state.last_focused = None;
+        }
+    } else if let Some(af) = q_autofocus.iter().next() {
+        focus.set(af, FocusCause::Auto);
+        state.last_focused = Some(af);
     }
 }
 
@@ -804,9 +830,10 @@ fn dispatch_modifier_changes(
         return;
     }
     for (entity, root) in &q_roots {
-        let (true, Some(script)) = (root.ready_sent, root.script.clone()) else {
+        if !root.ready_sent || root.script.is_none() {
             continue;
-        };
+        }
+        let script = root.script.clone().unwrap();
         callbacks.write(ScriptCallbackMessage::new_for_script_entity(
             OnMenuModifiersChanged::into_callback_label(),
             vec![crate::input::modifier_map(mods.0, mods.1, mods.2, mods.3)],
@@ -850,8 +877,9 @@ fn apply_dom_ops(world: &mut World) {
             }
             DomOp::Remove(id) => {
                 if let Some(entity) = entity_of(world, id)
-                    && let Ok(e) = world.get_entity_mut(entity)
+                    && let Ok(mut e) = world.get_entity_mut(entity)
                 {
+                    e.despawn_children();
                     e.despawn();
                     needs_prune = true;
                 }
@@ -871,9 +899,10 @@ fn apply_dom_ops(world: &mut World) {
                 }
             }
             DomOp::SetValue { id, text } => {
-                if let Some(entity) = entity_of(world, id)
-                    && let Some(mut editable) = world.get_mut::<EditableText>(entity)
-                {
+                let Some(entity) = entity_of(world, id) else {
+                    continue;
+                };
+                if let Some(mut editable) = world.get_mut::<EditableText>(entity) {
                     editable.queue_edit(TextEdit::SelectAll);
                     editable.queue_edit(TextEdit::Insert(text.into()));
                 }
@@ -917,6 +946,16 @@ fn apply_dom_ops(world: &mut World) {
                     handlers.0.insert(key, handler);
                 }
             }
+            DomOp::Focus(id) => {
+                if let Some(entity) = entity_of(world, id) {
+                    world.resource_mut::<MenuFocusState>().last_focused = Some(entity);
+                    world.resource_mut::<InputFocus>().set(entity, FocusCause::Navigated);
+                }
+            }
+            DomOp::Blur => {
+                world.resource_mut::<MenuFocusState>().last_focused = None;
+                world.resource_mut::<InputFocus>().clear();
+            }
         }
     }
 
@@ -942,19 +981,26 @@ fn prune_dead_nodes(world: &mut World) {
 
 fn spawn_node_entity(world: &mut World, id: i64, parent: Entity, spec: NodeSpec) -> Entity {
     let mut e = world.spawn((DomHandle(id), DomHandlers::default(), ChildOf(parent)));
-    if let Some(name) = spec.id {
+    if let Some(name) = spec.id.clone() {
         e.insert(Name::new(name));
     }
     if !spec.classes.is_empty() {
         e.insert(ClassList::new_with_classes(spec.classes));
     }
 
+    let is_input = spec.tag == "input";
+    let is_interactive = is_input || spec.mouse_input || spec.id.is_some() || spec.tag == "button";
+
     match spec.tag.as_str() {
         "text" => {
-            e.insert((Text::new(spec.text), TextLayout::default()));
+            e.insert((
+                Text::new(spec.text),
+                TextLayout::default(),
+                Pickable::IGNORE,
+            ));
         }
         "span" => {
-            e.insert(TextSpan::new(spec.text));
+            e.insert((TextSpan::new(spec.text), Pickable::IGNORE));
         }
         "button" => {
             e.insert((Node::default(), UiButton, Hovered::default()));
@@ -990,22 +1036,30 @@ fn spawn_node_entity(world: &mut World, id: i64, parent: Entity, spec: NodeSpec)
         }
     }
 
-    e.observe(on_dom_click)
-        .observe(on_dom_hover_enter)
-        .observe(on_dom_hover_exit)
-        .observe(on_dom_key_input)
-        .observe(on_dom_text_change)
-        .id()
+    if is_interactive {
+        e.observe(on_dom_click)
+            .observe(on_dom_hover_enter)
+            .observe(on_dom_hover_exit);
+    }
+
+    if is_input {
+        e.observe(on_dom_key_input)
+            .observe(on_dom_text_change);
+    }
+
+    e.id()
 }
 
 fn close_menu_at(world: &mut World, pos: usize) -> String {
     let (name, root) = world.resource_mut::<MenuManager>().open_menus.remove(pos);
-    if let Ok(e) = world.get_entity_mut(root) {
+    if let Ok(mut e) = world.get_entity_mut(root) {
+        e.despawn_children();
         e.despawn();
     }
     prune_dead_nodes(world);
     if world.resource::<MenuManager>().open_menus.is_empty() {
         world.resource_mut::<InputFocus>().clear();
+        world.resource_mut::<MenuFocusState>().last_focused = None;
     }
     name
 }
@@ -1025,8 +1079,7 @@ fn open_menu_in_world(world: &mut World, name: &str) {
 
     let asset_server = world.resource::<AssetServer>();
     let css_handle = resolve_menu_file(&format!("menus/{name}/style.css"))
-        .map(|(_, asset)| asset_server.load(asset))
-        .unwrap_or_else(|| asset_server.load(format!("menus/{name}/style.css")));
+        .map(|(_, asset)| asset_server.load(asset));
     let script_handle = resolve_menu_file(&format!("menus/{name}/script.lua"))
         .map(|(_, asset)| asset_server.load(asset));
     if script_handle.is_none() {
@@ -1042,8 +1095,12 @@ fn open_menu_in_world(world: &mut World, name: &str) {
             ..default()
         },
         GlobalZIndex(z),
-        Styled::new(css_handle),
     ));
+
+    if let Some(css) = css_handle {
+        root_mut.insert(Styled::new(css));
+    }
+
     if let Some(handle) = script_handle.clone() {
         root_mut.insert(ScriptComponent(vec![handle]));
     }

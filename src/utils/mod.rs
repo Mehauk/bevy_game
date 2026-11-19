@@ -12,12 +12,12 @@ impl Plugin for DevUtilsPlugin {
         command!(
             app,
             "Toggle global wireframe rendering",
-            dev_utils::toggle_wireframe
+            dev::toggle_wireframe
         );
     }
 }
 
-pub mod dev_utils {
+pub mod dev {
     use bevy::{pbr::wireframe::WireframeConfig, prelude::*};
 
     pub fn toggle_wireframe(mut wireframe_config: ResMut<WireframeConfig>) {

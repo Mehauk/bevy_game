@@ -76,7 +76,7 @@ pub enum ViewMode {
 #[derive(Component)]
 pub struct MainCamera;
 
-#[derive(Component, Clone)]
+#[derive(Component)]
 pub struct CameraRig {
     pub yaw: f32,
     pub pitch: f32,
@@ -101,7 +101,7 @@ impl Default for CameraRig {
     }
 }
 
-#[derive(Component, Clone)]
+#[derive(Component)]
 pub struct CameraTarget {
     pub offset: Vec3,
     pub first_person: bool,
@@ -263,19 +263,19 @@ fn sync_camera_transform(
             let cam_dir = (cam_yaw_rot * cam_pitch_rot * Vec3::Z).normalize();
             let mut target_dist = rig.distance;
 
-            // Physics collision check: cast from the player's head toward the camera position.
-            // Exclude the player entity so the ray doesn't collide with the player's own capsule.
             if let Ok(dir) = Dir3::new(cam_dir) {
                 let filter = SpatialQueryFilter::from_excluded_entities([target_entity]);
-                if let Some(hit) = spatial_query.cast_ray(
+                let sphere = Collider::sphere(rig.camera_radius);
+                let config = ShapeCastConfig::from_max_distance(rig.distance);
+                if let Some(hit) = spatial_query.cast_shape(
+                    &sphere,
                     eye_pivot,
+                    Quat::IDENTITY,
                     dir,
-                    rig.distance,
-                    true,
+                    &config,
                     &filter,
                 ) {
-                    // Pull the camera forward slightly ahead of the hit surface to prevent clipping.
-                    target_dist = (hit.distance - rig.camera_radius).max(0.4);
+                    target_dist = (hit.distance - 0.05).max(0.4);
                 }
             }
 

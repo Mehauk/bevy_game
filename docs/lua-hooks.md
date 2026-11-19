@@ -89,9 +89,11 @@ Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
 
 ## Registering new menus and commands (Rust side)
 
-- A menu is registered with `app.register_menu_with_hotkey::<Action>(MenuSpec { id, hotkey_label, command, bindings })`
-  (see `src/menus/keyboard_menu.rs`); `id` selects the `menus/<id>/` asset folder, `command` optionally
-  exposes it as a console command.
+- A menu is declared with `app.register_menu::<Action>(MenuSpec { id, hotkey_label, command, bindings })`
+  (see `src/input/mod.rs` for the keyboard overlay, `src/utils/registry/commands.rs` for the palette);
+  `id` selects the `menus/<id>/` asset folder, `command` optionally exposes it as a console command.
+  Declarations may be made from any plugin's `build()` — they are queued and registered when
+  `MenuPlugin` builds.
 - Console commands are registered with the `command!(app, "description", system_path)` macro
-  (see `src/utils/commands.rs`); any `IntoSystem<(), (), _>` system qualifies and can read
+  (see `src/utils/registry/commands.rs`); any `IntoSystem<(), (), _>` system qualifies and can read
   `CommandArgs` for parameters.

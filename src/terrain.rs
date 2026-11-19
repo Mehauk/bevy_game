@@ -9,7 +9,7 @@ use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 use crate::{
     camera::{CameraSystems, MainCamera},
-    utils::commands::{CommandAppExt, command},
+    utils::registry::commands::{CommandAppExt, command},
 };
 
 pub struct TerrainPlugin;

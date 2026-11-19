@@ -9,7 +9,7 @@ use bevy_enhanced_input::prelude::*;
 use crate::{
     input::InputAppExt,
     menus::MenuManager,
-    utils::commands::{CommandAppExt, command},
+    utils::registry::commands::{CommandAppExt, command},
 };
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]

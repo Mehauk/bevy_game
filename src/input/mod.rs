@@ -20,7 +20,12 @@ use bevy::{
 };
 use bevy_enhanced_input::prelude::*;
 
-use crate::menus::{MenuManager, MenuUpdateSystems};
+use crate::menus::{MenuAppExt, MenuManager, MenuSpec, MenuUpdateSystems};
+
+/// Hotkey action that toggles the keyboard overlay (the rebinding UI).
+#[derive(InputAction)]
+#[action_output(bool)]
+struct ToggleKeyboardOverlay;
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InputUpdateSystems {
@@ -70,6 +75,21 @@ impl Plugin for InputPlugin {
             );
 
         scripting::register_input_namespace(app);
+
+        // The keyboard overlay is the front-end of the hotkey registry and remapping
+        // defined here, so its declaration lives here. Queued, so `InputPlugin` needs
+        // no ordering against `MenuPlugin`.
+        app.register_menu::<ToggleKeyboardOverlay>(MenuSpec {
+            id: "keyboard",
+            hotkey_label: "Keyboard Overlay",
+            command: Some(("menu>keyboard", "Toggle virtual keyboard overlay")),
+            bindings: vec![
+                Binding::from(KeyCode::F1),
+                KeyCode::KeyK
+                    .with_mod_keys(ModKeys::CONTROL | ModKeys::SHIFT)
+                    .into(),
+            ],
+        });
     }
 }
 

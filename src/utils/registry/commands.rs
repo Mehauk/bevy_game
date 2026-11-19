@@ -1,13 +1,20 @@
 use std::collections::VecDeque;
 
 use bevy::{ecs::system::SystemId, prelude::*};
+use bevy_enhanced_input::prelude::*;
 use bevy_mod_scripting::bindings::{
     InteropError, WorldExtensions,
     function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
     script_value::ScriptValue,
 };
 
+use crate::menus::{MenuAppExt, MenuSpec};
 use crate::utils::{script_map, script_str};
+
+/// Hotkey action that toggles the command palette (the console's UI).
+#[derive(InputAction)]
+#[action_output(bool)]
+struct ToggleCommandPalette;
 
 #[macro_export]
 macro_rules! command {
@@ -51,6 +58,15 @@ impl Plugin for CommandRegistryPlugin {
             .init_resource::<CommandArgs>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);
+
+        // The palette is the console's front-end, so its declaration lives with the
+        // console. Queued, so this plugin needs no ordering against `MenuPlugin`.
+        app.register_menu::<ToggleCommandPalette>(MenuSpec {
+            id: "command_palette",
+            hotkey_label: "Command Palette",
+            command: None,
+            bindings: vec![Binding::from(KeyCode::Backquote)],
+        });
 
         NamespaceBuilder::in_namespace(app.world_mut(), "commands")
             .register(
@@ -288,7 +304,7 @@ mod tests {
 
         let reg = app.world().resource::<CommandRegistry>();
         let name = reg.commands[0].name.as_str();
-        assert_eq!(name, "utils>commands>tests>a_registered_command");
+        assert_eq!(name, "utils>registry>commands>tests>a_registered_command");
         assert_eq!(
             reg.find_command("a_registered_command").map(|c| c.name.as_str()),
             Some(name),

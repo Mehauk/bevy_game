@@ -19,6 +19,7 @@
   - [x] when you start typing show suggestion to autocompelte as well as a list of items to choose from with the arrow keys 
   - [x] add commands to increase character base speed and sprint
     - [x] this command will take parameters space separated
+- [ ] make the command list scrollable keeping the selected one at the bottom
 
 # Hotkeys
 - [x] use bevy_enhanced_input

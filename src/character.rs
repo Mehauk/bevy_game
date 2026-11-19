@@ -6,7 +6,7 @@ use crate::{
     camera::{CameraRig, CameraSystems, CameraTarget, ViewMode},
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
     terrain::TerrainMap,
-    utils::commands::{CommandAppExt, CommandArgs, command},
+    utils::registry::commands::{CommandAppExt, CommandArgs, command},
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;

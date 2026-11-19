@@ -14,9 +14,11 @@
 //! - [`focus`] — keeping keyboard focus on the right text field
 //! - [`dispatch`] — pushing modifier/remap changes out to ready scripts
 //! - [`scripting`] — the `menus` and `dom` namespaces
-
-pub mod command_menu;
-pub mod keyboard_menu;
+//!
+//! This module is the menu *engine* only: it knows no concrete menu. Features declare
+//! their own menus through [`MenuAppExt::register_menu`] (the command palette is
+//! declared by the command console in `utils::registry::commands`, the keyboard overlay
+//! by `input`), queued via `utils::registry::menus` so plugin order stays irrelevant.
 
 mod assets;
 mod dispatch;
@@ -35,7 +37,8 @@ use bevy_mod_scripting::core::{callback_labels, handler::event_handler};
 use bevy_mod_scripting::lua::LuaScriptingPlugin;
 
 use crate::input::InputAppExt;
-use crate::utils::commands::CommandAppExt;
+use crate::utils::registry::commands::CommandAppExt;
+use crate::utils::registry::menus::{MenuRegistry, MenuRegistryExt};
 
 use dom::apply_dom_ops;
 use lifecycle::{
@@ -95,6 +98,16 @@ impl Plugin for MenuPlugin {
             );
 
         scripting::register_menu_namespaces(app);
+
+        // Register every menu queued by feature plugins until now (the drain is the
+        // only place that needs `ToggleMenu` etc. to exist — see `utils::registry::menus`).
+        let queued = app
+            .world_mut()
+            .resource_mut::<MenuRegistry>()
+            .take_pending();
+        for register in queued {
+            register(app);
+        }
     }
 }
 
@@ -108,43 +121,53 @@ pub struct MenuSpec {
 }
 
 pub trait MenuAppExt {
-    /// Register a menu so a hotkey and/or console command can toggle `menus/<id>/`.
-    fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
+    /// Declare a menu so a hotkey and/or console command can toggle `menus/<id>/`.
+    ///
+    /// Safe to call from any plugin's `build()`: the declaration is queued and performed
+    /// when `MenuPlugin` builds, so declarers need no ordering against `MenuPlugin`
+    /// (see [`crate::utils::registry::menus`]).
+    fn register_menu<A: InputAction<Output = bool> + Send + Sync + 'static>(
         &mut self,
         spec: MenuSpec,
     ) -> &mut Self;
 }
 
 impl MenuAppExt for App {
-    fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
+    fn register_menu<A: InputAction<Output = bool> + Send + Sync + 'static>(
         &mut self,
         spec: MenuSpec,
     ) -> &mut Self {
-        let menu_id = spec.id;
+        self.queue_menu_registration(move |app| register_menu_with_hotkey::<A>(app, spec))
+    }
+}
 
-        if let Some((cmd_name, desc)) = spec.command {
-            self.register_command(cmd_name, desc, move |mut writer: MessageWriter<ToggleMenu>| {
+/// Perform a queued declaration: the console command and the consuming hotkey toggle.
+fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
+    app: &mut App,
+    spec: MenuSpec,
+) {
+    let menu_id = spec.id;
+
+    if let Some((cmd_name, desc)) = spec.command {
+        app.register_command(cmd_name, desc, move |mut writer: MessageWriter<ToggleMenu>| {
+            writer.write(ToggleMenu(menu_id.to_string()));
+        });
+    }
+
+    if !spec.bindings.is_empty() {
+        app.register_gameplay_hotkey::<A, _, _, _>(
+            spec.hotkey_label,
+            // A menu hotkey is a one-shot toggle: it consumes the press so the key does
+            // not also reach whatever else is bound to it.
+            ActionSettings {
+                consume_input: true,
+                require_reset: true,
+                ..default()
+            },
+            spec.bindings,
+            move |_ev: On<Start<A>>, mut writer: MessageWriter<ToggleMenu>| {
                 writer.write(ToggleMenu(menu_id.to_string()));
-            });
-        }
-
-        if !spec.bindings.is_empty() {
-            self.register_gameplay_hotkey::<A, _, _, _>(
-                spec.hotkey_label,
-                // A menu hotkey is a one-shot toggle: it consumes the press so the key does
-                // not also reach whatever else is bound to it.
-                ActionSettings {
-                    consume_input: true,
-                    require_reset: true,
-                    ..default()
-                },
-                spec.bindings,
-                move |_ev: On<Start<A>>, mut writer: MessageWriter<ToggleMenu>| {
-                    writer.write(ToggleMenu(menu_id.to_string()));
-                },
-            );
-        }
-
-        self
+            },
+        );
     }
 }

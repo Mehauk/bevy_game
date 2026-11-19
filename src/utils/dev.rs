@@ -5,7 +5,7 @@
 
 use bevy::{pbr::wireframe::{WireframeConfig, WireframePlugin}, prelude::*};
 
-use super::commands::{CommandAppExt, command};
+use crate::utils::registry::commands::{CommandAppExt, command};
 
 pub struct DevUtilsPlugin;
 

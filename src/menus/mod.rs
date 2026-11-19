@@ -2,7 +2,6 @@ pub mod command_menu;
 pub mod keyboard_menu;
 
 use std::{
-    borrow::Cow,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -44,8 +43,8 @@ use bevy_mod_scripting::{
 };
 
 use crate::{
-    input::{ContextActive, HotkeyLabel, InputAppExt, MenuInput, RemapStatus},
-    utils::commands::CommandAppExt,
+    input::{ContextActive, HotkeyLabel, InputAppExt, MenuInput, RemapStatus, mouse_button_name},
+    utils::{commands::CommandAppExt, script_map, script_str},
 };
 
 callback_labels!(
@@ -63,7 +62,6 @@ pub struct MenuPlugin;
 impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuManager>()
-            .init_resource::<MenuRegistry>()
             .init_resource::<DomRuntime>()
             .init_resource::<HtmlHotReloadState>()
             .init_resource::<MenuFocusState>()
@@ -105,24 +103,6 @@ pub struct MenuSpec {
     pub bindings: Vec<Binding>,
 }
 
-#[derive(Clone)]
-pub struct MenuEntry {
-    pub id: &'static str,
-}
-
-#[derive(Resource, Default)]
-pub struct MenuRegistry {
-    pub menus: Vec<MenuEntry>,
-}
-
-impl MenuRegistry {
-    fn record(&mut self, id: &'static str) {
-        if !self.menus.iter().any(|m| m.id == id) {
-            self.menus.push(MenuEntry { id });
-        }
-    }
-}
-
 pub trait MenuAppExt {
     fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
         &mut self,
@@ -136,10 +116,6 @@ impl MenuAppExt for App {
         spec: MenuSpec,
     ) -> &mut Self {
         let menu_id = spec.id;
-        self.init_resource::<MenuRegistry>();
-        self.world_mut()
-            .resource_mut::<MenuRegistry>()
-            .record(menu_id);
 
         if let Some((cmd_name, desc)) = spec.command {
             self.register_command(cmd_name, desc, move |mut writer: MessageWriter<ToggleMenu>| {
@@ -340,7 +316,7 @@ pub struct MenuFocusState {
 #[derive(Resource, Default)]
 pub struct MenuManager {
     open_menus: Vec<(String, Entity)>,
-    last_mods: (bool, bool, bool, bool),
+    last_mods: ModKeys,
     last_pressed: Vec<String>,
 }
 
@@ -573,10 +549,12 @@ impl DomEventCtx<'_, '_> {
         else {
             return false;
         };
-        if !root.ready_sent || root.script.is_none() {
+        if !root.ready_sent {
             return false;
         }
-        let script = root.script.clone().unwrap();
+        let Some(script) = root.script.clone() else {
+            return false;
+        };
         let node_id = self.handles.get(target_entity).map_or(0, |h| h.0);
         self.callbacks
             .write(ScriptCallbackMessage::new_for_script_entity(
@@ -626,26 +604,16 @@ fn on_dom_key_input(
         }
     }
 
-    let mut payload = HashMap::default();
-    payload.insert(
-        "key".to_string(),
-        ScriptValue::String(format!("{:?}", event.input.key_code).into()),
-    );
-    payload.insert(
-        "ctrl".to_string(),
-        ScriptValue::Bool(keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])),
-    );
-    payload.insert(
-        "shift".to_string(),
-        ScriptValue::Bool(keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight])),
-    );
-    payload.insert(
-        "alt".to_string(),
-        ScriptValue::Bool(keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight])),
-    );
-    payload.insert("repeat".to_string(), ScriptValue::Bool(event.input.repeat));
+    let mods = crate::input::current_modifier_flags(&keys);
+    let payload = script_map([
+        ("key", script_str(&format!("{:?}", event.input.key_code))),
+        ("ctrl", ScriptValue::Bool(mods.contains(ModKeys::CONTROL))),
+        ("shift", ScriptValue::Bool(mods.contains(ModKeys::SHIFT))),
+        ("alt", ScriptValue::Bool(mods.contains(ModKeys::ALT))),
+        ("repeat", ScriptValue::Bool(event.input.repeat)),
+    ]);
 
-    ctx.emit(target, "key_down", ScriptValue::Map(payload));
+    ctx.emit(target, "key_down", payload);
 }
 
 fn on_dom_text_change(
@@ -733,9 +701,21 @@ fn reload_menus_on_asset_change(
 
     if (script_modified || html_modified) && manager.any_open() {
         commands.queue(|world: &mut World| {
-            let count = world.resource::<MenuManager>().open_menus.len();
-            let names: Vec<String> = (0..count).rev().map(|i| close_menu_at(world, i)).collect();
-            for name in names.into_iter().rev() {
+            let names: Vec<String> = world
+                .resource::<MenuManager>()
+                .open_menus
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect();
+            while let Some(top) = world
+                .resource::<MenuManager>()
+                .open_menus
+                .len()
+                .checked_sub(1)
+            {
+                close_menu_at(world, top);
+            }
+            for name in names {
                 open_menu_in_world(world, &name);
             }
         });
@@ -847,15 +827,9 @@ fn dispatch_modifier_changes(
         .collect();
 
     for mb in mouse_buttons.get_pressed() {
-        let s = match mb {
-            MouseButton::Left => "MouseLeft",
-            MouseButton::Right => "MouseRight",
-            MouseButton::Middle => "MouseMiddle",
-            MouseButton::Back => "MouseBack",
-            MouseButton::Forward => "MouseForward",
-            _ => continue,
-        };
-        pressed.push(s.to_string());
+        if let Some(name) = mouse_button_name(*mb) {
+            pressed.push(name.to_string());
+        }
     }
 
     if mouse_wheel.read().count() > 0 {
@@ -873,15 +847,9 @@ fn dispatch_modifier_changes(
         .map(|k| format!("{k:?}"))
         .collect();
     for mb in mouse_buttons.get_just_pressed() {
-        let s = match mb {
-            MouseButton::Left => "MouseLeft",
-            MouseButton::Right => "MouseRight",
-            MouseButton::Middle => "MouseMiddle",
-            MouseButton::Back => "MouseBack",
-            MouseButton::Forward => "MouseForward",
-            _ => continue,
-        };
-        just_pressed.push(s.to_string());
+        if let Some(name) = mouse_button_name(*mb) {
+            just_pressed.push(name.to_string());
+        }
     }
 
     if mods == manager.last_mods && pressed == manager.last_pressed && just_pressed.is_empty() {
@@ -891,28 +859,21 @@ fn dispatch_modifier_changes(
     manager.last_mods = mods;
     manager.last_pressed = pressed.clone();
 
-    let pressed_val = ScriptValue::List(
-        pressed
-            .into_iter()
-            .map(|s| ScriptValue::String(Cow::Owned(s)))
-            .collect(),
-    );
-    let just_pressed_val = ScriptValue::List(
-        just_pressed
-            .into_iter()
-            .map(|s| ScriptValue::String(Cow::Owned(s)))
-            .collect(),
-    );
+    let pressed_val = ScriptValue::List(pressed.into_iter().map(|s| script_str(&s)).collect());
+    let just_pressed_val =
+        ScriptValue::List(just_pressed.into_iter().map(|s| script_str(&s)).collect());
 
     for (entity, root) in &q_roots {
-        if !root.ready_sent || root.script.is_none() {
+        if !root.ready_sent {
             continue;
         }
-        let script = root.script.clone().unwrap();
+        let Some(script) = root.script.clone() else {
+            continue;
+        };
         callbacks.write(ScriptCallbackMessage::new_for_script_entity(
             OnMenuModifiersChanged::into_callback_label(),
             vec![
-                crate::input::modifier_map(mods.0, mods.1, mods.2, mods.3),
+                crate::input::modifier_map(mods),
                 pressed_val.clone(),
                 just_pressed_val.clone(),
             ],
@@ -932,15 +893,17 @@ fn dispatch_remap_results(
         return;
     }
     for (entity, root) in &q_roots {
-        if !root.ready_sent || root.script.is_none() {
+        if !root.ready_sent {
             continue;
         }
-        let script = root.script.clone().unwrap();
+        let Some(script) = root.script.clone() else {
+            continue;
+        };
         callbacks.write(ScriptCallbackMessage::new_for_script_entity(
             OnMenuRemapResult::into_callback_label(),
             vec![
                 ScriptValue::Bool(remap_status.success),
-                ScriptValue::String(Cow::Owned(remap_status.message.clone())),
+                script_str(&remap_status.message),
             ],
             script,
             entity,
@@ -982,9 +945,9 @@ fn apply_dom_ops(world: &mut World) {
             }
             DomOp::Remove(id) => {
                 if let Some(entity) = entity_of(world, id)
-                    && let Ok(mut e) = world.get_entity_mut(entity)
+                    && let Ok(e) = world.get_entity_mut(entity)
                 {
-                    e.despawn_children();
+                    // Bevy 0.20 `despawn()` recursively despawns children.
                     e.despawn();
                     needs_prune = true;
                 }
@@ -1157,8 +1120,8 @@ fn spawn_node_entity(world: &mut World, id: i64, parent: Entity, spec: NodeSpec)
 
 fn close_menu_at(world: &mut World, pos: usize) -> String {
     let (name, root) = world.resource_mut::<MenuManager>().open_menus.remove(pos);
-    if let Ok(mut e) = world.get_entity_mut(root) {
-        e.despawn_children();
+    if let Ok(e) = world.get_entity_mut(root) {
+        // Bevy 0.20 `despawn()` recursively despawns children.
         e.despawn();
     }
     prune_dead_nodes(world);

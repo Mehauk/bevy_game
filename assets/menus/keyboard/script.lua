@@ -100,6 +100,16 @@ local pinned_mods   = { ctrl = false, shift = false, alt = false, super = false 
 
 local remapping_source = nil
 
+-- Keys that must never trigger a remap while rebinding: physical modifiers
+-- (they preview alternate bindings) and mouse keys handled by the UI itself.
+local NON_REBIND_KEYS = {
+    ShiftLeft = true, ShiftRight = true,
+    ControlLeft = true, ControlRight = true,
+    AltLeft = true, AltRight = true,
+    SuperLeft = true, SuperRight = true,
+    MouseMotion = true, MouseLeft = true,
+}
+
 local function effective_mods()
     return {
         ctrl  = physical_mods.ctrl  or pinned_mods.ctrl,
@@ -520,17 +530,7 @@ function on_modifiers_changed(mods, pressed_list, just_pressed_list)
             if key_code == "Escape" then
                 cancel_remapping()
                 break
-            elseif key_code ~= "ShiftLeft"
-                and key_code ~= "ShiftRight"
-                and key_code ~= "ControlLeft"
-                and key_code ~= "ControlRight"
-                and key_code ~= "AltLeft"
-                and key_code ~= "AltRight"
-                and key_code ~= "SuperLeft"
-                and key_code ~= "SuperRight"
-                and key_code ~= "MouseMotion"
-                and key_code ~= "MouseLeft"
-            then
+            elseif not NON_REBIND_KEYS[key_code] then
                 execute_remap(remapping_source, key_code, effective_mods())
                 break
             end

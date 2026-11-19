@@ -1,11 +1,13 @@
 use std::{borrow::Cow, collections::VecDeque};
 
-use bevy::{ecs::system::SystemId, platform::collections::HashMap, prelude::*};
+use bevy::{ecs::system::SystemId, prelude::*};
 use bevy_mod_scripting::bindings::{
     InteropError, WorldExtensions,
     function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
     script_value::ScriptValue,
 };
+
+use crate::utils::script_map;
 
 #[macro_export]
 macro_rules! command {
@@ -36,10 +38,6 @@ impl CommandArgs {
     pub fn get_f32(&self, index: usize) -> Option<f32> {
         self.args.get(index).and_then(|s| s.parse::<f32>().ok())
     }
-
-    pub fn get_str(&self, index: usize) -> Option<&str> {
-        self.args.get(index).map(|s| s.as_str())
-    }
 }
 
 pub struct CommandRegistryPlugin;
@@ -61,16 +59,16 @@ impl Plugin for CommandRegistryPlugin {
                             .commands
                             .iter()
                             .map(|cmd| {
-                                let mut map = HashMap::default();
-                                map.insert(
-                                    "name".to_string(),
-                                    ScriptValue::String(Cow::Owned(cmd.name.clone())),
-                                );
-                                map.insert(
-                                    "description".to_string(),
-                                    ScriptValue::String(Cow::Borrowed(cmd.description)),
-                                );
-                                ScriptValue::Map(map)
+                                script_map([
+                                    (
+                                        "name",
+                                        ScriptValue::String(Cow::Owned(cmd.name.clone())),
+                                    ),
+                                    (
+                                        "description",
+                                        ScriptValue::String(Cow::Borrowed(cmd.description)),
+                                    ),
+                                ])
                             })
                             .collect();
                         ScriptValue::List(VecDeque::from(list))
@@ -114,7 +112,6 @@ impl CommandAppExt for App {
         F: IntoSystem<(), (), M> + 'static,
     {
         let system_id = self.register_system(system);
-        self.init_resource::<CommandRegistry>();
         self.world_mut()
             .resource_mut::<CommandRegistry>()
             .register(name.into(), description, system_id);
@@ -187,14 +184,7 @@ fn handle_run_commands(
             continue;
         }
 
-        if let Some(entry) = registry.find_command(trimmed) {
-            command_args.raw = String::new();
-            command_args.command = entry.name.clone();
-            command_args.args.clear();
-            commands.run_system(entry.system_id);
-            continue;
-        }
-
+        // Command names never contain whitespace, so the first token is always the name.
         let mut parts = trimmed.split_whitespace();
         let Some(first) = parts.next() else { continue };
         let args: Vec<String> = parts.map(String::from).collect();

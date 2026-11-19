@@ -1,8 +1,5 @@
-use std::borrow::Cow;
-
 use bevy::{
     ecs::{relationship::Relationship, system::IntoObserverSystem},
-    platform::collections::HashMap,
     prelude::*,
 };
 use bevy_enhanced_input::prelude::*;
@@ -13,6 +10,7 @@ use bevy_mod_scripting::bindings::{
 };
 
 use crate::menus::{MenuManager, MenuUpdateSystems};
+use crate::utils::{script_map, script_str};
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InputUpdateSystems {
@@ -30,7 +28,6 @@ impl Plugin for InputPlugin {
             .init_resource::<HotkeyRegistry>()
             .init_resource::<RemapStatus>()
             .add_message::<RemapBindingMessage>()
-            .register_hotkey_context::<GlobalInput>("global")
             .register_hotkey_context::<GameplayInput>("gameplay")
             .register_hotkey_context::<MenuInput>("menu")
             .configure_sets(
@@ -44,10 +41,7 @@ impl Plugin for InputPlugin {
                     .chain()
                     .before(MenuUpdateSystems),
             )
-            .add_systems(
-                PreStartup,
-                (setup_global_input, setup_gameplay_input),
-            )
+            .add_systems(PreStartup, setup_gameplay_input)
             .add_systems(
                 PreUpdate,
                 sync_context_activity.before(EnhancedInputSystems::Update),
@@ -69,17 +63,6 @@ impl Plugin for InputPlugin {
     }
 }
 
-fn setup_global_input(mut commands: Commands) {
-    let global_entity = commands
-        .spawn((
-            GlobalInput,
-            ContextActive(true),
-            ContextActivity::<GlobalInput>::ACTIVE,
-        ))
-        .id();
-    commands.insert_resource(GlobalInputEntity(global_entity));
-}
-
 fn setup_gameplay_input(mut commands: Commands) {
     let gameplay_entity = commands
         .spawn((
@@ -95,16 +78,10 @@ fn setup_gameplay_input(mut commands: Commands) {
 pub struct GameplayInput;
 
 #[derive(Component, Default, Clone)]
-pub struct GlobalInput;
-
-#[derive(Component, Default, Clone)]
 pub struct MenuInput;
 
 #[derive(Component, Default, Clone, Copy, Debug)]
 pub struct MovementBinding;
-
-#[derive(Resource)]
-pub struct GlobalInputEntity(pub Entity);
 
 #[derive(Resource)]
 pub struct GameplayInputEntity(pub Entity);
@@ -200,87 +177,30 @@ pub fn parse_input_code(code: &str) -> Option<InputCode> {
     }
 }
 
+/// Generates `string => KeyCode` arms from bare variant names, so the parse string
+/// can never drift from the variant it maps to.
+macro_rules! parse_key_variants {
+    ($s:expr, $($variant:ident),+ $(,)?) => {
+        match $s {
+            $(stringify!($variant) => Some(KeyCode::$variant),)+
+            _ => None,
+        }
+    };
+}
+
 pub fn parse_key_code(s: &str) -> Option<KeyCode> {
-    match s {
-        "KeyA" => Some(KeyCode::KeyA),
-        "KeyB" => Some(KeyCode::KeyB),
-        "KeyC" => Some(KeyCode::KeyC),
-        "KeyD" => Some(KeyCode::KeyD),
-        "KeyE" => Some(KeyCode::KeyE),
-        "KeyF" => Some(KeyCode::KeyF),
-        "KeyG" => Some(KeyCode::KeyG),
-        "KeyH" => Some(KeyCode::KeyH),
-        "KeyI" => Some(KeyCode::KeyI),
-        "KeyJ" => Some(KeyCode::KeyJ),
-        "KeyK" => Some(KeyCode::KeyK),
-        "KeyL" => Some(KeyCode::KeyL),
-        "KeyM" => Some(KeyCode::KeyM),
-        "KeyN" => Some(KeyCode::KeyN),
-        "KeyO" => Some(KeyCode::KeyO),
-        "KeyP" => Some(KeyCode::KeyP),
-        "KeyQ" => Some(KeyCode::KeyQ),
-        "KeyR" => Some(KeyCode::KeyR),
-        "KeyS" => Some(KeyCode::KeyS),
-        "KeyT" => Some(KeyCode::KeyT),
-        "KeyU" => Some(KeyCode::KeyU),
-        "KeyV" => Some(KeyCode::KeyV),
-        "KeyW" => Some(KeyCode::KeyW),
-        "KeyX" => Some(KeyCode::KeyX),
-        "KeyY" => Some(KeyCode::KeyY),
-        "KeyZ" => Some(KeyCode::KeyZ),
-        "Digit0" => Some(KeyCode::Digit0),
-        "Digit1" => Some(KeyCode::Digit1),
-        "Digit2" => Some(KeyCode::Digit2),
-        "Digit3" => Some(KeyCode::Digit3),
-        "Digit4" => Some(KeyCode::Digit4),
-        "Digit5" => Some(KeyCode::Digit5),
-        "Digit6" => Some(KeyCode::Digit6),
-        "Digit7" => Some(KeyCode::Digit7),
-        "Digit8" => Some(KeyCode::Digit8),
-        "Digit9" => Some(KeyCode::Digit9),
-        "F1" => Some(KeyCode::F1),
-        "F2" => Some(KeyCode::F2),
-        "F3" => Some(KeyCode::F3),
-        "F4" => Some(KeyCode::F4),
-        "F5" => Some(KeyCode::F5),
-        "F6" => Some(KeyCode::F6),
-        "F7" => Some(KeyCode::F7),
-        "F8" => Some(KeyCode::F8),
-        "F9" => Some(KeyCode::F9),
-        "F10" => Some(KeyCode::F10),
-        "F11" => Some(KeyCode::F11),
-        "F12" => Some(KeyCode::F12),
-        "Escape" => Some(KeyCode::Escape),
-        "Space" => Some(KeyCode::Space),
-        "Enter" => Some(KeyCode::Enter),
-        "Tab" => Some(KeyCode::Tab),
-        "Backspace" => Some(KeyCode::Backspace),
-        "CapsLock" => Some(KeyCode::CapsLock),
-        "ShiftLeft" => Some(KeyCode::ShiftLeft),
-        "ShiftRight" => Some(KeyCode::ShiftRight),
-        "ControlLeft" => Some(KeyCode::ControlLeft),
-        "ControlRight" => Some(KeyCode::ControlRight),
-        "AltLeft" => Some(KeyCode::AltLeft),
-        "AltRight" => Some(KeyCode::AltRight),
-        "SuperLeft" => Some(KeyCode::SuperLeft),
-        "SuperRight" => Some(KeyCode::SuperRight),
-        "Backquote" => Some(KeyCode::Backquote),
-        "Minus" => Some(KeyCode::Minus),
-        "Equal" => Some(KeyCode::Equal),
-        "BracketLeft" => Some(KeyCode::BracketLeft),
-        "BracketRight" => Some(KeyCode::BracketRight),
-        "Backslash" => Some(KeyCode::Backslash),
-        "Semicolon" => Some(KeyCode::Semicolon),
-        "Quote" => Some(KeyCode::Quote),
-        "Comma" => Some(KeyCode::Comma),
-        "Period" => Some(KeyCode::Period),
-        "Slash" => Some(KeyCode::Slash),
-        "ArrowUp" => Some(KeyCode::ArrowUp),
-        "ArrowDown" => Some(KeyCode::ArrowDown),
-        "ArrowLeft" => Some(KeyCode::ArrowLeft),
-        "ArrowRight" => Some(KeyCode::ArrowRight),
-        _ => None,
-    }
+    parse_key_variants!(s,
+        KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
+        KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+        Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+        F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+        Escape, Space, Enter, Tab, Backspace, CapsLock,
+        ShiftLeft, ShiftRight, ControlLeft, ControlRight,
+        AltLeft, AltRight, SuperLeft, SuperRight,
+        Backquote, Minus, Equal, BracketLeft, BracketRight, Backslash,
+        Semicolon, Quote, Comma, Period, Slash,
+        ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+    )
 }
 
 pub fn format_binding_chain(mods: &ModKeys, key_str: &str, label: Option<&str>) -> String {
@@ -306,18 +226,29 @@ pub fn format_binding_chain(mods: &ModKeys, key_str: &str, label: Option<&str>) 
     }
 }
 
+/// Canonical display name for a mouse button, shared by binding serialization and
+/// the menu input dispatcher. `Other(4)`/`Other(5)` are treated as Back/Forward.
+pub fn mouse_button_name(button: MouseButton) -> Option<&'static str> {
+    match button {
+        MouseButton::Left => Some("MouseLeft"),
+        MouseButton::Right => Some("MouseRight"),
+        MouseButton::Middle => Some("MouseMiddle"),
+        MouseButton::Back | MouseButton::Other(4) => Some("MouseBack"),
+        MouseButton::Forward | MouseButton::Other(5) => Some("MouseForward"),
+        MouseButton::Other(_) => None,
+    }
+}
+
 pub fn binding_key_and_mods(binding: &Binding) -> Option<(String, ModKeys)> {
     match binding {
         Binding::Keyboard { key, mod_keys } => Some((format!("{key:?}"), *mod_keys)),
         Binding::MouseButton { button, mod_keys } => {
-            let s = match button {
-                MouseButton::Left => "MouseLeft".to_string(),
-                MouseButton::Right => "MouseRight".to_string(),
-                MouseButton::Middle => "MouseMiddle".to_string(),
-                MouseButton::Back | MouseButton::Other(4) => "MouseBack".to_string(),
-                MouseButton::Forward | MouseButton::Other(5) => "MouseForward".to_string(),
-                MouseButton::Other(n) => format!("MouseButton{n}"),
-            };
+            let s = mouse_button_name(*button)
+                .map(str::to_string)
+                .unwrap_or_else(|| match *button {
+                    MouseButton::Other(n) => format!("MouseButton{n}"),
+                    _ => "MouseButton".to_string(),
+                });
             Some((s, *mod_keys))
         }
         Binding::MouseWheel { mod_keys } => Some(("MouseWheel".to_string(), *mod_keys)),
@@ -328,17 +259,6 @@ pub fn binding_key_and_mods(binding: &Binding) -> Option<(String, ModKeys)> {
 
 pub trait InputAppExt {
     fn register_hotkey_context<C: Component>(&mut self, name: &'static str) -> &mut Self;
-
-    fn register_global_action<A, B, O, M>(
-        &mut self,
-        label: &'static str,
-        bindings: B,
-        observer: O,
-    ) -> &mut Self
-    where
-        A: InputAction<Output = bool> + Send + Sync + 'static,
-        B: IntoIterator<Item = Binding>,
-        O: IntoObserverSystem<Start<A>, M>;
 
     fn register_gameplay_action<A, B, O, M>(
         &mut self,
@@ -376,41 +296,6 @@ impl InputAppExt for App {
                 }
             })
             .in_set(InputUpdateSystems::SyncActionContexts),
-        )
-    }
-
-    fn register_global_action<A, B, O, M>(
-        &mut self,
-        label: &'static str,
-        bindings: B,
-        observer: O,
-    ) -> &mut Self
-    where
-        A: InputAction<Output = bool> + Send + Sync + 'static,
-        B: IntoIterator<Item = Binding>,
-        O: IntoObserverSystem<Start<A>, M>,
-    {
-        let bindings: Vec<Binding> = bindings.into_iter().collect();
-        self.add_observer(observer).add_systems(
-            Startup,
-            move |mut commands: Commands, global: Res<GlobalInputEntity>| {
-                let action = commands
-                    .spawn((
-                        Action::<A>::new(),
-                        ActionOf::<GlobalInput>::new(global.0),
-                        ActionSettings {
-                            consume_input: true,
-                            require_reset: true,
-                            ..default()
-                        },
-                        HotkeyLabel(label),
-                    ))
-                    .id();
-
-                for binding in &bindings {
-                    commands.spawn((binding.clone(), BindingOf(action)));
-                }
-            },
         )
     }
 
@@ -545,6 +430,57 @@ fn sync_hotkey_registry(
     registry.entries = entries;
 }
 
+#[derive(Clone)]
+struct BindingSnapshot {
+    entity: Entity,
+    key: String,
+    mods: ModKeys,
+    context: String,
+    is_movement: bool,
+    label: Option<String>,
+}
+
+impl BindingSnapshot {
+    fn display_label(&self) -> String {
+        self.label.clone().unwrap_or_else(|| self.key.clone())
+    }
+}
+
+/// Validate assigning `(key, mods)` to a binding whose action is (or isn't) a movement binding.
+/// Movement keys must stay modifier-free and outside any hotkey chain; hotkey chains must not
+/// land on a movement key. `chain_exclude` lists bindings allowed to share `key` with modifiers
+/// (the pair being swapped).
+fn validate_placement(
+    snapshots: &[BindingSnapshot],
+    key: &str,
+    mods: ModKeys,
+    is_movement: bool,
+    chain_exclude: &[Entity],
+) -> Result<(), String> {
+    if is_movement {
+        if !mods.is_empty() {
+            return Err("Movement keys cannot have modifier keys".to_string());
+        }
+        if let Some(chain_desc) = snapshots.iter().find_map(|s| {
+            (!chain_exclude.contains(&s.entity)
+                && s.key.eq_ignore_ascii_case(key)
+                && !s.mods.is_empty())
+                .then(|| format_binding_chain(&s.mods, &s.key, s.label.as_deref()))
+        }) {
+            return Err(format!(
+                "Cannot remap movement key to '{key}': key is part of hotkey chain '{chain_desc}'"
+            ));
+        }
+    } else if !mods.is_empty()
+        && snapshots
+            .iter()
+            .any(|s| s.is_movement && s.key.eq_ignore_ascii_case(key))
+    {
+        return Err(format!("Cannot bind hotkey chain to movement key '{key}'"));
+    }
+    Ok(())
+}
+
 fn handle_remap_bindings(
     mut messages: MessageReader<RemapBindingMessage>,
     q_bindings: Query<(
@@ -566,31 +502,38 @@ fn handle_remap_bindings(
             remap_status.set_error("Aim/Look cannot be rebound".to_string());
             continue;
         }
-        let binding_snapshots: Vec<(Entity, String, ModKeys, String, bool, Option<String>)> =
-            q_bindings
-                .iter()
-                .filter_map(|(e, b, b_of, lbl, mov)| {
-                    let (k, m) = binding_key_and_mods(b)?;
-                    let (_, ctx) = q_actions.get(b_of.get()).ok().unwrap_or((None, None));
-                    let ctx_name = ctx.map_or("unknown", |c| c.name).to_string();
-                    let label = lbl.map(|l| l.0.to_string());
-                    Some((e, k, m, ctx_name, mov.is_some(), label))
+
+        let binding_snapshots: Vec<BindingSnapshot> = q_bindings
+            .iter()
+            .filter_map(|(e, b, b_of, lbl, mov)| {
+                let (key, mods) = binding_key_and_mods(b)?;
+                let (_, ctx) = q_actions.get(b_of.get()).ok().unwrap_or((None, None));
+                Some(BindingSnapshot {
+                    entity: e,
+                    key,
+                    mods,
+                    context: ctx.map_or("unknown", |c| c.name).to_string(),
+                    is_movement: mov.is_some(),
+                    label: lbl.map(|l| l.0.to_string()),
                 })
-                .collect();
+            })
+            .collect();
 
-        let source_entry = binding_snapshots.iter().find(|(_, k, m, _, _, _)| {
-            k.eq_ignore_ascii_case(&msg.source_key) && *m == msg.source_mods
-        });
+        let find = |key: &str, mods: ModKeys, exclude: Option<Entity>| {
+            binding_snapshots.iter().find(|s| {
+                Some(s.entity) != exclude
+                    && s.key.eq_ignore_ascii_case(key)
+                    && s.mods == mods
+            })
+        };
 
-        let Some((source_entity, source_key, source_mods, source_ctx, source_is_movement, source_label)) =
-            source_entry.cloned()
-        else {
+        let Some(source) = find(&msg.source_key, msg.source_mods, None).cloned() else {
             remap_status.set_error(format!("Source binding '{}' not found", msg.source_key));
             continue;
         };
 
-        if source_ctx != "gameplay" {
-            warn!("Cannot remap non-gameplay binding '{source_key}' ({source_ctx})");
+        if source.context != "gameplay" {
+            warn!("Cannot remap non-gameplay binding '{}'", source.key);
             remap_status.set_error("Only gameplay keybinds can be remapped".to_string());
             continue;
         }
@@ -600,186 +543,76 @@ fn handle_remap_bindings(
             continue;
         };
 
-        let target_entry = binding_snapshots.iter().find(|(e, k, m, _, _, _)| {
-            *e != source_entity
-                && k.eq_ignore_ascii_case(&msg.target_key)
-                && *m == msg.target_mods
-        });
+        let target = find(&msg.target_key, msg.target_mods, Some(source.entity)).cloned();
+        let source_label = source.display_label();
 
-        let source_display_label = source_label.unwrap_or_else(|| source_key.clone());
-
-        match target_entry.cloned() {
-            None => {
-                if source_is_movement {
-                    if !msg.target_mods.is_empty() {
-                        warn!("Movement keys cannot be part of any hotkey chain (cannot have modifiers)");
-                        remap_status.set_error("Movement keys cannot have modifier keys".to_string());
-                        continue;
-                    }
-
-                    let chain = binding_snapshots.iter().find_map(|(e, k, m, _, _, lbl)| {
-                        if *e != source_entity
-                            && k.eq_ignore_ascii_case(&msg.target_key)
-                            && !m.is_empty()
-                        {
-                            Some(format_binding_chain(m, k, lbl.as_deref()))
-                        } else {
-                            None
-                        }
-                    });
-
-                    if let Some(chain_desc) = chain {
-                        warn!(
-                            "Cannot remap movement key to '{}': key is already part of hotkey chain '{}'",
-                            msg.target_key, chain_desc
-                        );
-                        remap_status.set_error(format!(
-                            "Cannot remap movement key to '{}': key is part of hotkey chain '{}'",
-                            msg.target_key, chain_desc
-                        ));
-                        continue;
-                    }
-                } else if !msg.target_mods.is_empty() {
-                    let is_movement_key = binding_snapshots.iter().any(|(e, k, _, _, is_mov, _)| {
-                        *e != source_entity && *is_mov && k.eq_ignore_ascii_case(&msg.target_key)
-                    });
-
-                    if is_movement_key {
-                        warn!("Cannot bind hotkey chain to movement key '{}'", msg.target_key);
-                        remap_status.set_error(format!(
-                            "Cannot bind hotkey chain to movement key '{}'",
-                            msg.target_key
-                        ));
-                        continue;
-                    }
-                }
-
+        let result = match target {
+            None => validate_placement(
+                &binding_snapshots,
+                &msg.target_key,
+                msg.target_mods,
+                source.is_movement,
+                &[source.entity],
+            )
+            .map(|()| {
                 commands
-                    .entity(source_entity)
+                    .entity(source.entity)
                     .insert(target_code.to_binding(msg.target_mods));
-
-                let success_msg = format!(
-                    "Remapped '{}' to '{}'",
-                    source_display_label, msg.target_key
-                );
-                info!("{success_msg}");
-                remap_status.set_success(success_msg);
-            }
-            Some((target_entity, target_key, target_mods, target_ctx, target_is_movement, target_label)) => {
-                if target_ctx != "gameplay" {
-                    warn!(
-                        "Cannot swap with non-gameplay binding '{}' ({target_ctx})",
-                        target_key
-                    );
-                    remap_status.set_error(format!(
+                format!("Remapped '{source_label}' to '{}'", msg.target_key)
+            }),
+            Some(target) => {
+                if target.context != "gameplay" {
+                    Err(format!(
                         "Cannot swap with non-gameplay keybind '{}'",
-                        target_key
-                    ));
-                    continue;
-                }
-
-                let Some(source_code) = parse_input_code(&source_key) else {
-                    remap_status.set_error(format!("Unknown key or button '{}'", source_key));
-                    continue;
-                };
-
-                let target_display_label = target_label.unwrap_or_else(|| target_key.clone());
-
-                if source_is_movement {
-                    if !msg.target_mods.is_empty() {
-                        warn!("Movement keys cannot be part of any hotkey chain");
-                        remap_status.set_error("Movement keys cannot have modifier keys".to_string());
-                        continue;
-                    }
-
-                    let chain = binding_snapshots.iter().find_map(|(e, k, m, _, _, lbl)| {
-                        if *e != source_entity
-                            && *e != target_entity
-                            && k.eq_ignore_ascii_case(&msg.target_key)
-                            && !m.is_empty()
-                        {
-                            Some(format_binding_chain(m, k, lbl.as_deref()))
-                        } else {
-                            None
-                        }
-                    });
-
-                    if let Some(chain_desc) = chain {
-                        warn!(
-                            "Cannot remap movement key to '{}': key is already part of hotkey chain '{}'",
-                            msg.target_key, chain_desc
-                        );
-                        remap_status.set_error(format!(
-                            "Cannot remap movement key to '{}': key is part of hotkey chain '{}'",
-                            msg.target_key, chain_desc
-                        ));
-                        continue;
+                        target.key
+                    ))
+                } else {
+                    let source_code = parse_input_code(&source.key);
+                    match source_code {
+                        None => Err(format!("Unknown key or button '{}'", source.key)),
+                        Some(source_code) => validate_placement(
+                            &binding_snapshots,
+                            &msg.target_key,
+                            msg.target_mods,
+                            source.is_movement,
+                            &[source.entity, target.entity],
+                        )
+                        .and_then(|()| {
+                            validate_placement(
+                                &binding_snapshots,
+                                &source.key,
+                                source.mods,
+                                target.is_movement,
+                                &[source.entity, target.entity],
+                            )
+                        })
+                        .map(|()| {
+                            commands
+                                .entity(source.entity)
+                                .insert(target_code.to_binding(target.mods));
+                            commands
+                                .entity(target.entity)
+                                .insert(source_code.to_binding(source.mods));
+                            format!(
+                                "Swapped '{source_label}' ({}) <-> '{}' ({})",
+                                source.key,
+                                target.display_label(),
+                                target.key
+                            )
+                        }),
                     }
                 }
+            }
+        };
 
-                if target_is_movement {
-                    if !source_mods.is_empty() {
-                        warn!("Movement keys cannot be part of any hotkey chain");
-                        remap_status.set_error("Movement keys cannot have modifier keys".to_string());
-                        continue;
-                    }
-
-                    let chain = binding_snapshots.iter().find_map(|(e, k, m, _, _, lbl)| {
-                        if *e != source_entity
-                            && *e != target_entity
-                            && k.eq_ignore_ascii_case(&source_key)
-                            && !m.is_empty()
-                        {
-                            Some(format_binding_chain(m, k, lbl.as_deref()))
-                        } else {
-                            None
-                        }
-                    });
-
-                    if let Some(chain_desc) = chain {
-                        warn!(
-                            "Cannot remap movement key to '{}': key is already part of hotkey chain '{}'",
-                            source_key, chain_desc
-                        );
-                        remap_status.set_error(format!(
-                            "Cannot remap movement key to '{}': key is part of hotkey chain '{}'",
-                            source_key, chain_desc
-                        ));
-                        continue;
-                    }
-                }
-
-                if !source_is_movement && !msg.target_mods.is_empty() && target_is_movement {
-                    warn!("Cannot bind hotkey chain to movement key '{}'", msg.target_key);
-                    remap_status.set_error(format!(
-                        "Cannot bind hotkey chain to movement key '{}'",
-                        msg.target_key
-                    ));
-                    continue;
-                }
-
-                if !target_is_movement && !source_mods.is_empty() && source_is_movement {
-                    warn!("Cannot bind hotkey chain to movement key '{}'", source_key);
-                    remap_status.set_error(format!(
-                        "Cannot bind hotkey chain to movement key '{}'",
-                        source_key
-                    ));
-                    continue;
-                }
-
-                commands
-                    .entity(source_entity)
-                    .insert(target_code.to_binding(target_mods));
-                commands
-                    .entity(target_entity)
-                    .insert(source_code.to_binding(source_mods));
-
-                let success_msg = format!(
-                    "Swapped '{}' ({source_key}) <-> '{}' ({target_key})",
-                    source_display_label, target_display_label
-                );
-                info!("{success_msg}");
-                remap_status.set_success(success_msg);
+        match result {
+            Ok(message) => {
+                info!("{message}");
+                remap_status.set_success(message);
+            }
+            Err(message) => {
+                warn!("{message}");
+                remap_status.set_error(message);
             }
         }
     }
@@ -788,66 +621,44 @@ fn handle_remap_bindings(
 pub fn parse_mod_keys(val: &ScriptValue) -> ModKeys {
     let mut mods = ModKeys::empty();
     if let ScriptValue::Map(map) = val {
-        if map
-            .get("ctrl")
-            .and_then(|v| match v {
-                ScriptValue::Bool(b) => Some(*b),
-                _ => None,
-            })
-            .unwrap_or(false)
-        {
-            mods |= ModKeys::CONTROL;
-        }
-        if map
-            .get("shift")
-            .and_then(|v| match v {
-                ScriptValue::Bool(b) => Some(*b),
-                _ => None,
-            })
-            .unwrap_or(false)
-        {
-            mods |= ModKeys::SHIFT;
-        }
-        if map
-            .get("alt")
-            .and_then(|v| match v {
-                ScriptValue::Bool(b) => Some(*b),
-                _ => None,
-            })
-            .unwrap_or(false)
-        {
-            mods |= ModKeys::ALT;
-        }
-        if map
-            .get("super")
-            .and_then(|v| match v {
-                ScriptValue::Bool(b) => Some(*b),
-                _ => None,
-            })
-            .unwrap_or(false)
-        {
-            mods |= ModKeys::SUPER;
+        for (name, flag) in [
+            ("ctrl", ModKeys::CONTROL),
+            ("shift", ModKeys::SHIFT),
+            ("alt", ModKeys::ALT),
+            ("super", ModKeys::SUPER),
+        ] {
+            if map.get(name).is_some_and(|v| matches!(v, ScriptValue::Bool(true))) {
+                mods |= flag;
+            }
         }
     }
     mods
 }
 
-pub fn current_modifier_flags(keys: &ButtonInput<KeyCode>) -> (bool, bool, bool, bool) {
-    (
-        keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]),
-        keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
-        keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]),
-        keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]),
-    )
+pub fn current_modifier_flags(keys: &ButtonInput<KeyCode>) -> ModKeys {
+    let mut mods = ModKeys::empty();
+    if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]) {
+        mods |= ModKeys::CONTROL;
+    }
+    if keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]) {
+        mods |= ModKeys::SHIFT;
+    }
+    if keys.any_pressed([KeyCode::AltLeft, KeyCode::AltRight]) {
+        mods |= ModKeys::ALT;
+    }
+    if keys.any_pressed([KeyCode::SuperLeft, KeyCode::SuperRight]) {
+        mods |= ModKeys::SUPER;
+    }
+    mods
 }
 
-pub fn modifier_map(ctrl: bool, shift: bool, alt: bool, super_key: bool) -> ScriptValue {
-    let mut map = HashMap::default();
-    map.insert("ctrl".to_string(), ScriptValue::Bool(ctrl));
-    map.insert("shift".to_string(), ScriptValue::Bool(shift));
-    map.insert("alt".to_string(), ScriptValue::Bool(alt));
-    map.insert("super".to_string(), ScriptValue::Bool(super_key));
-    ScriptValue::Map(map)
+pub fn modifier_map(mods: ModKeys) -> ScriptValue {
+    script_map([
+        ("ctrl", ScriptValue::Bool(mods.contains(ModKeys::CONTROL))),
+        ("shift", ScriptValue::Bool(mods.contains(ModKeys::SHIFT))),
+        ("alt", ScriptValue::Bool(mods.contains(ModKeys::ALT))),
+        ("super", ScriptValue::Bool(mods.contains(ModKeys::SUPER))),
+    ])
 }
 
 fn register_input_namespace(app: &mut App) {
@@ -860,26 +671,17 @@ fn register_input_namespace(app: &mut App) {
                         .entries
                         .iter()
                         .map(|entry| {
-                            let mut map = HashMap::default();
-                            map.insert(
-                                "key".to_string(),
-                                ScriptValue::String(Cow::Owned(entry.key.clone())),
-                            );
-                            map.insert(
-                                "label".to_string(),
-                                ScriptValue::String(Cow::Owned(entry.label.clone())),
-                            );
-                            map.insert(
-                                "context".to_string(),
-                                ScriptValue::String(Cow::Owned(entry.context.clone())),
-                            );
-                            map.insert("active".to_string(), ScriptValue::Bool(entry.active));
-                            map.insert("is_movement".to_string(), ScriptValue::Bool(entry.is_movement));
-                            map.insert("ctrl".to_string(), ScriptValue::Bool(entry.ctrl));
-                            map.insert("shift".to_string(), ScriptValue::Bool(entry.shift));
-                            map.insert("alt".to_string(), ScriptValue::Bool(entry.alt));
-                            map.insert("super".to_string(), ScriptValue::Bool(entry.super_key));
-                            ScriptValue::Map(map)
+                            script_map([
+                                ("key", script_str(&entry.key)),
+                                ("label", script_str(&entry.label)),
+                                ("context", script_str(&entry.context)),
+                                ("active", ScriptValue::Bool(entry.active)),
+                                ("is_movement", ScriptValue::Bool(entry.is_movement)),
+                                ("ctrl", ScriptValue::Bool(entry.ctrl)),
+                                ("shift", ScriptValue::Bool(entry.shift)),
+                                ("alt", ScriptValue::Bool(entry.alt)),
+                                ("super", ScriptValue::Bool(entry.super_key)),
+                            ])
                         })
                         .collect();
                     ScriptValue::List(list)
@@ -890,8 +692,7 @@ fn register_input_namespace(app: &mut App) {
             "active_modifiers",
             |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
                 ctx.world()?.with_resource(|keys: &ButtonInput<KeyCode>| {
-                    let (ctrl, shift, alt, super_key) = current_modifier_flags(keys);
-                    modifier_map(ctrl, shift, alt, super_key)
+                    modifier_map(current_modifier_flags(keys))
                 })
             },
         )
@@ -920,17 +721,11 @@ fn register_input_namespace(app: &mut App) {
             "remap_status",
             |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
                 ctx.world()?.with_resource(|status: &RemapStatus| {
-                    let mut map = HashMap::default();
-                    map.insert("success".to_string(), ScriptValue::Bool(status.success));
-                    map.insert(
-                        "message".to_string(),
-                        ScriptValue::String(Cow::Owned(status.message.clone())),
-                    );
-                    map.insert(
-                        "version".to_string(),
-                        ScriptValue::Integer(status.version as i64),
-                    );
-                    ScriptValue::Map(map)
+                    script_map([
+                        ("success", ScriptValue::Bool(status.success)),
+                        ("message", script_str(&status.message)),
+                        ("version", ScriptValue::Integer(status.version as i64)),
+                    ])
                 })
             },
         );

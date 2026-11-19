@@ -109,14 +109,12 @@ impl Default for CameraRig {
 #[derive(Component)]
 pub struct CameraTarget {
     pub offset: Vec3,
-    pub first_person: bool,
 }
 
 impl Default for CameraTarget {
     fn default() -> Self {
         Self {
             offset: Vec3::new(0.0, 0.65, 0.0),
-            first_person: false,
         }
     }
 }
@@ -291,7 +289,7 @@ fn on_camera_zoom(
 fn sync_camera_transform(
     spatial_query: SpatialQuery,
     camera_query: Single<(&mut CameraRig, &mut Transform), Without<CameraTarget>>,
-    mut target_query: Query<(Entity, &Transform, &mut CameraTarget), Without<MainCamera>>,
+    target_query: Query<(Entity, &Transform, &CameraTarget), Without<MainCamera>>,
 ) {
     let (mut rig, mut cam_transform) = camera_query.into_inner();
     let cam_yaw_rot = Quat::from_rotation_y(rig.yaw);
@@ -308,11 +306,10 @@ fn sync_camera_transform(
     };
     rig.target = Some(target_entity);
 
-    let Ok((_, target_transform, mut cam_target)) = target_query.get_mut(target_entity) else {
+    let Ok((_, target_transform, cam_target)) = target_query.get(target_entity) else {
         return;
     };
 
-    cam_target.first_person = rig.view_mode == ViewMode::FirstPerson;
     let eye_pivot = target_transform.translation + cam_target.offset;
 
     match rig.view_mode {

@@ -3,7 +3,7 @@ use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
-    camera::{CameraRig, CameraSystems, CameraTarget},
+    camera::{CameraRig, CameraSystems, CameraTarget, ViewMode},
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
     terrain::TerrainMap,
     utils::commands::{CommandAppExt, CommandArgs, command},
@@ -12,6 +12,19 @@ use crate::{
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
 pub const CAPSULE_RADIUS: f32 = 0.4;
 pub const CAPSULE_HEIGHT: f32 = 1.0;
+
+/// Ground probe `ShapeCaster` geometry (coupled: the probe hangs below the capsule origin).
+const GROUND_PROBE_RADIUS: f32 = 0.35;
+const GROUND_PROBE_OFFSET_Y: f32 = -0.6;
+const GROUND_PROBE_MAX_DISTANCE: f32 = 0.5;
+/// Max probe travel distance that still counts as grounded.
+const GROUND_SNAP_DISTANCE: f32 = 0.45;
+/// Downward velocity applied to keep the character glued to slopes.
+const SLOPE_SNAP_MIN_DISTANCE: f32 = 0.05;
+const SLOPE_SNAP_SPEED: f32 = 10.0;
+const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
+const MIN_GROUND_NORMAL_Y: f32 = 0.01;
+const HORIZ_VEL_EPSILON: f32 = 0.001;
 
 pub struct CharacterPlugin;
 
@@ -111,6 +124,11 @@ pub fn camera_relative_direction(move_vec: Vec2, cam_yaw: f32) -> Vec3 {
     right * move_vec.x + forward * move_vec.y
 }
 
+fn spawn_translation(terrain: Option<&TerrainMap>) -> Vec3 {
+    let y = terrain.map_or(0.0, |t| t.height_at(0.0, 0.0)) + CHARACTER_SPAWN_OFFSET_Y;
+    Vec3::new(0.0, y, 0.0)
+}
+
 fn setup_character(world: &mut World) {
     let capsule_mesh = world
         .resource_mut::<Assets<Mesh>>()
@@ -129,15 +147,12 @@ fn setup_character(world: &mut World) {
         require_reset: true,
         ..default()
     };
-    let spawn_y = world
-        .get_resource::<TerrainMap>()
-        .map_or(0.0, |t| t.height_at(0.0, 0.0))
-        + CHARACTER_SPAWN_OFFSET_Y;
+    let spawn_translation = spawn_translation(world.get_resource::<TerrainMap>());
 
     let mut char_entity = world
         .spawn_scene(bsn! {
             Character
-            Transform::from_xyz(0.0, spawn_y, 0.0)
+            Transform::from_translation(spawn_translation)
             Visibility::default()
             GameplayInput
             Actions<GameplayInput> [
@@ -216,16 +231,16 @@ fn setup_character(world: &mut World) {
             Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
             Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
             LinearVelocity::default(),
-            GravityScale(2.5),
+            GravityScale(Character::default().base_gravity),
             GroundState::default(),
             TransformInterpolation,
             ShapeCaster::new(
-                Collider::sphere(0.35),
-                Vec3::new(0.0, -0.6, 0.0),
+                Collider::sphere(GROUND_PROBE_RADIUS),
+                Vec3::new(0.0, GROUND_PROBE_OFFSET_Y, 0.0),
                 Quat::IDENTITY,
                 Dir3::NEG_Y,
             )
-            .with_max_distance(0.5)
+            .with_max_distance(GROUND_PROBE_MAX_DISTANCE)
             .with_query_filter(SpatialQueryFilter::from_excluded_entities([entity_id])),
         ))
         .with_children(|parent| {
@@ -263,7 +278,9 @@ fn character_ground_check(
         }
 
         if let Some(hit) = hits.iter_sorted().next() {
-            if hit.distance <= 0.45 && hit.normal1.angle_between(Vec3::Y) <= character.max_slope_angle_rad {
+            if hit.distance <= GROUND_SNAP_DISTANCE
+                && hit.normal1.angle_between(Vec3::Y) <= character.max_slope_angle_rad
+            {
                 ground_state.is_grounded = true;
                 ground_state.ground_normal = hit.normal1.normalize();
                 ground_state.ground_distance = hit.distance;
@@ -336,12 +353,14 @@ fn character_physics_move(
     } else if ground.is_grounded {
         gravity_scale.0 = 0.0;
 
-        let has_horiz_vel = velocity.x.abs() > 0.001 || velocity.z.abs() > 0.001;
-        if has_horiz_vel && ground.ground_normal.y > 0.01 {
+        let has_horiz_vel =
+            velocity.x.abs() > HORIZ_VEL_EPSILON || velocity.z.abs() > HORIZ_VEL_EPSILON;
+        if has_horiz_vel && ground.ground_normal.y > MIN_GROUND_NORMAL_Y {
             let slope_tangent_y = -(velocity.x * ground.ground_normal.x + velocity.z * ground.ground_normal.z)
                 / ground.ground_normal.y;
-            let snap = if ground.ground_distance > 0.05 {
-                ((ground.ground_distance - 0.05) * 10.0).min(4.0)
+            let snap = if ground.ground_distance > SLOPE_SNAP_MIN_DISTANCE {
+                ((ground.ground_distance - SLOPE_SNAP_MIN_DISTANCE) * SLOPE_SNAP_SPEED)
+                    .min(SLOPE_SNAP_MAX_SPEED)
             } else {
                 0.0
             };
@@ -367,7 +386,6 @@ fn character_rotate_body(
     move_action: Single<&Action<Move>>,
     align_action: Single<&Action<AlignToCamera>>,
     cam_rig: Option<Single<&CameraRig>>,
-    cam_target: Single<&CameraTarget, With<Character>>,
     character: Single<&Character>,
     mut body_transform: Single<&mut Transform, (With<CharacterBody>, Without<Character>)>,
 ) {
@@ -376,7 +394,10 @@ fn character_rotate_body(
     let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
     let yaw_rot = Quat::from_rotation_y(cam_yaw);
 
-    if cam_target.first_person {
+    let first_person = cam_rig
+        .as_ref()
+        .is_some_and(|rig| rig.view_mode == ViewMode::FirstPerson);
+    if first_person {
         body_transform.rotation = yaw_rot;
         return;
     }
@@ -398,10 +419,10 @@ fn character_rotate_body(
 }
 
 fn sync_body_visibility(
-    target: Single<&CameraTarget, With<Character>>,
+    rig: Single<&CameraRig>,
     mut body_visibility: Single<&mut Visibility, With<CharacterBody>>,
 ) {
-    let desired = if target.first_person {
+    let desired = if rig.view_mode == ViewMode::FirstPerson {
         Visibility::Hidden
     } else {
         Visibility::Visible
@@ -422,8 +443,7 @@ fn respawn_character(
     )>,
 ) {
     let (mut transform, mut velocity, mut ground, mut gravity, character) = query.into_inner();
-    let spawn_y = terrain.as_ref().map_or(0.0, |t| t.height_at(0.0, 0.0)) + CHARACTER_SPAWN_OFFSET_Y;
-    transform.translation = Vec3::new(0.0, spawn_y, 0.0);
+    transform.translation = spawn_translation(terrain.as_deref());
     velocity.0 = Vec3::ZERO;
     *ground = GroundState::default();
     gravity.0 = character.base_gravity;
@@ -434,6 +454,7 @@ fn set_character_speed(
     mut character_query: Query<&mut Character>,
 ) {
     let Ok(mut character) = character_query.single_mut() else {
+        warn!("No character found for speed command");
         return;
     };
 
@@ -466,6 +487,7 @@ fn increase_character_speed(
     mut character_query: Query<&mut Character>,
 ) {
     let Ok(mut character) = character_query.single_mut() else {
+        warn!("No character found for speed command");
         return;
     };
 

@@ -2,7 +2,6 @@
 
 ## Table of Contents <!-- omit from toc -->
 - [Menus](#menus)
-- [Bugs](#bugs)
 
 ## Menus
 
@@ -13,7 +12,4 @@ The menus can be as dynamic as you want, you can make the world map into the mai
 
 Currently there is a set number of menus; later a hook to read a list of menus, add new menus, and bind menus will be added
 
-Go [here](point to docs page somewhere and make the list) for a full list of lua<->engine hooks 
-
-## Bugs
-view open or closed bugs [here](point to docs page somewhere and make the list)
+Go [here](docs/lua-hooks.md) for a full list of lua<->engine hooks 

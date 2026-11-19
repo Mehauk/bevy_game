@@ -1,8 +1,25 @@
 pub mod commands;
 
-use bevy::{pbr::wireframe::WireframePlugin, prelude::*};
+use std::borrow::Cow;
+
+use bevy::{pbr::wireframe::WireframePlugin, platform::collections::HashMap, prelude::*};
+use bevy_mod_scripting::bindings::script_value::ScriptValue;
 
 use commands::{CommandAppExt, command};
+
+/// [`ScriptValue::String`] from a `&str`.
+pub fn script_str(s: &str) -> ScriptValue {
+    ScriptValue::String(Cow::Owned(s.to_string()))
+}
+
+/// Build a [`ScriptValue::Map`] from static-keyed entries.
+pub fn script_map(entries: impl IntoIterator<Item = (&'static str, ScriptValue)>) -> ScriptValue {
+    let mut map = HashMap::default();
+    for (key, value) in entries {
+        map.insert(key.to_string(), value);
+    }
+    ScriptValue::Map(map)
+}
 
 pub struct DevUtilsPlugin;
 

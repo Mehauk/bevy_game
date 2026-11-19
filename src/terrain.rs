@@ -108,6 +108,12 @@ fn setup_terrain(
     let slope_rock = Color::srgb(0.38, 0.36, 0.31).to_linear();
     let ridge = Color::srgb(0.48, 0.46, 0.43).to_linear();
 
+    // Height bands (normalized 0..1) and their widths; widths must equal the band gaps.
+    const VALLEY_BAND: f32 = 0.45;
+    const SLOPE_BAND: f32 = 0.72;
+    const HILLSIDE_BAND: f32 = 0.27; // SLOPE_BAND - VALLEY_BAND
+    const RIDGE_BAND: f32 = 0.28; // 1.0 - SLOPE_BAND
+
     let mut colors = Vec::new();
     if let Some(VertexAttributeValues::Float32x3(positions)) =
         terrain.attribute_mut(Mesh::ATTRIBUTE_POSITION)
@@ -118,12 +124,12 @@ fn setup_terrain(
             pos[1] = y;
 
             let h = ((y / terrain_map.amplitude) * 0.5 + 0.5).clamp(0.0, 1.0);
-            let color = if h < 0.45 {
-                valley.mix(&hillside, h / 0.45)
-            } else if h < 0.72 {
-                hillside.mix(&slope_rock, (h - 0.45) / 0.27)
+            let color = if h < VALLEY_BAND {
+                valley.mix(&hillside, h / VALLEY_BAND)
+            } else if h < SLOPE_BAND {
+                hillside.mix(&slope_rock, (h - VALLEY_BAND) / HILLSIDE_BAND)
             } else {
-                slope_rock.mix(&ridge, (h - 0.72) / 0.28)
+                slope_rock.mix(&ridge, (h - SLOPE_BAND) / RIDGE_BAND)
             };
             colors.push(color.to_f32_array());
         }

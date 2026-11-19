@@ -20,6 +20,7 @@ use menus::MenuPlugin;
 use terrain::TerrainPlugin;
 use utils::{
     DevUtilsPlugin,
+    ProfilerPlugin,
     registry::{commands::CommandRegistryPlugin, menus::MenuRegistryPlugin},
 };
 use avian3d::prelude::*;
@@ -46,6 +47,7 @@ fn main() {
             InputPlugin,
             MenuPlugin,
             DevUtilsPlugin,
+            ProfilerPlugin,
             CameraPlugin,
             CharacterPlugin,
             TerrainPlugin,

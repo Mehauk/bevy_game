@@ -2,7 +2,10 @@
     <node id="backdrop" class="backdrop" />
     <node class="panel">
         <node class="header">
-            <text class="title">Keyboard &amp; Mouse Shortcuts</text>
+            <node class="header-titles">
+                <text class="title">Keyboard &amp; Mouse Shortcuts</text>
+                <text id="rebind_hint" class="rebind-hint"></text>
+            </node>
             <text id="mod_indicator" class="mod-indicator">Modifiers: None</text>
         </node>
         <node class="shortcuts-container">
@@ -12,6 +15,7 @@
                 <node id="mouse_slots" class="mouse-slots" />
             </node>
         </node>
-        <text class="hint">Hold Shift / Ctrl / Alt (or click modifier keys) to preview bindings | Esc to close</text>
+        <text class="hint">Click a bound key to rebind / swap | Hold Shift/Ctrl/Alt to preview bindings | Esc to cancel
+            / close</text>
     </node>
 </node>

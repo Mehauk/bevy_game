@@ -2,6 +2,7 @@ pub mod command_menu;
 pub mod keyboard_menu;
 
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -43,7 +44,7 @@ use bevy_mod_scripting::{
 };
 
 use crate::{
-    input::{ContextActive, HotkeyLabel, InputAppExt, MenuInput},
+    input::{ContextActive, HotkeyLabel, InputAppExt, MenuInput, RemapStatus},
     utils::commands::CommandAppExt,
 };
 
@@ -51,6 +52,7 @@ callback_labels!(
     OnMenuReady => "on_menu_ready",
     OnDomEvent => "on_dom_event",
     OnMenuModifiersChanged => "on_modifiers_changed",
+    OnMenuRemapResult => "on_remap_result",
 );
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -69,6 +71,9 @@ impl Plugin for MenuPlugin {
             .add_message::<MenuCmd>()
             .add_systems(Startup, setup_menu_input)
             .add_observer(on_close_top_menu)
+            .add_observer(on_dom_click)
+            .add_observer(on_dom_hover_enter)
+            .add_observer(on_dom_hover_exit)
             .add_systems(
                 Update,
                 (
@@ -77,9 +82,11 @@ impl Plugin for MenuPlugin {
                     track_and_maintain_menu_focus,
                     dispatch_menu_ready,
                     dispatch_modifier_changes,
+                    dispatch_remap_results,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
                     event_handler::<OnDomEvent, LuaScriptingPlugin>,
                     event_handler::<OnMenuModifiersChanged, LuaScriptingPlugin>,
+                    event_handler::<OnMenuRemapResult, LuaScriptingPlugin>,
                     apply_dom_ops,
                 )
                     .chain()
@@ -334,6 +341,7 @@ pub struct MenuFocusState {
 pub struct MenuManager {
     open_menus: Vec<(String, Entity)>,
     last_mods: (bool, bool, bool, bool),
+    last_pressed: Vec<String>,
 }
 
 impl MenuManager {
@@ -543,20 +551,24 @@ struct DomEventCtx<'w, 's> {
 
 impl DomEventCtx<'_, '_> {
     fn has_handler(&self, target: Entity, event: &str) -> bool {
-        self.handlers
-            .get(target)
-            .is_ok_and(|h| h.0.contains_key(event))
+        std::iter::once(target)
+            .chain(self.parents.iter_ancestors(target))
+            .any(|e| self.handlers.get(e).is_ok_and(|h| h.0.contains_key(event)))
     }
 
     fn emit(&mut self, target: Entity, event: &str, payload: ScriptValue) -> bool {
-        let Ok(handlers) = self.handlers.get(target) else {
-            return false;
-        };
-        let Some(handler) = handlers.0.get(event) else {
-            return false;
-        };
-        let Some((menu_entity, root)) = std::iter::once(target)
+        let target_with_handler = std::iter::once(target)
             .chain(self.parents.iter_ancestors(target))
+            .find(|&e| self.handlers.get(e).is_ok_and(|h| h.0.contains_key(event)));
+
+        let Some(target_entity) = target_with_handler else {
+            return false;
+        };
+
+        let handler = self.handlers.get(target_entity).unwrap().0.get(event).unwrap().clone();
+
+        let Some((menu_entity, root)) = std::iter::once(target_entity)
+            .chain(self.parents.iter_ancestors(target_entity))
             .find_map(|e| self.roots.get(e).ok().map(|r| (e, r)))
         else {
             return false;
@@ -565,12 +577,12 @@ impl DomEventCtx<'_, '_> {
             return false;
         }
         let script = root.script.clone().unwrap();
-        let node_id = self.handles.get(target).map_or(0, |h| h.0);
+        let node_id = self.handles.get(target_entity).map_or(0, |h| h.0);
         self.callbacks
             .write(ScriptCallbackMessage::new_for_script_entity(
                 OnDomEvent::into_callback_label(),
                 vec![
-                    ScriptValue::String(handler.clone().into()),
+                    ScriptValue::String(handler.into()),
                     ScriptValue::Integer(node_id),
                     payload,
                 ],
@@ -817,16 +829,106 @@ fn dispatch_menu_ready(
 
 fn dispatch_modifier_changes(
     keys: Res<ButtonInput<KeyCode>>,
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut mouse_wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    mut mouse_motion: MessageReader<bevy::input::mouse::MouseMotion>,
     mut manager: ResMut<MenuManager>,
     q_roots: Query<(Entity, &MenuRoot)>,
     mut callbacks: MessageWriter<ScriptCallbackMessage>,
 ) {
-    let mods = crate::input::current_modifier_flags(&keys);
-    if mods == manager.last_mods {
+    if !manager.any_open() {
         return;
     }
+
+    let mods = crate::input::current_modifier_flags(&keys);
+    let mut pressed: Vec<String> = keys
+        .get_pressed()
+        .map(|k| format!("{k:?}"))
+        .collect();
+
+    for mb in mouse_buttons.get_pressed() {
+        let s = match mb {
+            MouseButton::Left => "MouseLeft",
+            MouseButton::Right => "MouseRight",
+            MouseButton::Middle => "MouseMiddle",
+            MouseButton::Back => "MouseBack",
+            MouseButton::Forward => "MouseForward",
+            _ => continue,
+        };
+        pressed.push(s.to_string());
+    }
+
+    if mouse_wheel.read().count() > 0 {
+        pressed.push("MouseWheel".to_string());
+    }
+    // We intentionally drain mouse motion so message reader does not accumulate,
+    // but do not add MouseMotion to pressed keys (Aim/Look should never glow)
+    let _ = mouse_motion.read().count();
+
+    pressed.sort();
+    pressed.dedup();
+
+    let mut just_pressed: Vec<String> = keys
+        .get_just_pressed()
+        .map(|k| format!("{k:?}"))
+        .collect();
+    for mb in mouse_buttons.get_just_pressed() {
+        let s = match mb {
+            MouseButton::Left => "MouseLeft",
+            MouseButton::Right => "MouseRight",
+            MouseButton::Middle => "MouseMiddle",
+            MouseButton::Back => "MouseBack",
+            MouseButton::Forward => "MouseForward",
+            _ => continue,
+        };
+        just_pressed.push(s.to_string());
+    }
+
+    if mods == manager.last_mods && pressed == manager.last_pressed && just_pressed.is_empty() {
+        return;
+    }
+
     manager.last_mods = mods;
-    if !manager.any_open() {
+    manager.last_pressed = pressed.clone();
+
+    let pressed_val = ScriptValue::List(
+        pressed
+            .into_iter()
+            .map(|s| ScriptValue::String(Cow::Owned(s)))
+            .collect(),
+    );
+    let just_pressed_val = ScriptValue::List(
+        just_pressed
+            .into_iter()
+            .map(|s| ScriptValue::String(Cow::Owned(s)))
+            .collect(),
+    );
+
+    for (entity, root) in &q_roots {
+        if !root.ready_sent || root.script.is_none() {
+            continue;
+        }
+        let script = root.script.clone().unwrap();
+        callbacks.write(ScriptCallbackMessage::new_for_script_entity(
+            OnMenuModifiersChanged::into_callback_label(),
+            vec![
+                crate::input::modifier_map(mods.0, mods.1, mods.2, mods.3),
+                pressed_val.clone(),
+                just_pressed_val.clone(),
+            ],
+            script,
+            entity,
+        ));
+    }
+}
+
+fn dispatch_remap_results(
+    remap_status: Res<RemapStatus>,
+    manager: Res<MenuManager>,
+    q_roots: Query<(Entity, &MenuRoot)>,
+    mut callbacks: MessageWriter<ScriptCallbackMessage>,
+) {
+    if !remap_status.is_changed() || !manager.any_open() || remap_status.version == 0 {
         return;
     }
     for (entity, root) in &q_roots {
@@ -835,8 +937,11 @@ fn dispatch_modifier_changes(
         }
         let script = root.script.clone().unwrap();
         callbacks.write(ScriptCallbackMessage::new_for_script_entity(
-            OnMenuModifiersChanged::into_callback_label(),
-            vec![crate::input::modifier_map(mods.0, mods.1, mods.2, mods.3)],
+            OnMenuRemapResult::into_callback_label(),
+            vec![
+                ScriptValue::Bool(remap_status.success),
+                ScriptValue::String(Cow::Owned(remap_status.message.clone())),
+            ],
             script,
             entity,
         ));

@@ -91,11 +91,14 @@ local WIDTH_CHARS = {
 
 local all_bindings = {}
 local key_widgets = {}
-local node_to_mod = {}
+local node_to_widget = {}
 local mod_indicator_el = nil
+local rebind_hint_el = nil
 
 local physical_mods = { ctrl = false, shift = false, alt = false, super = false }
 local pinned_mods   = { ctrl = false, shift = false, alt = false, super = false }
+
+local remapping_source = nil
 
 local function effective_mods()
     return {
@@ -104,6 +107,21 @@ local function effective_mods()
         alt   = physical_mods.alt   or pinned_mods.alt,
         super = physical_mods.super or pinned_mods.super,
     }
+end
+
+local function get_movement_keys()
+    local mv = {}
+    for _, b in ipairs(all_bindings) do
+        if b.is_movement then
+            mv[b.key] = true
+            if ALIASES[b.key] ~= nil then
+                for _, alias in ipairs(ALIASES[b.key]) do
+                    mv[alias] = true
+                end
+            end
+        end
+    end
+    return mv
 end
 
 local function truncate_two_lines(text, max_cols)
@@ -173,8 +191,46 @@ local function format_mods_header(mods)
     return "Modifiers: " .. table.concat(parts, " + ")
 end
 
+local function find_binding(code, mods)
+    for _, b in ipairs(all_bindings) do
+        if b.ctrl == mods.ctrl
+            and b.shift == mods.shift
+            and b.alt == mods.alt
+            and b.super == mods.super
+        then
+            if b.key == code then
+                return b
+            end
+            if ALIASES[code] ~= nil then
+                for _, alias in ipairs(ALIASES[code]) do
+                    if b.key == alias then
+                        return b
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function cancel_remapping()
+    if remapping_source ~= nil then
+        if remapping_source.widget ~= nil then
+            dom.remove_class(remapping_source.widget.el, "remapping")
+        end
+        remapping_source = nil
+    end
+    if rebind_hint_el ~= nil then
+        dom.set_text(rebind_hint_el, "")
+        dom.remove_class(rebind_hint_el, "error")
+        dom.remove_class(rebind_hint_el, "success")
+    end
+end
+
 local function refresh_keyboard()
     local mods = effective_mods()
+    local is_other_view = mods.ctrl or mods.shift or mods.alt or mods.super
+    local movement_keys = get_movement_keys()
     dom.set_text(mod_indicator_el, format_mods_header(mods))
 
     local lookup = {}
@@ -187,9 +243,9 @@ local function refresh_keyboard()
             local is_active = (b.active ~= false)
             local existing = lookup[b.key]
             if existing == nil then
-                lookup[b.key] = { label = b.label, active = is_active }
+                lookup[b.key] = { label = b.label, active = is_active, context = b.context }
             elseif is_active and not existing.active then
-                lookup[b.key] = { label = b.label, active = true }
+                lookup[b.key] = { label = b.label, active = true, context = b.context }
             elseif is_active == existing.active then
                 existing.label = existing.label .. " / " .. b.label
             end
@@ -197,6 +253,10 @@ local function refresh_keyboard()
     end
 
     for _, kw in ipairs(key_widgets) do
+        if kw.fixed then
+            goto continue_refresh
+        end
+
         local entry = lookup[kw.code]
         if entry == nil and ALIASES[kw.code] ~= nil then
             for _, alias in ipairs(ALIASES[kw.code]) do
@@ -207,12 +267,45 @@ local function refresh_keyboard()
             end
         end
 
+        local is_movement = movement_keys[kw.code] == true
+        if not is_movement and ALIASES[kw.code] ~= nil then
+            for _, alias in ipairs(ALIASES[kw.code]) do
+                if movement_keys[alias] then
+                    is_movement = true
+                    break
+                end
+            end
+        end
+
+        local is_locked_movement = is_other_view and is_movement and (entry == nil)
+
         if entry ~= nil then
             dom.add_class(kw.el, "bound")
-            dom.set_text(kw.desc_el, truncate_two_lines(entry.label, kw.max_cols))
+            dom.remove_class(kw.el, "locked")
+            if kw.desc_el ~= nil then
+                dom.set_text(kw.desc_el, truncate_two_lines(entry.label, kw.max_cols))
+            end
+            if kw.lock_el ~= nil then
+                dom.remove_class(kw.lock_el, "visible")
+            end
+        elseif is_locked_movement then
+            dom.remove_class(kw.el, "bound")
+            dom.add_class(kw.el, "locked")
+            if kw.desc_el ~= nil then
+                dom.set_text(kw.desc_el, "")
+            end
+            if kw.lock_el ~= nil then
+                dom.add_class(kw.lock_el, "visible")
+            end
         else
             dom.remove_class(kw.el, "bound")
-            dom.set_text(kw.desc_el, "")
+            dom.remove_class(kw.el, "locked")
+            if kw.desc_el ~= nil then
+                dom.set_text(kw.desc_el, "")
+            end
+            if kw.lock_el ~= nil then
+                dom.remove_class(kw.lock_el, "visible")
+            end
         end
 
         if kw.mod ~= nil then
@@ -222,21 +315,86 @@ local function refresh_keyboard()
                 dom.remove_class(kw.el, "mod-held")
             end
         end
+
+        if remapping_source ~= nil and remapping_source.code == kw.code then
+            dom.add_class(kw.el, "remapping")
+        else
+            dom.remove_class(kw.el, "remapping")
+        end
+
+        ::continue_refresh::
+    end
+end
+
+local function update_pressed_widgets(pressed_list)
+    local pressed_set = {}
+    if pressed_list ~= nil then
+        for _, code in ipairs(pressed_list) do
+            pressed_set[code] = true
+        end
+    end
+
+    for _, kw in ipairs(key_widgets) do
+        if kw.fixed or kw.code == "MouseMotion" then
+            goto continue_pressed
+        end
+
+        local is_p = pressed_set[kw.code] == true
+        if not is_p and ALIASES[kw.code] ~= nil then
+            for _, alias in ipairs(ALIASES[kw.code]) do
+                if pressed_set[alias] then
+                    is_p = true
+                    break
+                end
+            end
+        end
+
+        if is_p then
+            dom.add_class(kw.el, "pressed")
+        else
+            dom.remove_class(kw.el, "pressed")
+        end
+
+        ::continue_pressed::
+    end
+end
+
+local function execute_remap(source, target_code, target_mods)
+    if target_code == "MouseMotion" then
+        if rebind_hint_el ~= nil then
+            dom.set_text(rebind_hint_el, "Warning: Aim/Look cannot be rebound")
+            dom.add_class(rebind_hint_el, "error")
+        end
+        return
+    end
+
+    cancel_remapping()
+    input.remap(source.code, source.mods, target_code, target_mods)
+end
+
+local function bind_widget_elements(widget, elements)
+    for _, el in ipairs(elements) do
+        if el ~= nil then
+            node_to_widget[el] = widget
+            dom.on(el, "click", "on_key_widget_click")
+        end
     end
 end
 
 function on_menu_ready(_, root_id)
     all_bindings = input.list_bindings()
     physical_mods = input.active_modifiers()
+    remapping_source = nil
 
     mod_indicator_el = dom.get_by_id(root_id, "mod_indicator")
+    rebind_hint_el = dom.get_by_id(root_id, "rebind_hint")
     local rows_container = dom.get_by_id(root_id, "keyboard_rows")
     local mouse_container = dom.get_by_id(root_id, "mouse_slots")
     dom.on(dom.get_by_id(root_id, "backdrop"), "click", "on_backdrop_click")
 
     dom.clear(rows_container)
     key_widgets = {}
-    node_to_mod = {}
+    node_to_widget = {}
 
     for _, row_def in ipairs(LAYOUT) do
         local row_el = dom.create(rows_container, "node", { class = "kb-row" })
@@ -245,20 +403,30 @@ function on_menu_ready(_, root_id)
                 dom.create(row_el, "node", { class = "spacer" })
             else
                 local key_el = dom.create(row_el, "node", { class = "key " .. key_def.w })
-                dom.create(key_el, "text", { class = "key-cap", text = key_def.label })
-                local desc_el = dom.create(key_el, "text", { class = "key-desc", text = "" })
+                local cap_el = dom.create(key_el, "text", { class = "key-cap", text = key_def.label })
 
-                if key_def.mod ~= nil then
-                    node_to_mod[key_el] = key_def.mod
-                    dom.on(key_el, "click", "on_mod_key_click")
-                end
+                local bottom_el = dom.create(key_el, "node", { class = "key-bottom" })
+                local desc_el = dom.create(bottom_el, "text", { class = "key-desc", text = "" })
 
-                table.insert(key_widgets, {
+                local lock_el = dom.create(bottom_el, "node", { class = "lock-container" })
+                local lock_icon = dom.create(lock_el, "node", { class = "lock-icon" })
+                local lock_shackle = dom.create(lock_icon, "node", { class = "lock-shackle" })
+                local lock_body = dom.create(lock_icon, "node", { class = "lock-body" })
+                local lock_text = dom.create(lock_el, "text", { class = "lock-text", text = "LOCKED" })
+
+                local widget = {
                     code = key_def.code,
                     mod = key_def.mod,
                     el = key_el,
                     desc_el = desc_el,
+                    lock_el = lock_el,
                     max_cols = WIDTH_CHARS[key_def.w] or 7,
+                }
+                table.insert(key_widgets, widget)
+
+                bind_widget_elements(widget, {
+                    key_el, cap_el, bottom_el, desc_el,
+                    lock_el, lock_icon, lock_shackle, lock_body, lock_text
                 })
             end
         end
@@ -269,70 +437,195 @@ function on_menu_ready(_, root_id)
 
         local mouse_device = dom.create(mouse_container, "node", { class = "mouse-device" })
 
-        -- Thumb column (left side: M5 Forward, M4 Back)
         local thumb_col = dom.create(mouse_device, "node", { class = "mouse-thumb-col" })
-
         local m5_el = dom.create(thumb_col, "node", { class = "mouse-thumb-btn" })
-        dom.create(m5_el, "text", { class = "mouse-cap-small", text = "M5 FWD" })
+        local m5_cap = dom.create(m5_el, "text", { class = "mouse-cap-small", text = "M5 FWD" })
         local m5_desc = dom.create(m5_el, "text", { class = "key-desc", text = "" })
+        local w_m5 = { code = "MouseForward", el = m5_el, desc_el = m5_desc, max_cols = 5 }
+        table.insert(key_widgets, w_m5)
+        bind_widget_elements(w_m5, { m5_el, m5_cap, m5_desc })
 
         local m4_el = dom.create(thumb_col, "node", { class = "mouse-thumb-btn" })
-        dom.create(m4_el, "text", { class = "mouse-cap-small", text = "M4 BACK" })
+        local m4_cap = dom.create(m4_el, "text", { class = "mouse-cap-small", text = "M4 BACK" })
         local m4_desc = dom.create(m4_el, "text", { class = "key-desc", text = "" })
+        local w_m4 = { code = "MouseBack", el = m4_el, desc_el = m4_desc, max_cols = 5 }
+        table.insert(key_widgets, w_m4)
+        bind_widget_elements(w_m4, { m4_el, m4_cap, m4_desc })
 
-        -- Mouse main chassis
         local body_el = dom.create(mouse_device, "node", { class = "mouse-body" })
-
-        -- Top buttons row
         local top_row = dom.create(body_el, "node", { class = "mouse-top-row" })
 
         local ml_el = dom.create(top_row, "node", { class = "mouse-btn-left" })
-        dom.create(ml_el, "text", { class = "key-cap", text = "L-CLICK" })
+        local ml_cap = dom.create(ml_el, "text", { class = "key-cap", text = "L-CLICK" })
         local ml_desc = dom.create(ml_el, "text", { class = "key-desc", text = "" })
+        local w_ml = { code = "MouseLeft", el = ml_el, desc_el = ml_desc, max_cols = 6 }
+        table.insert(key_widgets, w_ml)
+        bind_widget_elements(w_ml, { ml_el, ml_cap, ml_desc })
 
         local wheel_col = dom.create(top_row, "node", { class = "mouse-wheel-col" })
         local mm_el = dom.create(wheel_col, "node", { class = "mouse-wheel-btn" })
-        dom.create(mm_el, "text", { class = "mouse-cap-small", text = "M-CLICK" })
+        local mm_cap = dom.create(mm_el, "text", { class = "mouse-cap-small", text = "M-CLICK" })
         local mm_desc = dom.create(mm_el, "text", { class = "key-desc", text = "" })
+        local w_mm = { code = "MouseMiddle", el = mm_el, desc_el = mm_desc, max_cols = 5 }
+        table.insert(key_widgets, w_mm)
+        bind_widget_elements(w_mm, { mm_el, mm_cap, mm_desc })
 
         local mw_el = dom.create(wheel_col, "node", { class = "mouse-wheel-scroll" })
-        dom.create(mw_el, "text", { class = "mouse-cap-small", text = "SCROLL" })
+        local mw_cap = dom.create(mw_el, "text", { class = "mouse-cap-small", text = "SCROLL" })
         local mw_desc = dom.create(mw_el, "text", { class = "key-desc", text = "" })
+        local w_mw = { code = "MouseWheel", el = mw_el, desc_el = mw_desc, max_cols = 5 }
+        table.insert(key_widgets, w_mw)
+        bind_widget_elements(w_mw, { mw_el, mw_cap, mw_desc })
 
         local mr_el = dom.create(top_row, "node", { class = "mouse-btn-right" })
-        dom.create(mr_el, "text", { class = "key-cap", text = "R-CLICK" })
+        local mr_cap = dom.create(mr_el, "text", { class = "key-cap", text = "R-CLICK" })
         local mr_desc = dom.create(mr_el, "text", { class = "key-desc", text = "" })
+        local w_mr = { code = "MouseRight", el = mr_el, desc_el = mr_desc, max_cols = 6 }
+        table.insert(key_widgets, w_mr)
+        bind_widget_elements(w_mr, { mr_el, mr_cap, mr_desc })
 
-        -- Palm / Motion
+        -- Palm / Aim & Look (Fixed permanent lock center)
         local palm_el = dom.create(body_el, "node", { class = "mouse-palm" })
-        dom.create(palm_el, "text", { class = "key-cap", text = "AIM / LOOK" })
-        local palm_desc = dom.create(palm_el, "text", { class = "key-desc", text = "" })
+        local palm_cap = dom.create(palm_el, "text", { class = "key-cap", text = "AIM / LOOK" })
+        local palm_lock = dom.create(palm_el, "node", { class = "palm-lock-center" })
+        local palm_lock_icon = dom.create(palm_lock, "node", { class = "lock-icon" })
+        dom.create(palm_lock_icon, "node", { class = "lock-shackle" })
+        dom.create(palm_lock_icon, "node", { class = "lock-body" })
+        dom.create(palm_lock, "text", { class = "lock-text", text = "LOCKED" })
+        dom.create(palm_el, "node", { class = "spacer" })
 
-        table.insert(key_widgets, { code = "MouseForward", el = m5_el, desc_el = m5_desc, max_cols = 5 })
-        table.insert(key_widgets, { code = "MouseBack",    el = m4_el, desc_el = m4_desc, max_cols = 5 })
-        table.insert(key_widgets, { code = "MouseLeft",    el = ml_el, desc_el = ml_desc, max_cols = 6 })
-        table.insert(key_widgets, { code = "MouseMiddle",  el = mm_el, desc_el = mm_desc, max_cols = 5 })
-        table.insert(key_widgets, { code = "MouseWheel",   el = mw_el, desc_el = mw_desc, max_cols = 5 })
-        table.insert(key_widgets, { code = "MouseRight",   el = mr_el, desc_el = mr_desc, max_cols = 6 })
-        table.insert(key_widgets, { code = "MouseMotion",  el = palm_el, desc_el = palm_desc, max_cols = 14 })
+        local w_palm = { code = "MouseMotion", el = palm_el, desc_el = nil, max_cols = 14, fixed = true }
+        table.insert(key_widgets, w_palm)
+        bind_widget_elements(w_palm, { palm_el, palm_cap, palm_lock })
     end
 
     refresh_keyboard()
 end
 
-function on_modifiers_changed(mods)
+function on_modifiers_changed(mods, pressed_list, just_pressed_list)
+    local mods_changed = (physical_mods.ctrl ~= mods.ctrl)
+        or (physical_mods.shift ~= mods.shift)
+        or (physical_mods.alt ~= mods.alt)
+        or (physical_mods.super ~= mods.super)
     physical_mods = mods
-    refresh_keyboard()
+
+    if mods_changed then
+        refresh_keyboard()
+    end
+
+    update_pressed_widgets(pressed_list)
+
+    if remapping_source ~= nil and just_pressed_list ~= nil then
+        for _, key_code in ipairs(just_pressed_list) do
+            if key_code == "Escape" then
+                cancel_remapping()
+                break
+            elseif key_code ~= "ShiftLeft"
+                and key_code ~= "ShiftRight"
+                and key_code ~= "ControlLeft"
+                and key_code ~= "ControlRight"
+                and key_code ~= "AltLeft"
+                and key_code ~= "AltRight"
+                and key_code ~= "SuperLeft"
+                and key_code ~= "SuperRight"
+                and key_code ~= "MouseMotion"
+                and key_code ~= "MouseLeft"
+            then
+                execute_remap(remapping_source, key_code, effective_mods())
+                break
+            end
+        end
+    end
 end
 
-function on_mod_key_click(node_id)
-    local mod = node_to_mod[node_id]
-    if mod ~= nil then
-        pinned_mods[mod] = not pinned_mods[mod]
+function on_remap_result(success, message)
+    all_bindings = input.list_bindings()
+    refresh_keyboard()
+
+    if rebind_hint_el ~= nil then
+        dom.set_text(rebind_hint_el, message)
+        if success then
+            dom.remove_class(rebind_hint_el, "error")
+            dom.add_class(rebind_hint_el, "success")
+        else
+            dom.remove_class(rebind_hint_el, "success")
+            dom.add_class(rebind_hint_el, "error")
+        end
+    end
+end
+
+function on_key_widget_click(node_id)
+    local kw = node_to_widget[node_id]
+    if kw == nil then return end
+
+    if kw.fixed or kw.code == "MouseMotion" then
+        if rebind_hint_el ~= nil then
+            dom.set_text(rebind_hint_el, "Warning: Aim/Look cannot be rebound")
+            dom.add_class(rebind_hint_el, "error")
+            dom.remove_class(rebind_hint_el, "success")
+        end
+        return
+    end
+
+    if remapping_source ~= nil then
+        if kw.mod ~= nil and kw.code == remapping_source.code then
+            cancel_remapping()
+            return
+        end
+
+        if kw.mod ~= nil then
+            pinned_mods[kw.mod] = not pinned_mods[kw.mod]
+            refresh_keyboard()
+            return
+        end
+
+        if kw.code == remapping_source.code then
+            cancel_remapping()
+            return
+        end
+
+        execute_remap(remapping_source, kw.code, effective_mods())
+        return
+    end
+
+    if kw.mod ~= nil then
+        pinned_mods[kw.mod] = not pinned_mods[kw.mod]
         refresh_keyboard()
+        return
+    end
+
+    local current_mods = effective_mods()
+    local b = find_binding(kw.code, current_mods)
+    if b ~= nil then
+        if b.context == "gameplay" then
+            remapping_source = {
+                code = kw.code,
+                mods = current_mods,
+                label = b.label,
+                widget = kw,
+            }
+            dom.add_class(kw.el, "remapping")
+            if rebind_hint_el ~= nil then
+                dom.set_text(
+                    rebind_hint_el,
+                    "Press any key/button or click a key to remap '" .. b.label .. "' (Esc to cancel)"
+                )
+                dom.remove_class(rebind_hint_el, "error")
+                dom.remove_class(rebind_hint_el, "success")
+            end
+        else
+            if rebind_hint_el ~= nil then
+                dom.set_text(rebind_hint_el, "Warning: Only gameplay hotkeys can be remapped")
+                dom.add_class(rebind_hint_el, "error")
+            end
+        end
     end
 end
 
 function on_backdrop_click()
-    menus.close_top()
+    if remapping_source ~= nil then
+        cancel_remapping()
+    else
+        menus.close_top()
+    end
 end

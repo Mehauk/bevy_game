@@ -25,13 +25,33 @@
 
 .header {
     width: 100%;
+    flex-direction: row;
     justify-content: space-between;
+    align-items: center;
+}
+
+.header-titles {
+    flex-direction: row;
+    column-gap: 16px;
     align-items: center;
 }
 
 .title {
     font-size: 18px;
     color: #FFFFFF;
+}
+
+.rebind-hint {
+    font-size: 13px;
+    color: #FFB84C;
+}
+
+.rebind-hint.error {
+    color: #FF6666;
+}
+
+.rebind-hint.success {
+    color: #5AFF8C;
 }
 
 .mod-indicator {
@@ -188,17 +208,60 @@
     border-radius: 4px 18px 6px 4px;
 }
 
+/* Mouse Palm - Aim/Look (Permanent Lock Center) */
 .mouse-palm {
     width: 100%;
     height: 125px;
-    padding: 6px;
+    padding: 8px 6px;
     flex-direction: column;
     justify-content: space-between;
-    align-items: flex-start;
-    background-color: #1E212D;
+    align-items: center;
+    background-color: #171923;
     border-width: 1px;
-    border-color: #303546;
+    border-color: #2A2E3D;
     border-radius: 6px 6px 18px 18px;
+}
+
+.mouse-palm .key-cap {
+    font-size: 11px;
+    color: #8C94A8;
+}
+
+.palm-lock-center {
+    width: 100%;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    row-gap: 5px;
+}
+
+.palm-lock-center .lock-icon {
+    width: 12px;
+    height: 14px;
+}
+
+.palm-lock-center .lock-shackle {
+    width: 8px;
+    height: 6px;
+    border-top-width: 2px;
+    border-left-width: 2px;
+    border-right-width: 2px;
+    border-top-color: #7E8B9F;
+    border-left-color: #7E8B9F;
+    border-right-color: #7E8B9F;
+    border-radius: 4px 4px 0 0;
+}
+
+.palm-lock-center .lock-body {
+    width: 12px;
+    height: 8px;
+    background-color: #7E8B9F;
+    border-radius: 2px;
+}
+
+.palm-lock-center .lock-text {
+    font-size: 10px;
+    color: #7E8B9F;
 }
 
 /* Mouse Bound State Highlights */
@@ -206,8 +269,7 @@
 .mouse-btn-left.bound,
 .mouse-wheel-btn.bound,
 .mouse-wheel-scroll.bound,
-.mouse-btn-right.bound,
-.mouse-palm.bound {
+.mouse-btn-right.bound {
     background-color: #243C68;
     border-color: #5C94FF;
 }
@@ -219,9 +281,37 @@
 .mouse-wheel-btn.bound .mouse-cap-small,
 .mouse-wheel-scroll.bound .key-cap,
 .mouse-wheel-scroll.bound .mouse-cap-small,
-.mouse-btn-right.bound .key-cap,
-.mouse-palm.bound .key-cap {
+.mouse-btn-right.bound .key-cap {
     color: #FFFFFF;
+}
+
+/* Active pressed state (lighting up pressed keys/buttons) */
+.mouse-thumb-btn.pressed,
+.mouse-btn-left.pressed,
+.mouse-wheel-btn.pressed,
+.mouse-wheel-scroll.pressed,
+.mouse-btn-right.pressed {
+    background-color: #384A6E;
+    border-color: #8AB4F8;
+}
+
+.mouse-thumb-btn.bound.pressed,
+.mouse-btn-left.bound.pressed,
+.mouse-wheel-btn.bound.pressed,
+.mouse-wheel-scroll.bound.pressed,
+.mouse-btn-right.bound.pressed {
+    background-color: #3E5E9E;
+    border-color: #A4C5FF;
+}
+
+/* Remapping state (selected for rebind) */
+.mouse-thumb-btn.remapping,
+.mouse-btn-left.remapping,
+.mouse-wheel-btn.remapping,
+.mouse-wheel-scroll.remapping,
+.mouse-btn-right.remapping {
+    background-color: #4A3A1A;
+    border-color: #FFB84C;
 }
 
 .mouse-cap-small {
@@ -249,9 +339,29 @@
     border-color: #5C94FF;
 }
 
+.key.locked {
+    background-color: #1A1D27;
+    border-color: #2B3040;
+}
+
 .key.mod-held {
     background-color: #3A2E5C;
     border-color: #A57BFF;
+}
+
+.key.pressed {
+    background-color: #384A6E;
+    border-color: #8AB4F8;
+}
+
+.key.bound.pressed {
+    background-color: #3E5E9E;
+    border-color: #A4C5FF;
+}
+
+.key.remapping {
+    background-color: #4A3A1A;
+    border-color: #FFB84C;
 }
 
 .key-cap {
@@ -263,9 +373,65 @@
     color: #FFFFFF;
 }
 
+.key.locked .key-cap {
+    color: #6C788F;
+}
+
+.key-bottom {
+    width: 100%;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: flex-start;
+}
+
 .key-desc {
     font-size: 10px;
     color: #D7E5FF;
+}
+
+/* Lock Icon Badge */
+.lock-container {
+    display: none;
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 5px;
+}
+
+.lock-container.visible {
+    display: flex;
+}
+
+.lock-icon {
+    width: 10px;
+    height: 12px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.lock-shackle {
+    width: 6px;
+    height: 5px;
+    border-top-width: 2px;
+    border-left-width: 2px;
+    border-right-width: 2px;
+    border-top-color: #7E8B9F;
+    border-left-color: #7E8B9F;
+    border-right-color: #7E8B9F;
+    border-radius: 3px 3px 0 0;
+}
+
+.lock-body {
+    width: 10px;
+    height: 7px;
+    background-color: #7E8B9F;
+    border-radius: 2px;
+}
+
+.lock-text {
+    font-size: 9px;
+    color: #6C788F;
 }
 
 .spacer {

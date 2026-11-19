@@ -28,16 +28,20 @@
     - [x] keybinds inactive during menus (can remove menu gaurd in grab_cursor)
 - [x] also show mouse key binds
   - [x] handle mouse wheel scroll versus click
-- [ ] update keybinds by clicking on an already defined hotkey (should take into account modifiers) and then selecting another key with your mouse or keyboard (again should handle modifiers).
-  - [ ] should swap not just overwrite
-  - [ ] gameplay keybinds only
-- [ ] pressing anything on the mouse or keyboard should light up those places similar to the modifier keys but without changing view (only modifiers do that)
-- [ ] block any movement keys from ever being part of any hotkey chain
-  - [ ] also handle the case when the movement keys are remapped
-    - [ ] might also need to throw a warning if trying to remap movement keys to a key that is part of a hotkey chain
+- [x] update keybinds by clicking on an already defined hotkey (should take into account modifiers) and then selecting another key with your mouse or keyboard (again should handle modifiers).
+  - [x] should swap not just overwrite
+  - [x] gameplay keybinds only
+- [x] pressing anything on the mouse or keyboard should light up those places similar to the modifier keys but without changing view (only modifiers do that)
+- [x] block any movement keys from ever being part of any hotkey chain
+  - [x] also handle the case when the movement keys are remapped
+    - [x] might also need to throw a warning if trying to remap movement keys to a key that is part of a hotkey chain
+    - [ ] BUG: when trying to move a key shift + f to f it doesnt work (probably doesnt work other way either)
+      - [ ] Also when i click a key to rebind it stays higlighted even when i move to differen un/modifier views
+- [ ] Move all the keybinding `rules` out of the game engine and into the lua script? Im okay with the rules being ephimeral.
 
 # Camera
 - [x] zoom to switch between views + zoom out more (using shift + scroll wheel)
 
 # Terrain
 - [x] Setup atmosphere
+- [ ] I dont touch the floor, jumping also leaves me a little bit off the floor

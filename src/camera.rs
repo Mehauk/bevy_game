@@ -181,7 +181,6 @@ fn setup_camera(mut commands: Commands) {
         .id();
     commands.spawn((Binding::from(KeyCode::Escape), BindingOf(release_action)));
 
-    // Zoom Camera bound exclusively to Shift + MouseWheel
     let zoom_action = commands
         .spawn((
             Action::<ZoomCamera>::new(),
@@ -192,7 +191,7 @@ fn setup_camera(mut commands: Commands) {
         .id();
     commands.spawn((
         Binding::MouseWheel {
-            mod_keys: ModKeys::SHIFT,
+            mod_keys: ModKeys::SHIFT | ModKeys::CONTROL,
         },
         BindingOf(zoom_action),
     ));

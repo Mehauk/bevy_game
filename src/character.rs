@@ -4,7 +4,7 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::{
     camera::{CameraRig, CameraSystems, CameraTarget},
-    input::{ContextActive, GameplayInput, HotkeyLabel},
+    input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
     terrain::TerrainMap,
     utils::commands::{CommandAppExt, CommandArgs, command},
 };
@@ -101,7 +101,6 @@ pub struct GroundState {
     pub jump_held_last_frame: bool,
 }
 
-
 #[derive(Component)]
 struct CharacterBody;
 
@@ -147,18 +146,22 @@ fn setup_character(world: &mut World) {
                 Bindings [
                     Binding(KeyCode::KeyW)
                     HotkeyLabel("Move Forward")
+                    MovementBinding
                     ~SwizzleAxis::YXZ
                     --
                     Binding(KeyCode::KeyS)
                     HotkeyLabel("Move Back")
+                    MovementBinding
                     ~Negate::all()
                     ~SwizzleAxis::YXZ
                     --
                     Binding(KeyCode::KeyD)
                     HotkeyLabel("Move Right")
+                    MovementBinding
                     --
                     Binding(KeyCode::KeyA)
                     HotkeyLabel("Move Left")
+                    MovementBinding
                     ~Negate::all()
                 ]
                 --
@@ -185,6 +188,7 @@ fn setup_character(world: &mut World) {
                 HotkeyLabel("Jump")
                 Bindings [
                     Binding(KeyCode::Space)
+                    MovementBinding
                 ]
                 --
                 Action::<Crouch>::new()
@@ -330,14 +334,12 @@ fn character_physics_move(
         ground.jump_cooldown_timer = character.jump_cooldown;
         gravity_scale.0 = character.base_gravity;
     } else if ground.is_grounded {
-        // While grounded, zero gravity so the character doesn't slide down frictionless slopes
         gravity_scale.0 = 0.0;
 
         let has_horiz_vel = velocity.x.abs() > 0.001 || velocity.z.abs() > 0.001;
         if has_horiz_vel && ground.ground_normal.y > 0.01 {
             let slope_tangent_y = -(velocity.x * ground.ground_normal.x + velocity.z * ground.ground_normal.z)
                 / ground.ground_normal.y;
-            // Snap gently if slightly above the ground to remain glued over crests
             let snap = if ground.ground_distance > 0.05 {
                 ((ground.ground_distance - 0.05) * 10.0).min(4.0)
             } else {

@@ -15,10 +15,10 @@
 //! - [`dispatch`] — pushing modifier/remap changes out to ready scripts
 //! - [`scripting`] — the `menus` and `dom` namespaces
 //!
-//! This module is the menu *engine* only: it knows no concrete menu. Features declare
-//! their own menus through [`MenuAppExt::register_menu`] (the command palette is
-//! declared by the command console in `utils::registry::commands`, the keyboard overlay
-//! by `input`), queued via `utils::registry::menus` so plugin order stays irrelevant.
+//! This module is the menu *engine* only: it knows no concrete menu and opens/closes menus
+//! by id. The wiring that ties a menu to a hotkey and a console command (the keyboard
+//! overlay, the command palette) lives in [`crate::integration`], so neither `input` nor the
+//! command console has to depend on this module to declare a menu.
 
 mod assets;
 mod dispatch;
@@ -28,21 +28,16 @@ mod lifecycle;
 mod scripting;
 mod state;
 
-pub use state::MenuManager;
+pub use state::{MenuManager, ToggleMenu};
 
 use bevy::prelude::*;
 use bevy::text::EditableTextSystems;
-use bevy_enhanced_input::prelude::*;
 use bevy_mod_scripting::core::{callback_labels, handler::event_handler};
 use bevy_mod_scripting::lua::LuaScriptingPlugin;
 
-use crate::input::InputAppExt;
-use crate::utils::registry::commands::CommandAppExt;
-use crate::utils::registry::menus::{MenuRegistry, MenuRegistryExt};
-
 use dom::apply_dom_ops;
 use lifecycle::{dispatch_menu_ready, handle_menu_commands};
-use state::{MenuCmd, ToggleMenu};
+use state::MenuCmd;
 
 // Engine → Lua callbacks. The string on the right is the global function name Lua sees.
 callback_labels!(
@@ -99,76 +94,5 @@ impl Plugin for MenuPlugin {
             );
 
         scripting::register_menu_namespaces(app);
-
-        // Register every menu queued by feature plugins until now (the drain is the
-        // only place that needs `ToggleMenu` etc. to exist — see `utils::registry::menus`).
-        let queued = app
-            .world_mut()
-            .resource_mut::<MenuRegistry>()
-            .take_pending();
-        for register in queued {
-            register(app);
-        }
-    }
-}
-
-/// How a menu is opened: an optional hotkey and an optional console command.
-pub struct MenuSpec {
-    pub id: &'static str,
-    pub hotkey_label: &'static str,
-    /// `(command name, description)` to expose in the command palette, if any.
-    pub command: Option<(&'static str, &'static str)>,
-    pub bindings: Vec<Binding>,
-}
-
-pub trait MenuAppExt {
-    /// Declare a menu so a hotkey and/or console command can toggle `menus/<id>/`.
-    ///
-    /// Safe to call from any plugin's `build()`: the declaration is queued and performed
-    /// when `MenuPlugin` builds, so declarers need no ordering against `MenuPlugin`
-    /// (see [`crate::utils::registry::menus`]).
-    fn register_menu<A: InputAction<Output = bool> + Send + Sync + 'static>(
-        &mut self,
-        spec: MenuSpec,
-    ) -> &mut Self;
-}
-
-impl MenuAppExt for App {
-    fn register_menu<A: InputAction<Output = bool> + Send + Sync + 'static>(
-        &mut self,
-        spec: MenuSpec,
-    ) -> &mut Self {
-        self.queue_menu_registration(move |app| register_menu_with_hotkey::<A>(app, spec))
-    }
-}
-
-/// Perform a queued declaration: the console command and the consuming hotkey toggle.
-fn register_menu_with_hotkey<A: InputAction<Output = bool> + Send + Sync + 'static>(
-    app: &mut App,
-    spec: MenuSpec,
-) {
-    let menu_id = spec.id;
-
-    if let Some((cmd_name, desc)) = spec.command {
-        app.register_command(cmd_name, desc, move |mut writer: MessageWriter<ToggleMenu>| {
-            writer.write(ToggleMenu(menu_id.to_string()));
-        });
-    }
-
-    if !spec.bindings.is_empty() {
-        app.register_gameplay_hotkey::<A, _, _, _>(
-            spec.hotkey_label,
-            // A menu hotkey is a one-shot toggle: it consumes the press so the key does
-            // not also reach whatever else is bound to it.
-            ActionSettings {
-                consume_input: true,
-                require_reset: true,
-                ..default()
-            },
-            spec.bindings,
-            move |_ev: On<Start<A>>, mut writer: MessageWriter<ToggleMenu>| {
-                writer.write(ToggleMenu(menu_id.to_string()));
-            },
-        );
     }
 }

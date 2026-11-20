@@ -3,11 +3,9 @@ use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
-    camera::{CameraRig, CameraSystems, CameraTarget, ViewMode},
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
-    state::PlayState,
-    terrain::TerrainMap,
     utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
+    utils::SpawnGroundHeight,
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
@@ -31,6 +29,14 @@ const HORIZ_VEL_EPSILON: f32 = 0.001;
 /// Walk-speed delta assumed by `increase_speed` when no argument is given.
 const DEFAULT_SPEED_DELTA: f32 = 2.0;
 
+/// Systems that run only while the player is actively playing (not paused). The
+/// `run_if(in_state(PlayState::Running))` gate is applied to this set by `crate::integration`,
+/// so `character` never names the state machine itself.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CharacterSystems {
+    Playing,
+}
+
 pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
@@ -40,17 +46,12 @@ impl Plugin for CharacterPlugin {
                 FixedUpdate,
                 (character_ground_check, character_physics_move)
                     .chain()
-                    .run_if(in_state(PlayState::Running)),
+                    .in_set(CharacterSystems::Playing),
             )
-            .add_systems(
-                Update,
-                character_rotate_body.run_if(in_state(PlayState::Running)),
-            )
+            .add_systems(Update, character_rotate_body.in_set(CharacterSystems::Playing))
             .add_systems(
                 PostUpdate,
-                sync_body_visibility
-                    .after(CameraSystems::UpdateTransform)
-                    .before(TransformSystems::Propagate),
+                sync_body_visibility.before(TransformSystems::Propagate),
             );
 
         command!(app, "Respawn character", respawn_character);
@@ -133,6 +134,16 @@ pub struct GroundState {
 #[derive(Component)]
 struct CharacterBody;
 
+/// The slice of camera state the character needs, copied in each frame by `crate::integration`.
+///
+/// `character` reads this instead of the camera rig so it never imports `camera`: `yaw` drives
+/// camera-relative movement and body alignment, `first_person` drives body visibility.
+#[derive(Component, Default)]
+pub(crate) struct CameraFacing {
+    pub yaw: f32,
+    pub first_person: bool,
+}
+
 pub fn camera_relative_direction(move_vec: Vec2, cam_yaw: f32) -> Vec3 {
     let yaw_rot = Quat::from_rotation_y(cam_yaw);
     let forward = yaw_rot * Vec3::NEG_Z;
@@ -202,9 +213,8 @@ fn slope_snap_speed(gap: f32) -> f32 {
     }
 }
 
-fn spawn_translation(terrain: Option<&TerrainMap>) -> Vec3 {
-    let y = terrain.map_or(0.0, |t| t.height_at(0.0, 0.0)) + CHARACTER_SPAWN_OFFSET_Y;
-    Vec3::new(0.0, y, 0.0)
+fn spawn_translation(ground_height: f32) -> Vec3 {
+    Vec3::new(0.0, ground_height + CHARACTER_SPAWN_OFFSET_Y, 0.0)
 }
 
 fn setup_character(world: &mut World) {
@@ -225,7 +235,8 @@ fn setup_character(world: &mut World) {
         require_reset: true,
         ..default()
     };
-    let spawn_translation = spawn_translation(world.get_resource::<TerrainMap>());
+    let spawn_translation =
+        spawn_translation(world.get_resource::<SpawnGroundHeight>().map_or(0.0, |h| h.0));
 
     let mut char_entity = world
         .spawn_scene(bsn! {
@@ -300,7 +311,7 @@ fn setup_character(world: &mut World) {
 
     char_entity
         .insert((
-            CameraTarget::default(),
+            CameraFacing::default(),
             ContextActive(true),
             ContextActivity::<GameplayInput>::ACTIVE,
             RigidBody::Dynamic,
@@ -386,7 +397,7 @@ fn character_physics_move(
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
     jump_action: Single<&Action<Jump>>,
-    cam_rig: Option<Single<&CameraRig>>,
+    facing: Single<&CameraFacing>,
     character_query: Single<(
         &Character,
         &mut GroundState,
@@ -400,7 +411,7 @@ fn character_physics_move(
     let move_vec = ***move_action;
     let sprinting = ***sprint_action;
     let jumping = ***jump_action;
-    let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
+    let cam_yaw = facing.yaw;
 
     let move_dir = camera_relative_direction(move_vec, cam_yaw).normalize_or_zero();
 
@@ -454,18 +465,16 @@ fn character_rotate_body(
     time: Res<Time>,
     move_action: Single<&Action<Move>>,
     align_action: Single<&Action<AlignToCamera>>,
-    cam_rig: Option<Single<&CameraRig>>,
+    facing: Single<&CameraFacing>,
     character: Single<&Character>,
     mut body_transform: Single<&mut Transform, (With<CharacterBody>, Without<Character>)>,
 ) {
     let move_vec = ***move_action;
     let alt_held = ***align_action;
-    let cam_yaw = cam_rig.as_ref().map_or(0.0, |rig| rig.yaw);
+    let cam_yaw = facing.yaw;
     let yaw_rot = Quat::from_rotation_y(cam_yaw);
 
-    let first_person = cam_rig
-        .as_ref()
-        .is_some_and(|rig| rig.view_mode == ViewMode::FirstPerson);
+    let first_person = facing.first_person;
     if first_person {
         body_transform.rotation = yaw_rot;
         return;
@@ -488,10 +497,10 @@ fn character_rotate_body(
 }
 
 fn sync_body_visibility(
-    rig: Single<&CameraRig>,
+    facing: Single<&CameraFacing>,
     mut body_visibility: Single<&mut Visibility, With<CharacterBody>>,
 ) {
-    let desired = if rig.view_mode == ViewMode::FirstPerson {
+    let desired = if facing.first_person {
         Visibility::Hidden
     } else {
         Visibility::Visible
@@ -502,7 +511,7 @@ fn sync_body_visibility(
 }
 
 fn respawn_character(
-    terrain: Option<Res<TerrainMap>>,
+    ground_height: Res<SpawnGroundHeight>,
     query: Single<(
         &mut Transform,
         &mut LinearVelocity,
@@ -512,7 +521,7 @@ fn respawn_character(
     )>,
 ) {
     let (mut transform, mut velocity, mut ground, mut gravity, character) = query.into_inner();
-    transform.translation = spawn_translation(terrain.as_deref());
+    transform.translation = spawn_translation(ground_height.0);
     velocity.0 = Vec3::ZERO;
     *ground = GroundState::default();
     gravity.0 = character.base_gravity;

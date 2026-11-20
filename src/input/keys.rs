@@ -57,7 +57,7 @@ macro_rules! parse_key_variants {
     };
 }
 
-pub fn parse_key_code(s: &str) -> Option<KeyCode> {
+fn parse_key_code(s: &str) -> Option<KeyCode> {
     parse_key_variants!(s,
         KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
         KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,

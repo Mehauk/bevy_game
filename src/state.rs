@@ -44,6 +44,30 @@ impl PauseTracker {
     fn is_paused(&self) -> bool {
         self.menu_pauses > 0 || self.manual_paused
     }
+
+    /// Register a pause request: a menu pause while any menu is open, else a manual pause.
+    /// Returns whether the simulation should now be paused.
+    fn request(&mut self, menu_open: bool) -> bool {
+        if menu_open {
+            self.menu_pauses += 1;
+        } else {
+            self.manual_paused = true;
+        }
+        self.is_paused()
+    }
+
+    /// Release one pause request. Returns whether the simulation should now be running.
+    fn release(&mut self, menu_open: bool) -> bool {
+        if menu_open && self.menu_pauses > 0 {
+            self.menu_pauses -= 1;
+        } else {
+            self.manual_paused = false;
+            if !menu_open {
+                self.menu_pauses = 0;
+            }
+        }
+        !self.is_paused()
+    }
 }
 
 pub struct StatePlugin;
@@ -71,14 +95,8 @@ impl Plugin for StatePlugin {
                     let menu_open = world
                         .with_resource(|mgr: &MenuManager| mgr.any_open())
                         .unwrap_or(false);
-                    let should_pause = world.with_resource_mut(|mut tracker: Mut<PauseTracker>| {
-                        if menu_open {
-                            tracker.menu_pauses += 1;
-                        } else {
-                            tracker.manual_paused = true;
-                        }
-                        tracker.is_paused()
-                    })?;
+                    let should_pause = world
+                        .with_resource_mut(|mut tracker: Mut<PauseTracker>| tracker.request(menu_open))?;
                     if should_pause {
                         world.with_resource_mut(|mut next_state: Mut<NextState<PlayState>>| {
                             next_state.set(PlayState::Paused);
@@ -94,17 +112,8 @@ impl Plugin for StatePlugin {
                     let menu_open = world
                         .with_resource(|mgr: &MenuManager| mgr.any_open())
                         .unwrap_or(false);
-                    let should_resume = world.with_resource_mut(|mut tracker: Mut<PauseTracker>| {
-                        if menu_open && tracker.menu_pauses > 0 {
-                            tracker.menu_pauses -= 1;
-                        } else {
-                            tracker.manual_paused = false;
-                            if !menu_open {
-                                tracker.menu_pauses = 0;
-                            }
-                        }
-                        !tracker.is_paused()
-                    })?;
+                    let should_resume = world
+                        .with_resource_mut(|mut tracker: Mut<PauseTracker>| tracker.release(menu_open))?;
                     if should_resume {
                         world.with_resource_mut(|mut next_state: Mut<NextState<PlayState>>| {
                             next_state.set(PlayState::Running);
@@ -266,5 +275,23 @@ mod tests {
 
         assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
         assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    #[test]
+    fn pause_tracker_reference_counts_menu_requests() {
+        let mut t = PauseTracker::default();
+        assert!(t.request(true), "first menu pause pauses");
+        assert!(t.request(true), "a second menu pause stays paused");
+        assert!(!t.release(true), "releasing one of two keeps it paused");
+        assert!(t.release(true), "releasing the last resumes");
+    }
+
+    #[test]
+    fn pause_tracker_manual_pause_is_a_single_toggle() {
+        let mut t = PauseTracker::default();
+        assert!(t.request(false), "manual pause pauses");
+        assert!(t.request(false), "a second manual pause stays paused");
+        assert!(t.release(false), "manual release resumes regardless of count");
+        assert!(!t.is_paused());
     }
 }

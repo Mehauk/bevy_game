@@ -40,7 +40,7 @@ Modifier sets are maps: `{ ctrl = false, shift = false, alt = false, super = fal
 
 | Event                        | Payload                                                                                  |
 | ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `click`                      | none                                                                                     |
+| `click` / `right_click`      | none                                                                                     |
 | `hover_enter` / `hover_exit` | none                                                                                     |
 | `key_down`                   | `{ key, ctrl, shift, alt, super, repeat }`                                               |
 | `text_change`                | the new text string                                                                      |
@@ -48,11 +48,11 @@ Modifier sets are maps: `{ ctrl = false, shift = false, alt = false, super = fal
 
 ## `state` namespace
 
-| Function               | Description                                                                                                                                                                                         |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `state.pause(source)`  | Requests the game simulation to pause (halts virtual time and Avian physics) on behalf of `source` (typically the menu's name). If the menu closes while paused, the engine automatically unpauses. |
-| `state.resume(source)` | Relinquishes `source`'s pause request; resumes simulation once all pause requesters have called resume.                                                                                             |
-| `state.is_paused()`    | Returns `true` if the gameplay simulation is currently paused.                                                                                                                                      |
+| Function            | Description                                                                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `state.pause()`     | Requests the game simulation to pause (halts virtual time and Avian physics). Takes **no arguments**. Pause requests are reference-counted: while any menu is open each call adds one request (so stacked menus each release their own), and with no menu open it acts as a single manual pause. The game stays paused until every request is released. If all menus close while paused, the engine automatically unpauses. |
+| `state.resume()`    | Relinquishes one pause request; resumes the simulation once all requests have been released and no menu remains open. Takes **no arguments**.                                                                                                          |
+| `state.is_paused()` | Returns `true` if the gameplay simulation is currently paused.                                                                                                                                                                                         |
 
 ## `dom` namespace
 
@@ -69,7 +69,7 @@ Operates on the menu's DOM (ids are integers returned by `get_by_id`/`create`/`h
 | `dom.set_value(id, text)`                              | Replace the contents of an `input` node.                                                                                                                                                        |
 | `dom.add_class(id, cls)` / `dom.remove_class(id, cls)` | Toggle a CSS class (styling via bevy_flair `ClassList`).                                                                                                                                        |
 | `dom.has_class(id, cls)`                               | Returns `true`/`false`.                                                                                                                                                                         |
-| `dom.on(id, event, handler)`                           | Bind `click`, `hover_enter`, `hover_exit`, `key_down`, `text_change`, or `wheel` to a global function name, dispatched through `on_dom_event`. `"press"` is accepted as an alias for `"click"`. |
+| `dom.on(id, event, handler)`                           | Bind `click`, `right_click`, `hover_enter`, `hover_exit`, `key_down`, `text_change`, or `wheel` to a global function name, dispatched through `on_dom_event`. `right_click` is the secondary mouse button (a separate event so it can dismiss without firing `click`). `"press"` is accepted as an alias for `"click"`. |
 | `dom.focus(id)` / `dom.blur()`                         | Move / clear keyboard focus.                                                                                                                                                                    |
 
 Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
@@ -79,7 +79,7 @@ Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
 
 | Function                                                        | Description                                                                                                                                                                                                                 |
 | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `input.list_bindings()`                                         | List of all bound actions: `{ key, label, context, active, is_movement, ctrl, shift, alt, super }`. `context` is `"gameplay"`, `"menu"`, or `"unknown"`.                                                                    |
+| `input.list_bindings()`                                         | List of all bound actions: `{ key, label, context, active, is_movement, ctrl, shift, alt, super }`. `context` is `"gameplay"` or `"unknown"`.                                                                    |
 | `input.active_modifiers()`                                      | Modifier map of physically held modifiers.                                                                                                                                                                                  |
 | `input.remap(source_key, source_mods, target_key, target_mods)` | Request a remap (or swap, if the target is already bound). Keybinding rules (gameplay-only, Aim/Look lock, movement-key modifier/chain restrictions) are enforced by the menu script. Result arrives via `on_remap_result`. |
 | `input.remap_status()`                                          | `{ success, message, version }` of the last remap.                                                                                                                                                                          |

@@ -8,7 +8,6 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::{
     input::InputAppExt,
-    menus::MenuManager,
     utils::registry::commands::{CommandAppExt, command},
 };
 
@@ -29,10 +28,7 @@ impl Plugin for CameraPlugin {
             .add_systems(Startup, setup_camera)
             .add_systems(
                 PostUpdate,
-                (
-                    sync_cursor_with_menus,
-                    sync_camera_transform.in_set(CameraSystems::UpdateTransform),
-                ),
+                sync_camera_transform.in_set(CameraSystems::UpdateTransform),
             );
 
         // Camera bindings hang off the shared gameplay context, so they are gated by menu
@@ -75,7 +71,7 @@ impl Plugin for CameraPlugin {
 }
 
 #[derive(Resource, Default)]
-struct WantedCursorLock(bool);
+pub(crate) struct WantedCursorLock(pub(crate) bool);
 
 #[derive(InputAction)]
 #[action_output(Vec2)]
@@ -210,28 +206,6 @@ fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedC
 
 fn on_release_cursor(_event: On<Start<ReleaseCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
     wanted_lock.0 = false;
-}
-
-fn sync_cursor_with_menus(
-    wanted_lock: Res<WantedCursorLock>,
-    menu_manager: Res<MenuManager>,
-    primary_window: Single<(&Window, &mut CursorOptions), With<PrimaryWindow>>,
-) {
-    let (window, mut cursor_options) = primary_window.into_inner();
-    let should_lock = wanted_lock.0 && !menu_manager.any_open() && window.focused;
-
-    let (desired_visible, desired_grab) = if should_lock {
-        (false, CursorGrabMode::Locked)
-    } else {
-        (true, CursorGrabMode::None)
-    };
-
-    if cursor_options.visible != desired_visible {
-        cursor_options.visible = desired_visible;
-    }
-    if cursor_options.grab_mode != desired_grab {
-        cursor_options.grab_mode = desired_grab;
-    }
 }
 
 fn toggle_view_mode(mut rig: Single<&mut CameraRig>) {

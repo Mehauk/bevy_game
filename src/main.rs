@@ -1,6 +1,7 @@
 mod camera;
 mod character;
 mod input;
+mod integration;
 mod menus;
 mod state;
 mod terrain;
@@ -18,13 +19,14 @@ use bevy_mod_scripting::BMSPlugin;
 use camera::CameraPlugin;
 use character::CharacterPlugin;
 use input::InputPlugin;
+use integration::IntegrationPlugin;
 use menus::MenuPlugin;
 use state::StatePlugin;
 use terrain::TerrainPlugin;
 use utils::{
     DevUtilsPlugin,
     ProfilerPlugin,
-    registry::{commands::CommandRegistryPlugin, menus::MenuRegistryPlugin},
+    registry::commands::CommandRegistryPlugin,
 };
 
 fn main() {
@@ -38,13 +40,11 @@ fn main() {
             FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
-            // Plugin order is load-bearing: a plugin that registers a command or queues
-            // a menu requires the resource its provider `build()` installs to already
-            // exist, because `register_system` initialises its `SystemParam`s immediately.
-            //   MenuRegistryPlugin     -> anything calling `register_menu` (queues into `MenuRegistry`)
+            // Plugin order is load-bearing: a plugin that registers a command needs the
+            // command registry's resource to exist first, because `register_system`
+            // initialises its `SystemParam`s immediately. `IntegrationPlugin` is added
+            // last — it wires the feature modules together, so it needs all of them built.
             //   CommandRegistryPlugin  -> anything using `command!` or `register_command`
-            //   MenuPlugin             -> drains the menu queue, so it needs both registries above
-            MenuRegistryPlugin,
             CommandRegistryPlugin,
             InputPlugin,
             MenuPlugin,
@@ -54,6 +54,7 @@ fn main() {
             CameraPlugin,
             CharacterPlugin,
             TerrainPlugin,
+            IntegrationPlugin,
         ))
         .run();
 }

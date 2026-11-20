@@ -1,9 +1,8 @@
-//! Input layer: hotkey *contexts* (gameplay vs menu), the derived hotkey registry,
-//! keybind remapping, and the `input` Lua namespace.
+//! Input layer: the gameplay hotkey *context*, the derived hotkey registry, keybind
+//! remapping, and the `input` Lua namespace.
 //!
-//! Contexts are driven by a single rule — gameplay input is active while no menu is open,
-//! menu input is active while one is — evaluated in [`sync_context_activity`] and pushed
-//! onto the entities that own each context.
+//! This module knows nothing about menus. What activates the gameplay context is wired in
+//! [`crate::integration`], which reads the menu stack and drives [`set_context_active`].
 
 pub mod hotkeys;
 pub mod keys;
@@ -19,13 +18,6 @@ use bevy::{
     prelude::*,
 };
 use bevy_enhanced_input::prelude::*;
-
-use crate::menus::{MenuAppExt, MenuManager, MenuSpec, MenuUpdateSystems};
-
-/// Hotkey action that toggles the keyboard overlay (the rebinding UI).
-#[derive(InputAction)]
-#[action_output(bool)]
-struct ToggleKeyboardOverlay;
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InputUpdateSystems {
@@ -44,7 +36,6 @@ impl Plugin for InputPlugin {
             .init_resource::<RemapStatus>()
             .add_message::<RemapBindingMessage>()
             .register_hotkey_context::<GameplayInput>("gameplay")
-            .register_hotkey_context::<MenuInput>("menu")
             .configure_sets(
                 Update,
                 (
@@ -53,14 +44,9 @@ impl Plugin for InputPlugin {
                     InputUpdateSystems::ProcessRemap,
                     InputUpdateSystems::SyncHotkeyRegistry,
                 )
-                    .chain()
-                    .before(MenuUpdateSystems),
+                    .chain(),
             )
             .add_systems(PreStartup, setup_gameplay_input)
-            .add_systems(
-                PreUpdate,
-                sync_context_activity.before(EnhancedInputSystems::Update),
-            )
             .add_systems(
                 Update,
                 ApplyDeferred.in_set(InputUpdateSystems::ApplyContextSync),
@@ -75,31 +61,12 @@ impl Plugin for InputPlugin {
             );
 
         scripting::register_input_namespace(app);
-
-        // The keyboard overlay is the front-end of the hotkey registry and remapping
-        // defined here, so its declaration lives here. Queued, so `InputPlugin` needs
-        // no ordering against `MenuPlugin`.
-        app.register_menu::<ToggleKeyboardOverlay>(MenuSpec {
-            id: "keyboard",
-            hotkey_label: "Keyboard Overlay",
-            command: Some(("menu>keyboard", "Toggle virtual keyboard overlay")),
-            bindings: vec![
-                Binding::from(KeyCode::F1),
-                KeyCode::KeyK
-                    .with_mod_keys(ModKeys::CONTROL | ModKeys::SHIFT)
-                    .into(),
-            ],
-        });
     }
 }
 
 /// Marker: this entity owns the gameplay input context.
 #[derive(Component, Default, Clone)]
 pub struct GameplayInput;
-
-/// Marker: this entity owns the menu input context.
-#[derive(Component, Default, Clone)]
-pub struct MenuInput;
 
 /// Marks a binding as a movement key, which the remap rules treat as modifier-free.
 #[derive(Component, Default, Clone, Copy, Debug)]
@@ -132,7 +99,11 @@ fn setup_gameplay_input(mut commands: Commands) {
     commands.insert_resource(GameplayInputEntity(gameplay_entity));
 }
 
-pub fn set_context_active<C: Component>(commands: &mut Commands, entity: Entity, active: bool) {
+pub(crate) fn set_context_active<C: Component>(
+    commands: &mut Commands,
+    entity: Entity,
+    active: bool,
+) {
     let activity = if active {
         ContextActivity::<C>::ACTIVE
     } else {
@@ -141,54 +112,6 @@ pub fn set_context_active<C: Component>(commands: &mut Commands, entity: Entity,
     commands
         .entity(entity)
         .insert((activity, ContextActive(active)));
-}
-
-/// Push menu-open state onto the two input contexts. Runs in `PreUpdate` and only emits
-/// commands when the state actually flips (or once close-time inputs are released).
-fn sync_context_activity(
-    menu_manager: Res<MenuManager>,
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mut prev_open: Local<Option<bool>>,
-    mut held_keys_on_close: Local<Vec<KeyCode>>,
-    mut held_buttons_on_close: Local<Vec<MouseButton>>,
-    q_gameplay: Query<Entity, With<GameplayInput>>,
-    q_menu: Query<Entity, With<MenuInput>>,
-    mut commands: Commands,
-) {
-    let open = menu_manager.any_open();
-    let transitioned = *prev_open != Some(open);
-    if transitioned {
-        *prev_open = Some(open);
-        for entity in &q_menu {
-            set_context_active::<MenuInput>(&mut commands, entity, open);
-        }
-        if open {
-            held_keys_on_close.clear();
-            held_buttons_on_close.clear();
-            for entity in &q_gameplay {
-                set_context_active::<GameplayInput>(&mut commands, entity, false);
-            }
-            return;
-        }
-        // Delay re-activating GameplayInput until any keys or buttons still held when
-        // the menu closed (e.g. Esc or ~) are released, so they cannot immediately fire
-        // ReleaseCursor or re-open the menu.
-        *held_keys_on_close = keys.get_pressed().copied().collect();
-        *held_buttons_on_close = mouse_buttons.get_pressed().copied().collect();
-    }
-
-    if !open
-        && (transitioned || !held_keys_on_close.is_empty() || !held_buttons_on_close.is_empty())
-    {
-        held_keys_on_close.retain(|k| keys.pressed(*k));
-        held_buttons_on_close.retain(|b| mouse_buttons.pressed(*b));
-        if held_keys_on_close.is_empty() && held_buttons_on_close.is_empty() {
-            for entity in &q_gameplay {
-                set_context_active::<GameplayInput>(&mut commands, entity, true);
-            }
-        }
-    }
 }
 
 /// Spawn `A` on the shared gameplay context with `settings`, plus one binding entity per

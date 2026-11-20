@@ -1,33 +1,37 @@
+//! Terrain: a procedurally generated heightfield, its collider/mesh, and the atmosphere
+//! (fog, sun, skybox) that renders it.
+//!
+//! The pure heightfield model (Voronoi cells + FBM noise, `height_at`) lives in [`map`] and
+//! has no rendering concern; this module is the Bevy side that consumes it — mesh/collider
+//! building, fog, lighting, and the console commands that poke the model.
+
 use avian3d::prelude::*;
 use bevy::{
     light::{CascadeShadowConfigBuilder, NotShadowCaster},
     mesh::VertexAttributeValues,
     prelude::*,
-    transform::TransformSystems,
 };
-use glam27::DVec3 as VoroDVec3;
-use meshless_voronoi::VoronoiIntegrator;
-use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
-use crate::{
-    camera::{CameraSystems, MainCamera},
-    utils::registry::commands::{CommandAppExt, CommandArgs, command},
-};
+use crate::utils::registry::commands::{CommandAppExt, CommandArgs, command};
+use crate::utils::SpawnGroundHeight;
+
+mod map;
+
+pub use map::TerrainMap;
 
 pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainMap>()
-            .init_resource::<TerrainFog>()
+            .init_resource::<TerrainFog>();
+
+        // Publish the origin surface height now (at build, before any Startup runs) so the
+        // player spawns at the right height even though `character` never reads `TerrainMap`.
+        let origin_height = app.world().resource::<TerrainMap>().height_at(0.0, 0.0);
+        app.insert_resource(SpawnGroundHeight(origin_height))
             .add_systems(Startup, (setup_terrain, setup_atmosphere))
-            .add_systems(Update, (sync_terrain_fog, rebuild_terrain_on_change))
-            .add_systems(
-                PostUpdate,
-                sync_skybox_to_camera
-                    .after(CameraSystems::UpdateTransform)
-                    .before(TransformSystems::Propagate),
-            );
+            .add_systems(Update, (sync_terrain_fog, rebuild_terrain_on_change));
 
         command!(app, "Toggle atmospheric fog", toggle_atmospheric_fog);
         command!(
@@ -46,191 +50,6 @@ impl Plugin for TerrainPlugin {
             cell_info
         );
     }
-}
-
-#[derive(Clone, Debug)]
-pub struct TerrainCell {
-    pub id: usize,
-    pub center: Vec2,
-    pub base_height: f32,
-}
-
-#[derive(Resource, Clone)]
-pub struct TerrainMap {
-    pub size: f32,
-    pub subdivisions: u32,
-    pub amplitude: f32,
-    pub cell_grid_dim: u32,
-    pub cell_base_height_range: f32,
-    pub cell_blend_width: f32,
-    pub cell_seed: u64,
-    cells: Vec<TerrainCell>,
-    generation: u64,
-    fbm: Fbm<Perlin>,
-}
-
-impl Default for TerrainMap {
-    fn default() -> Self {
-        let fbm = Fbm::<Perlin>::new(42)
-            .set_octaves(4)
-            .set_frequency(0.009)
-            .set_persistence(0.42)
-            .set_lacunarity(2.0);
-
-        let mut map = Self {
-            size: 4000.0,
-            subdivisions: 2000,
-            amplitude: 22.0,
-            cell_grid_dim: 8,
-            cell_base_height_range: 4.0,
-            cell_blend_width: 8.0,
-            cell_seed: 1337,
-            cells: Vec::new(),
-            generation: 0,
-            fbm,
-        };
-        map.rebuild_voronoi_cells();
-        map
-    }
-}
-
-impl TerrainMap {
-    /// Split the terrain map into 2D Voronoi cells using `meshless_voronoi` and
-    /// assign each cell an initial base height (positive or negative).
-    pub fn rebuild_voronoi_cells(&mut self) {
-        let dim = self.cell_grid_dim.max(1);
-        let half = self.size * 0.5;
-        let cell_span = self.size / dim as f32;
-
-        let mut generators = Vec::with_capacity((dim * dim) as usize);
-        for gz in 0..dim {
-            for gx in 0..dim {
-                let idx = (gz * dim + gx) as u64;
-                let jx = 0.15 + 0.70 * hash_unit_f32(self.cell_seed, idx, 0);
-                let jz = 0.15 + 0.70 * hash_unit_f32(self.cell_seed, idx, 1);
-                let x = -half + (gx as f32 + jx) * cell_span;
-                let z = -half + (gz as f32 + jz) * cell_span;
-                generators.push(VoroDVec3::new(x as f64, z as f64, 0.0));
-            }
-        }
-
-        let anchor = VoroDVec3::new(-half as f64, -half as f64, -0.5);
-        let width = VoroDVec3::new(self.size as f64, self.size as f64, 1.0);
-        let voronoi = VoronoiIntegrator::build(
-            &generators,
-            None,
-            anchor,
-            width,
-            2.try_into().unwrap(),
-            false,
-        );
-
-        let mut cells = Vec::with_capacity(generators.len());
-        for i in 0..generators.len() {
-            if let Some(cell) = voronoi.get_cell_at(i) {
-                let base_height = (hash_unit_f32(self.cell_seed, cell.idx as u64, 2) * 2.0 - 1.0)
-                    * self.cell_base_height_range;
-                cells.push(TerrainCell {
-                    id: cell.idx,
-                    center: Vec2::new(cell.loc.x as f32, cell.loc.y as f32),
-                    base_height,
-                });
-            }
-        }
-
-        self.cells = cells;
-        self.generation = self.generation.wrapping_add(1);
-    }
-
-    pub fn cells(&self) -> &[TerrainCell] {
-        &self.cells
-    }
-
-    pub fn cell_at(&self, x: f32, z: f32) -> Option<&TerrainCell> {
-        let p = Vec2::new(x, z);
-        self.cells
-            .iter()
-            .min_by(|a, b| p.distance_squared(a.center).total_cmp(&p.distance_squared(b.center)))
-    }
-
-    /// Modify a single Voronoi cell's base height (supports negative values).
-    pub fn set_cell_base_height(&mut self, cell_id: usize, base_height: f32) -> bool {
-        let Some(cell) = self.cells.iter_mut().find(|c| c.id == cell_id) else {
-            return false;
-        };
-        cell.base_height = base_height;
-        self.generation = self.generation.wrapping_add(1);
-        true
-    }
-
-    /// Base height contribution from the Voronoi cells at `(x, z)`.
-    ///
-    /// Returns the exact cell `base_height` in cell interiors and smoothly blends
-    /// across `cell_blend_width` near cell boundaries (or hard-steps when `<= 0.0`).
-    pub fn cell_base_height_at(&self, x: f32, z: f32) -> f32 {
-        if self.cells.is_empty() {
-            return 0.0;
-        }
-        let p = Vec2::new(x, z);
-
-        let mut min_dist = f32::INFINITY;
-        let mut nearest_height = 0.0;
-        for cell in &self.cells {
-            let d = p.distance(cell.center);
-            if d < min_dist {
-                min_dist = d;
-                nearest_height = cell.base_height;
-            }
-        }
-
-        if self.cell_blend_width <= 0.0 {
-            return nearest_height;
-        }
-
-        let mut weighted_sum = 0.0;
-        let mut total_weight = 0.0;
-        for cell in &self.cells {
-            let delta = p.distance(cell.center) - min_dist;
-            if delta < self.cell_blend_width {
-                let u = (delta / self.cell_blend_width).clamp(0.0, 1.0);
-                let w = 1.0 - (3.0 * u * u - 2.0 * u * u * u);
-                weighted_sum += cell.base_height * w;
-                total_weight += w;
-            }
-        }
-
-        if total_weight > 0.0 {
-            weighted_sum / total_weight
-        } else {
-            nearest_height
-        }
-    }
-
-    pub fn max_height_extent(&self) -> f32 {
-        (self.amplitude + self.cell_base_height_range).max(1.0)
-    }
-
-    pub fn height_at(&self, x: f32, z: f32) -> f32 {
-        let broad = self.fbm.get([x as f64, z as f64]) as f32;
-        let swell = ((x * 0.012).sin() + (z * 0.012).cos()) * 0.15;
-        let noise_height = (broad + swell) * self.amplitude;
-        noise_height + self.cell_base_height_at(x, z)
-    }
-}
-
-fn splitmix64(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    x ^ (x >> 31)
-}
-
-fn hash_unit_f32(seed: u64, index: u64, channel: u64) -> f32 {
-    let h = splitmix64(
-        seed ^ index.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            ^ channel.wrapping_mul(0xbf58_476d_1ce4_e5b9),
-    );
-    ((h >> 40) as f32) / ((1u64 << 24) as f32)
 }
 
 #[derive(Resource, Clone)]
@@ -255,7 +74,7 @@ impl Default for TerrainFog {
 struct TerrainMesh;
 
 #[derive(Component)]
-struct SkyBox;
+pub(crate) struct SkyBox;
 
 /// Height-band boundaries, as normalized 0..1 upper edges. Each band's width is *derived*
 /// from these edges so the three widths cannot drift out of sync with the boundaries they
@@ -356,14 +175,17 @@ fn setup_terrain(
 fn rebuild_terrain_on_change(
     terrain_map: Res<TerrainMap>,
     mut last_generation: Local<Option<u64>>,
+    mut spawn_height: ResMut<SpawnGroundHeight>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut query: Query<(&Mesh3d, &mut Collider), With<TerrainMesh>>,
 ) {
-    if *last_generation == Some(terrain_map.generation) {
+    if *last_generation == Some(terrain_map.generation()) {
         return;
     }
     let first_run = last_generation.is_none();
-    *last_generation = Some(terrain_map.generation);
+    *last_generation = Some(terrain_map.generation());
+    // Keep the published origin height in sync with the (possibly edited) heightfield.
+    spawn_height.0 = terrain_map.height_at(0.0, 0.0);
     if first_run {
         return;
     }
@@ -429,15 +251,6 @@ fn sync_terrain_fog(
         } else {
             commands.entity(entity).insert(terrain_fog.0.clone());
         }
-    }
-}
-
-fn sync_skybox_to_camera(
-    camera: Query<&Transform, (With<MainCamera>, Without<SkyBox>)>,
-    mut skybox: Single<&mut Transform, (With<SkyBox>, Without<MainCamera>)>,
-) {
-    if let Some(cam_transform) = camera.iter().next() {
-        skybox.translation = cam_transform.translation;
     }
 }
 
@@ -552,82 +365,6 @@ mod tests {
             height_colour(1.0).to_f32_array(),
             RIDGE_COLOUR.to_linear().to_f32_array()
         );
-    }
-
-    #[test]
-    fn terrain_height_is_deterministic_and_varied() {
-        let map = TerrainMap::default();
-        assert_eq!(
-            map.height_at(12.5, -3.25),
-            map.height_at(12.5, -3.25),
-            "height must be a pure function of x,z"
-        );
-        assert!(map.height_at(12.5, -3.25).is_finite());
-        assert_ne!(map.height_at(0.0, 0.0), map.height_at(40.0, 40.0), "terrain must vary");
-    }
-
-    #[test]
-    fn voronoi_cells_cover_map_with_positive_and_negative_base_heights() {
-        let map = TerrainMap::default();
-        let expected_count = (map.cell_grid_dim * map.cell_grid_dim) as usize;
-        assert_eq!(map.cells().len(), expected_count);
-
-        let half = map.size * 0.5;
-        for cell in map.cells() {
-            assert!(cell.center.x >= -half && cell.center.x <= half);
-            assert!(cell.center.y >= -half && cell.center.y <= half);
-            assert!(cell.base_height.abs() <= map.cell_base_height_range);
-        }
-
-        assert!(map.cells().iter().any(|c| c.base_height < 0.0), "must have negative cell heights");
-        assert!(map.cells().iter().any(|c| c.base_height > 0.0), "must have positive cell heights");
-    }
-
-    #[test]
-    fn cell_base_height_blends_smoothly_and_hard_steps_when_zero_blend() {
-        let mut map = TerrainMap {
-            size: 100.0,
-            subdivisions: 10,
-            amplitude: 0.0,
-            cell_grid_dim: 2,
-            cell_base_height_range: 10.0,
-            cell_blend_width: 4.0,
-            ..default()
-        };
-        map.cells = vec![
-            TerrainCell {
-                id: 0,
-                center: Vec2::new(-20.0, 0.0),
-                base_height: -8.0,
-            },
-            TerrainCell {
-                id: 1,
-                center: Vec2::new(20.0, 0.0),
-                base_height: 12.0,
-            },
-        ];
-
-        assert!((map.cell_base_height_at(-20.0, 0.0) - (-8.0)).abs() < 1e-5);
-        assert!((map.cell_base_height_at(20.0, 0.0) - 12.0).abs() < 1e-5);
-        assert!((map.cell_base_height_at(0.0, 0.0) - 2.0).abs() < 1e-5);
-
-        map.cell_blend_width = 0.0;
-        assert_eq!(map.cell_base_height_at(-0.5, 0.0), -8.0);
-        assert_eq!(map.cell_base_height_at(0.5, 0.0), 12.0);
-    }
-
-    #[test]
-    fn modifying_cell_base_height_updates_terrain_height() {
-        let mut map = TerrainMap::default();
-        let cell = map.cells()[0].clone();
-        let before = map.height_at(cell.center.x, cell.center.y);
-        let new_height = -18.5;
-
-        assert!(map.set_cell_base_height(cell.id, new_height));
-        let after = map.height_at(cell.center.x, cell.center.y);
-
-        assert!((after - before - (new_height - cell.base_height)).abs() < 1e-4);
-        assert!(!map.set_cell_base_height(usize::MAX, 0.0));
     }
 
     #[test]

@@ -50,12 +50,34 @@ impl CommandArgs {
     }
 }
 
+/// The return value of the command currently being run.
+///
+/// Command systems have no native return channel (`run_system` only reports errors), so a
+/// command that produces a result writes it here; [`handle_run_commands`] clears it before
+/// each run and attaches whatever survives to the history entry for the console to show.
+#[derive(Resource, Default)]
+pub struct CommandOutput(Option<String>);
+
+impl CommandOutput {
+    pub fn set(&mut self, text: impl Into<String>) {
+        self.0 = Some(text.into());
+    }
+}
+
+/// One executed command line and the value it returned, if any.
+#[derive(Clone, Debug)]
+pub struct HistoryEntry {
+    pub command: String,
+    pub output: Option<String>,
+}
+
 pub struct CommandRegistryPlugin;
 
 impl Plugin for CommandRegistryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandArgs>()
+            .init_resource::<CommandOutput>()
             .init_resource::<CommandHistory>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);
@@ -103,8 +125,16 @@ impl Plugin for CommandRegistryPlugin {
                 |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
                     let world = ctx.world()?;
                     world.with_resource(|history: &CommandHistory| {
-                        let list: Vec<ScriptValue> =
-                            history.lines.iter().map(|l| script_str(l)).collect();
+                        let list: Vec<ScriptValue> = history
+                            .entries
+                            .iter()
+                            .map(|e| {
+                                script_map([
+                                    ("command", script_str(&e.command)),
+                                    ("output", script_str(e.output.as_deref().unwrap_or(""))),
+                                ])
+                            })
+                            .collect();
                         ScriptValue::List(VecDeque::from(list))
                     })
                 },
@@ -125,7 +155,11 @@ const HISTORY_LIMIT: usize = 200;
 /// on every open.
 #[derive(Resource, Default)]
 pub struct CommandHistory {
-    pub lines: VecDeque<String>,
+    pub entries: VecDeque<HistoryEntry>,
+    /// Bumped on every append; menus dispatch on change so the palette learns a
+    /// command's output the frame it finishes (the run is queued, so Lua cannot
+    /// read the result at Enter time).
+    pub version: usize,
 }
 
 pub trait CommandAppExt {
@@ -220,7 +254,6 @@ impl CommandRegistry {
 fn handle_run_commands(
     mut commands: Commands,
     registry: Res<CommandRegistry>,
-    mut history: ResMut<CommandHistory>,
     mut reader: MessageReader<RunCommand>,
 ) {
     for msg in reader.read() {
@@ -229,31 +262,44 @@ fn handle_run_commands(
             continue;
         }
 
-        // Recorded before resolution so failed and unknown attempts show up in the
-        // console history too, exactly as they would in a real console.
-        history.lines.push_back(trimmed.to_string());
-        if history.lines.len() > HISTORY_LIMIT {
-            history.lines.pop_front();
-        }
-
         // Command names never contain whitespace, so the first token is always the name.
         let mut parts = trimmed.split_whitespace();
         let Some(name) = parts.next() else { continue };
         let args: Vec<String> = parts.map(String::from).collect();
+        let line = trimmed.to_string();
 
         let Some(entry) = registry.find_command(name) else {
             warn!("Unknown command '{}'", trimmed);
+            // Unknown attempts are recorded too — a real console shows what you typed,
+            // not just what worked. Queued so history order matches request order.
+            commands.queue(move |world: &mut World| push_history(world, line, None));
             continue;
         };
 
         let system_id = entry.system_id;
         commands.queue(move |world: &mut World| {
             *world.resource_mut::<CommandArgs>() = CommandArgs { args };
-            if let Err(err) = world.run_system(system_id) {
-                warn!("Command failed to run: {err}");
-            }
+            *world.resource_mut::<CommandOutput>() = CommandOutput::default();
+            let output = match world.run_system(system_id) {
+                Ok(()) => world.resource::<CommandOutput>().0.clone(),
+                Err(err) => {
+                    warn!("Command failed to run: {err}");
+                    Some(format!("error: {err}"))
+                }
+            };
+            push_history(world, line, output);
         });
     }
+}
+
+/// Append one history entry, dropping the oldest beyond the cap.
+fn push_history(world: &mut World, command: String, output: Option<String>) {
+    let mut history = world.resource_mut::<CommandHistory>();
+    history.entries.push_back(HistoryEntry { command, output });
+    if history.entries.len() > HISTORY_LIMIT {
+        history.entries.pop_front();
+    }
+    history.version += 1;
 }
 #[cfg(test)]
 mod tests {
@@ -318,6 +364,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandArgs>()
+            .init_resource::<CommandOutput>()
             .init_resource::<CommandHistory>()
             .add_message::<RunCommand>()
             .add_systems(Update, handle_run_commands);
@@ -337,16 +384,42 @@ mod tests {
         }
         app.update();
 
-        let lines: Vec<&str> = app
+        let commands: Vec<&str> = app
             .world()
             .resource::<CommandHistory>()
-            .lines
+            .entries
             .iter()
-            .map(String::as_str)
+            .map(|e| e.command.as_str())
             .collect();
         // Unknown commands are recorded too — a real console shows what you typed,
         // not just what worked.
-        assert_eq!(lines, vec!["ok 1", "not_a_command"]);
+        assert_eq!(commands, vec!["ok 1", "not_a_command"]);
+    }
+
+    #[test]
+    fn history_attaches_command_output() {
+        let mut app = history_app();
+        app.register_command(
+            "test>echo",
+            "d",
+            |args: Res<CommandArgs>, mut output: ResMut<CommandOutput>| {
+                output.set(args.args.join(" "));
+            },
+        );
+        {
+            let world = app.world_mut();
+            let mut msgs = world.resource_mut::<Messages<RunCommand>>();
+            msgs.write(RunCommand("echo hello world".into()));
+            msgs.write(RunCommand("ok".into()));
+        }
+        app.update();
+
+        let history = app.world().resource::<CommandHistory>();
+        assert_eq!(history.entries[0].output.as_deref(), Some("hello world"));
+        assert_eq!(
+            history.entries[1].output, None,
+            "a command that writes nothing has no output"
+        );
     }
 
     #[test]
@@ -362,8 +435,11 @@ mod tests {
         app.update();
 
         let history = app.world().resource::<CommandHistory>();
-        assert_eq!(history.lines.len(), HISTORY_LIMIT);
-        assert_eq!(history.lines.front().unwrap(), "ok 5", "the five oldest lines are gone");
+        assert_eq!(history.entries.len(), HISTORY_LIMIT);
+        assert_eq!(
+            history.entries.front().unwrap().command, "ok 5",
+            "the five oldest lines are gone"
+        );
     }
 
     #[test]
@@ -408,6 +484,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandArgs>()
+            .init_resource::<CommandOutput>()
             .init_resource::<CommandHistory>()
             .init_resource::<Seen>()
             .add_message::<RunCommand>()

@@ -1,15 +1,16 @@
 # Lua ↔ Engine Hooks
 
 Menu scripts (`assets/menus/<menu>/script.lua`, or `mods/menus/<menu>/script.lua`) talk to the
-engine through five namespaces obtained with `import_namespace(...)`, and receive engine
+engine through six namespaces obtained with `import_namespace(...)`, and receive engine
 callbacks as global functions.
 
 ```lua
-local dom      = import_namespace("dom")
-local input    = import_namespace("input")
-local commands = import_namespace("commands")
-local menus    = import_namespace("menus")
-local state    = import_namespace("state")
+local dom       = import_namespace("dom")
+local input     = import_namespace("input")
+local commands  = import_namespace("commands")
+local menus     = import_namespace("menus")
+local state     = import_namespace("state")
+local clipboard = import_namespace("clipboard")
 ```
 
 ## Key names
@@ -33,6 +34,7 @@ Modifier sets are maps: `{ ctrl = false, shift = false, alt = false, super = fal
 | `on_dom_event(handler, node_id, payload)`                     | For every event bound with `dom.on`. Dispatch by `handler` name.                                                                      |
 | `on_modifiers_changed(mods, pressed_list, just_pressed_list)` | While any menu is open, whenever modifier or pressed-key state changes. `mods` is a modifier map, the lists contain key-name strings. |
 | `on_remap_result(success, message)`                           | After an `input.remap` attempt resolves.                                                                                              |
+| `on_history_changed()`                                        | When the console history gains an entry — i.e. once a command's queued run has finished and its output is attached.                   |
 
 `on_dom_event` payload by event type:
 
@@ -88,7 +90,14 @@ Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `commands.list()`    | List of registered commands: `{ name, description }`. Names are `>`-separated module paths, e.g. `character>respawn_character`.              |
 | `commands.run(text)` | Run a command by full name, suffix name (last `>` segment), or `name arg1 arg2`. Args are available to the command system via `CommandArgs`. |
-| `commands.history()` | Recently executed command lines (oldest first, capped at 200). Survives menu close/reopen.                                                   |
+| `commands.history()` | Recently executed entries (oldest first, capped at 200): `{ command, output }`, `output` being `""` when the command returned nothing. Survives menu close/reopen. |
+
+## `clipboard` namespace
+
+| Function             | Description                                                                       |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `clipboard.get()`    | Clipboard text, or `""` when empty/unavailable. Newlines are **not** stripped.    |
+| `clipboard.set(text)` | Replace the clipboard text. Returns `true` on success.                           |
 
 ## `menus` namespace
 
@@ -107,4 +116,5 @@ Supported tags: `node` (plain container), `text`, `span`, `button`, `input`
   `MenuPlugin` builds.
 - Console commands are registered with the `command!(app, "description", system_path)` macro
   (see `src/utils/registry/commands.rs`); any `IntoSystem<(), (), _>` system qualifies and can read
-  `CommandArgs` for parameters.
+  `CommandArgs` for parameters. A command that produces a value writes it to the `CommandOutput`
+  resource; the console prints it under the command line in the history.

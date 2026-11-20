@@ -12,10 +12,12 @@ use bevy_mod_scripting::{
 };
 
 use crate::input::{RemapStatus, current_modifier_flags, modifier_map, mouse_button_name};
+use crate::menus::OnHistoryChanged;
 use crate::menus::OnMenuModifiersChanged;
 use crate::menus::OnMenuRemapResult;
 use crate::menus::lifecycle::MenuRoot;
 use crate::menus::state::MenuManager;
+use crate::utils::registry::commands::CommandHistory;
 use crate::utils::{script_str, script_str_list};
 
 /// Change-detection cache for [`dispatch_modifier_changes`].
@@ -25,6 +27,12 @@ use crate::utils::{script_str, script_str_list};
 pub(crate) struct ModifierTracking {
     last_mods: ModKeys,
     last_pressed: Vec<String>,
+}
+
+/// Change-detection cache for [`dispatch_history_changes`].
+#[derive(Resource, Default)]
+pub(crate) struct HistoryTracking {
+    last_version: usize,
 }
 
 /// Send `label`/`payload` to every menu whose script is ready.
@@ -124,6 +132,28 @@ pub(crate) fn dispatch_modifier_changes(
             entity,
         ));
     }
+}
+
+/// Tell ready menus that the console history gained an entry, so the palette can
+/// re-fetch it — a command's output only exists after its queued run, which is
+/// after the Enter keypress that asked for it.
+pub(crate) fn dispatch_history_changes(
+    history: Res<CommandHistory>,
+    manager: Res<MenuManager>,
+    mut tracking: ResMut<HistoryTracking>,
+    q_roots: Query<(Entity, &MenuRoot)>,
+    mut callbacks: MessageWriter<ScriptCallbackMessage>,
+) {
+    if history.version == tracking.last_version || !manager.any_open() {
+        return;
+    }
+    tracking.last_version = history.version;
+    broadcast_to_menus(
+        &q_roots,
+        &mut callbacks,
+        OnHistoryChanged::into_callback_label(),
+        &[],
+    );
 }
 
 /// Relay the outcome of the last `input.remap` to open menus.

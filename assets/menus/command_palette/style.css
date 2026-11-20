@@ -76,6 +76,34 @@
     color: #8DA0C2;
 }
 
+/* A command's returned value, printed under its line, with a copy button on the
+   right that puts "command\noutput" on the clipboard. */
+.history-out-row {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: 10px;
+}
+
+.history-output {
+    font-size: 12px;
+    color: #6FA887;
+    flex-grow: 1;
+}
+
+.copy-btn {
+    flex-direction: row;
+    padding: 2px 8px;
+    border-radius: 3px;
+    background-color: rgba(46, 62, 104, 0.45);
+}
+
+.copy-label {
+    font-size: 10px;
+    color: #8DA0C2;
+}
+
 /* Floating autosuggest chooser: hovers over the history (covering it while active),
    directly above the typed line, and only appears once the user starts typing
    (Lua toggles .hidden). Rows keep the original flat look — full width, description

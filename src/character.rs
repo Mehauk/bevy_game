@@ -7,7 +7,7 @@ use crate::{
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
     state::PlayState,
     terrain::TerrainMap,
-    utils::registry::commands::{CommandAppExt, CommandArgs, command},
+    utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
@@ -521,51 +521,65 @@ fn respawn_character(
 /// Run `edit` against the single player character, warning once if it is missing.
 ///
 /// Takes a callback rather than returning a `Mut` so the borrow stays local to this call.
-fn with_player_character(query: &mut Query<&mut Character>, edit: impl FnOnce(&mut Character)) {
+fn with_player_character(query: &mut Query<&mut Character>, edit: impl FnOnce(&mut Character)) -> bool {
     let Ok(mut character) = query.single_mut() else {
         warn!("No character found for speed command");
-        return;
+        return false;
     };
     edit(&mut character);
+    true
 }
 
-fn set_character_speed(args: Res<CommandArgs>, mut character_query: Query<&mut Character>) {
-    with_player_character(&mut character_query, |character| {
+fn set_character_speed(
+    args: Res<CommandArgs>,
+    mut output: ResMut<CommandOutput>,
+    mut character_query: Query<&mut Character>,
+) {
+    if !with_player_character(&mut character_query, |character| {
         if args.args.is_empty() {
-            info!(
+            output.set(format!(
                 "Current speed: walk={:.1}, sprint={:.1}. Usage: speed <walk> [sprint]",
                 character.walk_speed, character.sprint_speed
-            );
+            ));
             return;
         }
 
         let Some(walk) = args.get_f32(0) else {
             warn!("Invalid speed parameter: {:?}", args.args);
+            output.set(format!("Invalid speed parameter: {:?}", args.args));
             return;
         };
         character.walk_speed = walk;
         // Sprint defaults to twice walk, so a one-argument call stays internally consistent.
         character.sprint_speed = args.get_f32(1).unwrap_or(walk * 2.0);
-        info!(
+        output.set(format!(
             "Set character speed -> walk: {:.1}, sprint: {:.1}",
             character.walk_speed, character.sprint_speed
-        );
-    });
+        ));
+    }) {
+        output.set("error: no character found");
+    }
 }
 
-fn increase_character_speed(args: Res<CommandArgs>, mut character_query: Query<&mut Character>) {
-    with_player_character(&mut character_query, |character| {
+fn increase_character_speed(
+    args: Res<CommandArgs>,
+    mut output: ResMut<CommandOutput>,
+    mut character_query: Query<&mut Character>,
+) {
+    if !with_player_character(&mut character_query, |character| {
         let walk_add = args.get_f32(0).unwrap_or(DEFAULT_SPEED_DELTA);
         let sprint_add = args.get_f32(1).unwrap_or(walk_add * 2.0);
 
         character.walk_speed += walk_add;
         character.sprint_speed += sprint_add;
 
-        info!(
+        output.set(format!(
             "Increased character speed (+{:.1}, +{:.1}) -> walk: {:.1}, sprint: {:.1}",
             walk_add, sprint_add, character.walk_speed, character.sprint_speed
-        );
-    });
+        ));
+    }) {
+        output.set("error: no character found");
+    }
 }
 
 #[cfg(test)]

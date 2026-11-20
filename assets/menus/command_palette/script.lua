@@ -1,7 +1,8 @@
-local dom      = import_namespace("dom")
-local commands = import_namespace("commands")
-local menus    = import_namespace("menus")
-local state    = import_namespace("state")
+local dom       = import_namespace("dom")
+local commands  = import_namespace("commands")
+local menus     = import_namespace("menus")
+local state     = import_namespace("state")
+local clipboard = import_namespace("clipboard")
 
 function on_dom_event(handler, node, payload)
     local fn = _G[handler]
@@ -12,16 +13,22 @@ end
 
 local MAX_ROWS = 100        -- cap on filtered entries kept
 local SUGGESTION_ROWS = 5   -- rows that fit in .suggestions; keep in sync with style.css
-local HISTORY_ROWS = 6      -- lines that fit in .console-history; keep in sync with style.css
-local WHEEL_LINES = 3       -- history lines scrolled per wheel notch
+local HISTORY_ROWS = 6      -- entries that fit in .console-history; keep in sync with style.css
+local WHEEL_LINES = 3       -- history entries scrolled per wheel notch
 local current_menu_name = nil
 local all_commands = {}
 local visible = {}
 local selected_index = nil
 local current_raw_input = ""
 
-local history = {}          -- executed command lines, oldest first (seeded from commands.history())
-local history_scroll = 0    -- lines scrolled up from the newest entry (0 = pinned to the bottom)
+-- Entries are { command, output } maps from commands.history(). The engine owns
+-- them; this is a cache refreshed on open and on every on_history_changed.
+local history = {}
+local history_scroll = 0    -- entries scrolled up from the newest (0 = pinned to the bottom)
+local copy_targets = {}     -- copy-button node id -> text to copy
+
+local recall_step = 0       -- 0 = not recalling; >0 = how many entries up from the newest
+local recall_set = false    -- next text_change came from a recall, not from typing
 
 local history_el = nil
 local suggestions_el = nil
@@ -157,20 +164,50 @@ local function render_window()
     end
 end
 
--- The history window is anchored at the newest end: `history_scroll` lines are
--- scrolled away at the bottom, so 0 shows the most recent lines hugging the input.
+-- The history window is anchored at the newest end: `history_scroll` entries are
+-- scrolled away at the bottom, so 0 shows the most recent entries hugging the input.
+-- An entry with output renders as two lines (command + output row with a copy
+-- button), so the window counts entries, not lines.
 local function max_history_scroll()
     return math.max(#history - HISTORY_ROWS, 0)
 end
 
 local function render_history()
     dom.clear(history_el)
+    copy_targets = {}
 
     local last = #history - history_scroll
     local first = math.max(1, last - HISTORY_ROWS + 1)
     for i = first, last do
-        dom.create(history_el, "text", { class = "history-line", text = "> " .. history[i] })
+        local entry = history[i]
+        dom.create(history_el, "text", { class = "history-line", text = "> " .. entry.command })
+        if entry.output ~= nil and entry.output ~= "" then
+            local out_row = dom.create(history_el, "node", { class = "history-out-row" })
+            dom.create(out_row, "text", { class = "history-output", text = entry.output })
+            -- `button` renders no text of its own (only text/span do), so the
+            -- label is a child; the click handler sits on the button itself.
+            local btn = dom.create(out_row, "button", { class = "copy-btn" })
+            dom.create(btn, "text", { class = "copy-label", text = "copy" })
+            copy_targets[btn] = entry.command .. "\n" .. entry.output
+            dom.on(btn, "click", "on_copy_click")
+        end
     end
+end
+
+function on_copy_click(node)
+    local text = copy_targets[node]
+    if text ~= nil then
+        clipboard.set(text)
+    end
+end
+
+function on_history_changed()
+    local fresh = commands.history()
+    if #fresh > #history then
+        history_scroll = 0
+    end
+    history = fresh
+    render_history()
 end
 
 function on_history_wheel(_, payload)
@@ -178,7 +215,7 @@ function on_history_wheel(_, payload)
     if delta == 0 then
         return
     end
-    -- Wheel up (positive delta) reveals older lines; wheel down returns to the newest.
+    -- Wheel up (positive delta) reveals older entries; wheel down returns to the newest.
     local target = history_scroll + (delta > 0 and WHEEL_LINES or -WHEEL_LINES)
     history_scroll = math.min(math.max(target, 0), max_history_scroll())
     render_history()
@@ -209,6 +246,23 @@ local function set_selected(new_idx)
     selected_index = new_idx
     render_window()
     update_preview()
+end
+
+-- Shell-style recall: dir 1 walks toward older commands, -1 back toward the newest.
+-- Past the newest end the input is cleared. The engine echoes the value back through
+-- text_change, and `recall_set` keeps that echo from cancelling the recall.
+local function recall(dir)
+    local count = #history
+    if count == 0 then
+        return
+    end
+    recall_step = math.min(math.max(recall_step + dir, 0), count)
+    local text = ""
+    if recall_step > 0 then
+        text = history[count - recall_step + 1].command
+    end
+    recall_set = true
+    dom.set_value(search_el, text)
 end
 
 local function parse_input_line(raw)
@@ -276,11 +330,7 @@ function on_menu_ready(menu_name, root_id)
     dom.on(search_el, "key_down", "on_search_key")
     dom.on(history_el, "wheel", "on_history_wheel")
 
-    -- The script is recreated on every open, so the history lives engine-side.
-    history = {}
-    for _, line in ipairs(commands.history()) do
-        table.insert(history, line)
-    end
+    history = commands.history()
     history_scroll = 0
     render_history()
 
@@ -288,6 +338,11 @@ function on_menu_ready(menu_name, root_id)
 end
 
 function on_search_change(_, text)
+    if recall_set then
+        recall_set = false
+    else
+        recall_step = 0
+    end
     rebuild_list(text)
 end
 
@@ -297,23 +352,30 @@ function on_search_key(_, ev)
 
     if key == "Escape" or (key == "Backquote" and not ev["repeat"]) then
         close_palette()
+    elseif key == "KeyV" and ev.ctrl and not ev["repeat"] then
+        local pasted = clipboard.get()
+        if pasted ~= nil and pasted ~= "" then
+            -- The input is single-line, so fold any newlines into spaces.
+            pasted = pasted:gsub("[\r\n]+", " ")
+            dom.set_value(search_el, current_raw_input .. pasted)
+        end
     elseif key == "ArrowDown" then
-        -- Arrows only drive the suggestion popup; with an empty prompt there is
-        -- nothing selected and the popup is hidden, so they do nothing.
-        if selected_index ~= nil then
-            if selected_index >= count then
-                set_selected(1)
-            else
-                set_selected(selected_index + 1)
-            end
+        -- With an empty prompt (or mid-recall) the arrows walk the command history;
+        -- while the suggestion popup is up they drive the selection instead.
+        if recall_step > 0 or selected_index == nil then
+            recall(-1)
+        elseif selected_index >= count then
+            set_selected(1)
+        else
+            set_selected(selected_index + 1)
         end
     elseif key == "ArrowUp" then
-        if selected_index ~= nil then
-            if selected_index <= 1 then
-                set_selected(count)
-            else
-                set_selected(selected_index - 1)
-            end
+        if recall_step > 0 or selected_index == nil then
+            recall(1)
+        elseif selected_index <= 1 then
+            set_selected(count)
+        else
+            set_selected(selected_index - 1)
         end
     elseif key == "Tab" then
         if selected_index ~= nil and visible[selected_index] ~= nil then
@@ -338,10 +400,10 @@ function on_search_key(_, ev)
         end
 
         if full_command ~= "" then
+            -- The engine records the entry (with its output, once the queued run
+            -- finishes) and calls on_history_changed to refresh the view.
             commands.run(full_command)
-            table.insert(history, full_command)
-            history_scroll = 0
-            render_history()
+            recall_step = 0
             dom.set_value(search_el, "")
             rebuild_list("")
         end

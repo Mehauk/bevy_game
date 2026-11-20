@@ -50,6 +50,7 @@ callback_labels!(
     OnDomEvent => "on_dom_event",
     OnMenuModifiersChanged => "on_modifiers_changed",
     OnMenuRemapResult => "on_remap_result",
+    OnHistoryChanged => "on_history_changed",
 );
 
 /// All menu work happens in one ordered block, after input has been resolved.
@@ -65,6 +66,7 @@ impl Plugin for MenuPlugin {
             .init_resource::<assets::HtmlHotReloadState>()
             .init_resource::<focus::MenuFocusState>()
             .init_resource::<dispatch::ModifierTracking>()
+            .init_resource::<dispatch::HistoryTracking>()
             .add_message::<ToggleMenu>()
             .add_message::<MenuCmd>()
             .add_observer(dom::events::on_dom_click)
@@ -79,11 +81,13 @@ impl Plugin for MenuPlugin {
                     dispatch_menu_ready,
                     dispatch::dispatch_modifier_changes,
                     dispatch::dispatch_remap_results,
+                    dispatch::dispatch_history_changes,
                     dom::events::dispatch_dom_wheel,
                     event_handler::<OnMenuReady, LuaScriptingPlugin>,
                     event_handler::<OnDomEvent, LuaScriptingPlugin>,
                     event_handler::<OnMenuModifiersChanged, LuaScriptingPlugin>,
                     event_handler::<OnMenuRemapResult, LuaScriptingPlugin>,
+                    event_handler::<OnHistoryChanged, LuaScriptingPlugin>,
                     apply_dom_ops,
                 )
                     .chain()

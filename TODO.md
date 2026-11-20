@@ -59,7 +59,7 @@
 # Terrain
 - [x] Setup atmosphere
 - [x] I dont touch the floor, jumping also leaves me a little bit off the floor
-- [ ] Setup https://docs.rs/meshless_voronoi/latest/meshless_voronoi/ to split the map into cells. modify each cell to have some base height (which can be negative too).
+- [x] Setup https://docs.rs/meshless_voronoi/latest/meshless_voronoi/ to split the map into cells. modify each cell to have some base height (which can be negative too).
 
 # Pause and resume
 - [x] when ~ menu is open pause the game exactly as it is, when the menu is closed, resume.

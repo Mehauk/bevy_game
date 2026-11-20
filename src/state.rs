@@ -163,8 +163,14 @@ fn sync_menu_pauses(
         tracker.menu_pauses = 0;
     }
 
-    if !menu_manager.any_open() && tracker.menu_pauses > 0 {
-        tracker.menu_pauses = 0;
+    if !menu_manager.any_open() {
+        // Menus that closed without calling state.resume() leave stale counts behind.
+        if tracker.menu_pauses > 0 {
+            tracker.menu_pauses = 0;
+        }
+        // Invariant: with no menus open and nothing requesting a pause, the game must
+        // not stay Paused — covers both the stale-count reset above and a counter that
+        // reached zero without its resume side effect.
         if !tracker.is_paused() && *play_state.get() == PlayState::Paused {
             next_play_state.set(PlayState::Running);
         }

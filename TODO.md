@@ -27,10 +27,11 @@
 - [x] leaving the menu with esc or re-pressing ~ should not leave the mouse uncaptured
 - [x] entering a command should not close the console/menu
 - [x] Rework the console to have a scrollable history above the text input (scrollable by mouse wheel while mouse is overing the history section) and move the suggestions to a floating autosuggest that only shows up once you start typing over the history. 
-- [ ] Any command that also returns a value should be debug printed under it
-  - [ ] to the right of this message should be a copy button icon, which when pressed copies the exact command and its response
-- [ ] pressing up/down without typing anything should instead use command history
-- [ ] ctrl + v should paste whats on the clipboard into the text
+- [x] Any command that also returns a value should be debug printed under it
+  - [x] to the right of this message should be a copy button icon, which when pressed copies the exact command and its response
+- [x] pressing up/down without typing anything should instead use command history
+- [x] ctrl + v should paste whats on the clipboard into the text
+- [ ] add splash to the copy button and change copy to copied for a duration
 
 # Hotkeys
 - [x] use bevy_enhanced_input
@@ -65,3 +66,5 @@
 # Pause and resume
 - [x] when ~ menu is open pause the game exactly as it is, when the menu is closed, resume.
 - [x] Use lua hook for pause/unpaused menus instead
+- [ ] pause game when window not focues, unpause when focues.
+  - [ ] make this a toggle command (pause_in_background)

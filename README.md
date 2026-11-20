@@ -12,7 +12,7 @@ The menus can be as dynamic as you want, you can make the world map into the mai
 
 Currently there is a set number of menus; later a hook to read a list of menus, add new menus, and bind menus will be added
 
-Go [here](docs/lua-hooks.md) for a full list of lua<->engine hooks 
+Go [here](docs/.compiled/lua-hooks.md) for a full list of lua<->engine hooks 
 
 ## Terrain
 Terrain is handles in one of two ways.

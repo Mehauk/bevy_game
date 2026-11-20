@@ -1,5 +1,3 @@
-- [ ] checkout runevision (https://github.com/runevision)
-
 # Menus
 - [x] setup html+lua menus
 - [x] setup commands menu

@@ -2,10 +2,9 @@
 
 ## Table of Contents <!-- omit from toc -->
 - [Menus](#menus)
-- [Performance](#performance)
+- [Terrain](#terrain)
 
 ## Menus
-
 Game menus are defined with HTML and CSS and controlled via `lua54` scripts with hooks into the engine for reading and writing values. 
 
 The menus can be as dynamic as you want, you can make the world map into the main menu or update the `HUD` with a permanent questlog.
@@ -15,6 +14,11 @@ Currently there is a set number of menus; later a hook to read a list of menus, 
 
 Go [here](docs/lua-hooks.md) for a full list of lua<->engine hooks 
 
-## Performance
-- Quadtree based terrain/object chunking and visible occlusion
-- Quadtree based LOD for static items, animations, characters
+## Terrain
+Terrain is handles in one of two ways.
+1. bring a file/asset for the terrain (not yet implemented)
+2. generate terrain on the fly
+   - infinite
+   - torus warped
+
+[terrain docs](docs/terrain.md)

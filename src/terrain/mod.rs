@@ -78,11 +78,11 @@ impl Default for TerrainMap {
             .set_lacunarity(2.0);
 
         let mut map = Self {
-            size: 400.0,
-            subdivisions: 200,
+            size: 4000.0,
+            subdivisions: 2000,
             amplitude: 22.0,
             cell_grid_dim: 8,
-            cell_base_height_range: 12.0,
+            cell_base_height_range: 4.0,
             cell_blend_width: 8.0,
             cell_seed: 1337,
             cells: Vec::new(),

@@ -1,25 +1,3 @@
-//! HTML/CSS menus driven by Lua scripts.
-//!
-//! A menu is `assets/menus/<id>/{index.html,style.css,script.lua}` (overridable per-file
-//! from `mods/`). The HTML is parsed into a DOM of UI entities, the CSS is applied by
-//! bevy_flair, and the script drives it through the `dom`, `menus`, `input` and
-//! `commands` namespaces while the engine pushes state changes back as callbacks.
-//! See `docs/lua-hooks.md` for the script-facing contract.
-//!
-//! Module map:
-//! - [`state`] — the open-menu stack, read by input contexts and cursor locking
-//! - [`lifecycle`] — opening/closing menus and the script-ready handshake
-//! - [`assets`] — locating menu files (mods override assets) and hot reload
-//! - [`dom`] — the Lua-addressable node tree, its op queue, and its event bridge
-//! - [`focus`] — keeping keyboard focus on the right text field
-//! - [`dispatch`] — pushing modifier/remap changes out to ready scripts
-//! - [`scripting`] — the `menus` and `dom` namespaces
-//!
-//! This module is the menu *engine* only: it knows no concrete menu and opens/closes menus
-//! by id. The wiring that ties a menu to a hotkey and a console command (the keyboard
-//! overlay, the command palette) lives in [`crate::integration`], so neither `input` nor the
-//! command console has to depend on this module to declare a menu.
-
 mod assets;
 mod dispatch;
 mod dom;
@@ -39,7 +17,6 @@ use dom::apply_dom_ops;
 use lifecycle::{dispatch_menu_ready, handle_menu_commands};
 use state::MenuCmd;
 
-// Engine → Lua callbacks. The string on the right is the global function name Lua sees.
 callback_labels!(
     OnMenuReady => "on_menu_ready",
     OnDomEvent => "on_dom_event",
@@ -48,7 +25,6 @@ callback_labels!(
     OnHistoryChanged => "on_history_changed",
 );
 
-/// All menu work happens in one ordered block, after input has been resolved.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MenuUpdateSystems;
 

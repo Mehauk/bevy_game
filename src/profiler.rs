@@ -1,13 +1,3 @@
-//! Lightweight frame-phase profiler for catching frame spikes without giant trace files.
-//!
-//! Splits every frame into non-overlapping wall-clock phases:
-//! - `outside`: time between the end of the previous `Last` and the start of this `First`
-//!   (render thread wait, swapchain present / VSync, windowing, or OS stalls)
-//! - `pre`: `First` -> `RunFixedMainLoopSystems::BeforeFixedMainLoop`
-//! - `fixed`: `FixedMain` execution (plus step count `xN` to spot physics catch-up cascades)
-//! - `update`: `RunFixedMainLoopSystems::AfterFixedMainLoop` -> `SpawnScene`
-//! - `post`: `SpawnScene` -> `Last`
-
 use std::{collections::VecDeque, fmt, time::Instant};
 
 use bevy::prelude::*;
@@ -68,7 +58,6 @@ pub struct FrameSample {
 }
 
 impl FrameSample {
-    /// Name of the phase that took the most wall-clock time in this frame.
     pub fn dominant_phase(&self) -> &'static str {
         let phases = [
             ("render/present/OS", self.outside_ms),
@@ -362,7 +351,7 @@ mod tests {
 
         assert_eq!(state.samples.len(), 3);
         assert_eq!(state.samples.front().unwrap().frame, 3);
-        assert_eq!(state.spike_count, 3); // 60, 80, 100
+        assert_eq!(state.spike_count, 3);
         assert_eq!(state.worst_spike.unwrap().frame, 5);
     }
 

@@ -1,5 +1,3 @@
-//! The `input` Lua namespace: the only way menu scripts see or change keybinds.
-
 use bevy::prelude::*;
 use bevy_mod_scripting::bindings::{
     InteropError, WorldExtensions,
@@ -7,11 +5,10 @@ use bevy_mod_scripting::bindings::{
     script_value::ScriptValue,
 };
 
-use super::RemapStatus;
 use super::hotkeys::HotkeyRegistry;
-use super::keys::{current_modifier_flags, modifier_map, parse_mod_keys};
 use super::remap::RemapBindingMessage;
-use crate::utils::{script_map, script_str};
+use crate::utils::keys::{current_modifier_flags, modifier_map, parse_mod_keys};
+use crate::utils::{RemapStatus, script_map, script_str};
 
 pub(super) fn register_input_namespace(app: &mut App) {
     NamespaceBuilder::in_namespace(app.world_mut(), "input")

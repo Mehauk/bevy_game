@@ -1,17 +1,9 @@
-//! Key/button parsing, canonical key names, and modifier-flag conversion.
-//!
-//! This is the single source of truth for the string form of an input that crosses the
-//! Lua boundary (see `docs/lua-hooks.md` "Key names"): [`binding_key_and_mods`] produces
-//! it, [`parse_input_code`] consumes it, and [`modifier_map`] / [`parse_mod_keys`] do the
-//! same round trip for modifier sets.
-
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_mod_scripting::bindings::script_value::ScriptValue;
 
 use crate::utils::script_map;
 
-/// A bindable physical input, in the subset the remapper understands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputCode {
     Key(KeyCode),
@@ -46,8 +38,6 @@ pub fn parse_input_code(code: &str) -> Option<InputCode> {
     }
 }
 
-/// Generates `string => KeyCode` arms from bare variant names, so the parse string
-/// can never drift from the variant it maps to.
 macro_rules! parse_key_variants {
     ($s:expr, $($variant:ident),+ $(,)?) => {
         match $s {
@@ -72,8 +62,6 @@ fn parse_key_code(s: &str) -> Option<KeyCode> {
     )
 }
 
-/// Canonical display name for a mouse button, shared by binding serialization and
-/// the menu input dispatcher. `Other(4)`/`Other(5)` are treated as Back/Forward.
 pub fn mouse_button_name(button: MouseButton) -> Option<&'static str> {
     match button {
         MouseButton::Left => Some("MouseLeft"),
@@ -85,8 +73,6 @@ pub fn mouse_button_name(button: MouseButton) -> Option<&'static str> {
     }
 }
 
-/// Canonical `(key name, modifiers)` for a binding, or `None` for bindings the
-/// remapper cannot express (gamepad, etc.).
 pub fn binding_key_and_mods(binding: &Binding) -> Option<(String, ModKeys)> {
     match binding {
         Binding::Keyboard { key, mod_keys } => Some((format!("{key:?}"), *mod_keys)),
@@ -106,12 +92,6 @@ pub fn binding_key_and_mods(binding: &Binding) -> Option<(String, ModKeys)> {
     }
 }
 
-/// The four modifiers, in exactly one table: the Lua-facing name, the `ModKeys` flag, and
-/// the physical left/right key codes.
-///
-/// Everything that speaks "modifiers" — the Lua map shape, the Lua parser, and physical-key
-/// polling — iterates this, so adding a modifier is a one-line change instead of three
-/// synchronised edits in three places.
 pub const MODIFIER_KEYS: [(&str, ModKeys, [KeyCode; 2]); 4] = [
     (
         "ctrl",
@@ -131,8 +111,6 @@ pub const MODIFIER_KEYS: [(&str, ModKeys, [KeyCode; 2]); 4] = [
     ),
 ];
 
-/// The `{ ctrl, shift, alt, super }` entries on their own, so a caller can embed modifiers
-/// in a larger payload instead of hand-rolling the same four booleans.
 pub fn modifier_entries(
     mods: ModKeys,
 ) -> impl Iterator<Item = (&'static str, ScriptValue)> + Clone {
@@ -145,7 +123,6 @@ pub fn modifier_map(mods: ModKeys) -> ScriptValue {
     script_map(modifier_entries(mods))
 }
 
-/// Inverse of [`modifier_map`]: read a modifier set back out of a Lua map.
 pub fn parse_mod_keys(val: &ScriptValue) -> ModKeys {
     let mut mods = ModKeys::empty();
     if let ScriptValue::Map(map) = val {
@@ -158,7 +135,6 @@ pub fn parse_mod_keys(val: &ScriptValue) -> ModKeys {
     mods
 }
 
-/// Modifier flags currently held down on the physical keyboard.
 pub fn current_modifier_flags(keys: &ButtonInput<KeyCode>) -> ModKeys {
     let mut mods = ModKeys::empty();
     for (_, flag, codes) in MODIFIER_KEYS {
@@ -175,8 +151,6 @@ mod tests {
 
     #[test]
     fn key_names_round_trip() {
-        // The Lua side echoes back exactly the names we serialise out, so any name that does
-        // not parse back is a remap that would silently fail at runtime.
         for name in [
             "KeyA", "KeyZ", "Digit0", "Digit9", "F1", "F12", "Escape", "Space", "Enter", "Tab",
             "Backspace", "CapsLock", "ShiftLeft", "ControlRight", "AltLeft", "SuperRight",
@@ -202,7 +176,6 @@ mod tests {
             assert_eq!(mouse_button_name(button), Some(name));
             assert_eq!(parse_input_code(name), Some(InputCode::Mouse(button)));
         }
-        // Aliases the bundled Lua scripts rely on.
         assert_eq!(parse_input_code("Left"), Some(InputCode::Mouse(MouseButton::Left)));
         assert_eq!(
             parse_input_code("MouseButton4"),

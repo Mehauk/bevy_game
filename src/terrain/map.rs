@@ -1,10 +1,3 @@
-//! The terrain heightfield domain model: a Voronoi-cell base layer blended with FBM noise.
-//!
-//! This is deliberately free of any Bevy ECS / rendering concern — it is a pure, deterministic
-//! height function (`height_at`) over a set of generated cells, so it can be reasoned about and
-//! tested in isolation from the mesh, collider, fog and lighting that consume it in
-//! [`super`](crate::terrain).
-
 use bevy::prelude::{Resource, Vec2};
 use glam27::DVec3 as VoroDVec3;
 use meshless_voronoi::VoronoiIntegrator;
@@ -57,8 +50,6 @@ impl Default for TerrainMap {
 }
 
 impl TerrainMap {
-    /// Split the terrain map into 2D Voronoi cells using `meshless_voronoi` and
-    /// assign each cell an initial base height (positive or negative).
     pub fn rebuild_voronoi_cells(&mut self) {
         let dim = self.cell_grid_dim.max(1);
         let half = self.size * 0.5;
@@ -108,8 +99,6 @@ impl TerrainMap {
         &self.cells
     }
 
-    /// Monotonic counter bumped whenever the cell set or a cell's height changes, so a
-    /// consumer (the mesh rebuild) can cheaply detect that regeneration is needed.
     pub fn generation(&self) -> u64 {
         self.generation
     }
@@ -121,7 +110,6 @@ impl TerrainMap {
             .min_by(|a, b| p.distance_squared(a.center).total_cmp(&p.distance_squared(b.center)))
     }
 
-    /// Modify a single Voronoi cell's base height (supports negative values).
     pub fn set_cell_base_height(&mut self, cell_id: usize, base_height: f32) -> bool {
         let Some(cell) = self.cells.iter_mut().find(|c| c.id == cell_id) else {
             return false;
@@ -131,10 +119,6 @@ impl TerrainMap {
         true
     }
 
-    /// Base height contribution from the Voronoi cells at `(x, z)`.
-    ///
-    /// Returns the exact cell `base_height` in cell interiors and smoothly blends
-    /// across `cell_blend_width` near cell boundaries (or hard-steps when `<= 0.0`).
     pub fn cell_base_height_at(&self, x: f32, z: f32) -> f32 {
         if self.cells.is_empty() {
             return 0.0;

@@ -1,15 +1,7 @@
-//! Keyboard focus inside menus.
-//!
-//! Bevy clears `InputFocus` whenever the focused entity is despawned, which happens
-//! constantly while a Lua script rebuilds a list. [`track_and_maintain_menu_focus`]
-//! remembers the last text field that had focus and restores it, so a script that
-//! re-creates its search box on every keystroke does not lose the caret.
-
 use bevy::{input_focus::{AutoFocus, FocusCause, InputFocus}, prelude::*, ui_widgets::TextInput};
 
 use crate::menus::state::MenuManager;
 
-/// The text field the menu last had keyboard focus on, if it still exists.
 #[derive(Resource, Default)]
 pub(crate) struct MenuFocusState {
     pub last_focused: Option<Entity>,

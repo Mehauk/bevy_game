@@ -65,4 +65,4 @@
 - [x] when ~ menu is open pause the game exactly as it is, when the menu is closed, resume.
 - [x] Use lua hook for pause/unpaused menus instead
 - [ ] pause game when window not focues, unpause when focues.
-  - [ ] make this a toggle command (pause_in_background)
+  - [ ] make this a toggle command (toggle_should_pause_in_background)

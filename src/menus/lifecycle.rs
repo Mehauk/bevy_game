@@ -1,12 +1,3 @@
-//! Opening and closing menus: the stack transitions, the entity that owns a menu, and the
-//! one-shot `on_menu_ready` handshake with its script.
-//!
-//! A menu is a UI root entity carrying a [`MenuRoot`], a bevy_flair stylesheet, a Lua
-//! script, and the DOM subtree parsed from its `index.html`. Opening is synchronous
-//! (entities exist immediately) but the script loads asynchronously, hence the
-//! [`MenuRoot::ready_sent`] handshake: no DOM event may be dispatched to a script that has
-//! not finished loading, or its handler globals would not exist yet.
-
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
 use bevy_flair::prelude::*;
@@ -29,7 +20,6 @@ use crate::menus::dom::{
 use crate::menus::focus::MenuFocusState;
 use crate::menus::state::{MenuCmd, MenuManager, ToggleMenu};
 
-/// The root entity of one open menu instance and the state of its script handshake.
 #[derive(Component)]
 pub struct MenuRoot {
     pub name: String,
@@ -41,18 +31,11 @@ pub struct MenuRoot {
 }
 
 impl MenuRoot {
-    /// The script handle to dispatch to, but only once the script has loaded and announced
-    /// itself. Every dispatcher used to re-implement this pair of checks.
     pub(crate) fn ready_script(&self) -> Option<Handle<ScriptAsset>> {
         self.ready_sent.then(|| self.script.clone()).flatten()
     }
 }
 
-/// Apply queued open/close/toggle requests.
-///
-/// Runs through `commands.queue` because opening and closing menus mutates the world
-/// directly (spawning/despawning entities and applying DOM ops), which a normal system
-/// cannot do while its own queries are borrowed.
 pub(crate) fn handle_menu_commands(
     mut toggles: MessageReader<ToggleMenu>,
     mut cmds: MessageReader<MenuCmd>,
@@ -84,7 +67,6 @@ pub(crate) fn handle_menu_commands(
     });
 }
 
-/// Fire `on_menu_ready` for each menu whose script has just finished loading.
 pub(crate) fn dispatch_menu_ready(
     mut q_roots: Query<(Entity, &mut MenuRoot)>,
     script_contexts: Res<ScriptContexts<LuaScriptingPlugin>>,
@@ -120,7 +102,6 @@ pub(crate) fn dispatch_menu_ready(
 fn close_menu_at(world: &mut World, pos: usize) {
     let (_, root) = world.resource_mut::<MenuManager>().remove_at(pos);
     if let Ok(e) = world.get_entity_mut(root) {
-        // Bevy 0.20 `despawn()` recursively despawns children.
         e.despawn();
     }
     prune_dead_nodes(world);
@@ -130,7 +111,6 @@ fn close_menu_at(world: &mut World, pos: usize) {
     }
 }
 
-/// Close the topmost open menu; returns whether one was open.
 pub(crate) fn close_top_menu(world: &mut World) -> bool {
     let Some(top) = world.resource::<MenuManager>().depth().checked_sub(1) else {
         return false;
@@ -139,7 +119,6 @@ pub(crate) fn close_top_menu(world: &mut World) -> bool {
     true
 }
 
-/// Close the topmost instance of `name`; returns whether it was open.
 fn close_menu_by_name(world: &mut World, name: &str) -> bool {
     let Some(pos) = world.resource::<MenuManager>().index_of(name) else {
         return false;

@@ -1,39 +1,9 @@
-//! Keybind remapping: the request message, the outcome status, and the system that
-//! applies (or swaps) bindings.
-//!
-//! Policy is deliberately *not* enforced here — the keyboard menu script owns the rules
-//! (gameplay-only, movement-key chains, Aim/Look lock) and calls [`input::remap`] only
-//! once a target is legal. This module only resolves "what is currently on that key" and
-//! rewrites the two bindings.
-
 use bevy::{ecs::relationship::Relationship, prelude::*};
 use bevy_enhanced_input::prelude::*;
 
 use super::HotkeyLabel;
-use crate::input::keys::{binding_key_and_mods, parse_input_code};
-
-/// Outcome of the last remap attempt, bumped via [`RemapStatus::version`] so menus can
-/// poll or wait for a change.
-#[derive(Resource, Default, Clone, Debug)]
-pub struct RemapStatus {
-    pub success: bool,
-    pub message: String,
-    pub version: u64,
-}
-
-impl RemapStatus {
-    pub fn set_success(&mut self, message: String) {
-        self.success = true;
-        self.message = message;
-        self.version = self.version.wrapping_add(1);
-    }
-
-    pub fn set_error(&mut self, message: String) {
-        self.success = false;
-        self.message = message;
-        self.version = self.version.wrapping_add(1);
-    }
-}
+use crate::utils::keys::{binding_key_and_mods, parse_input_code};
+use crate::utils::RemapStatus;
 
 #[derive(Message, Clone, Debug)]
 pub struct RemapBindingMessage {
@@ -43,7 +13,6 @@ pub struct RemapBindingMessage {
     pub target_mods: ModKeys,
 }
 
-/// One live binding captured for lookup while a remap is being resolved.
 #[derive(Clone)]
 struct BindingSnapshot {
     entity: Entity,

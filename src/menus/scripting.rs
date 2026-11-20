@@ -1,10 +1,3 @@
-//! The `menus`, `dom`, and `clipboard` Lua namespaces — the menu layer's entire
-//! script-facing API.
-//!
-//! Nothing here mutates the world or the DOM directly: `menus.*` writes a message and
-//! `dom.*` queues a [`DomOp`], both applied later in the frame by the systems that own
-//! that state. A script can therefore build a subtree whose nodes do not exist yet.
-
 use bevy::prelude::*;
 use bevy_mod_scripting::bindings::{
     InteropError, WorldExtensions,
@@ -28,7 +21,6 @@ fn push_dom_op(ctx: &FunctionCallContext, op: DomOp) -> Result<(), InteropError>
         .with_resource_mut(|mut rt: Mut<DomRuntime>| rt.ops.push(op))
 }
 
-/// The menu root that owns `id`, for scoping subtree creation to one menu.
 fn menu_root_of(rt: &DomRuntime, id: i64) -> Option<Entity> {
     rt.nodes.get(&id).map(|n| n.menu_root)
 }
@@ -129,9 +121,6 @@ pub(crate) fn register_menu_namespaces(app: &mut App) {
             push_dom_op(&ctx, DomOp::Blur)
         });
 
-    // Clipboard access for menu scripts (console copy buttons, Ctrl+V paste).
-    // arboard is synchronous and already in the tree via bevy_clipboard; failures
-    // degrade to empty text / false rather than erroring the script.
     NamespaceBuilder::in_namespace(app.world_mut(), "clipboard")
         .register("get", |_ctx: FunctionCallContext| -> ScriptValue {
             match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {

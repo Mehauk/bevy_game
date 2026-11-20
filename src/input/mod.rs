@@ -1,17 +1,11 @@
-//! Input layer: the gameplay hotkey *context*, the derived hotkey registry, keybind
-//! remapping, and the `input` Lua namespace.
-//!
-//! This module knows nothing about menus. What activates the gameplay context is wired in
-//! [`crate::integration`], which reads the menu stack and drives [`set_context_active`].
-
 pub mod hotkeys;
-pub mod keys;
 pub mod remap;
 mod scripting;
 
+use crate::utils::RemapStatus;
+
 pub use hotkeys::HotkeyRegistry;
-pub use keys::{current_modifier_flags, modifier_entries, modifier_map, mouse_button_name};
-pub use remap::{RemapBindingMessage, RemapStatus};
+pub use remap::RemapBindingMessage;
 
 use bevy::{
     ecs::{relationship::Relationship, system::IntoObserverSystem},
@@ -64,28 +58,21 @@ impl Plugin for InputPlugin {
     }
 }
 
-/// Marker: this entity owns the gameplay input context.
 #[derive(Component, Default, Clone)]
 pub struct GameplayInput;
 
-/// Marks a binding as a movement key, which the remap rules treat as modifier-free.
 #[derive(Component, Default, Clone, Copy, Debug)]
 pub struct MovementBinding;
 
-/// The entity that owns the shared gameplay context (camera and menu hotkeys hang off it).
 #[derive(Resource)]
 pub struct GameplayInputEntity(pub Entity);
 
-/// Human-readable name shown in the keyboard overlay for an action or binding.
 #[derive(Component, Clone, Copy, Default)]
 pub struct HotkeyLabel(pub &'static str);
 
-/// Mirror of context activity as a component, so it can be queried and observed.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub struct ContextActive(pub bool);
 
-/// Denormalised context info copied onto each action, so the registry can report
-/// `{ context, active }` without walking back to the context entity.
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub struct ActionContext {
     pub name: &'static str,
@@ -114,8 +101,6 @@ pub(crate) fn set_context_active<C: Component>(
         .insert((activity, ContextActive(active)));
 }
 
-/// Spawn `A` on the shared gameplay context with `settings`, plus one binding entity per
-/// binding. Shared by both registration entry points below.
 fn spawn_gameplay_action<A: InputAction>(
     commands: &mut Commands,
     context: Entity,
@@ -138,15 +123,8 @@ fn spawn_gameplay_action<A: InputAction>(
 }
 
 pub trait InputAppExt {
-    /// Mirror a context entity's [`ContextActive`] onto every action owned by that context.
     fn register_hotkey_context<C: Component>(&mut self, name: &'static str) -> &mut Self;
 
-    /// Register a **value** action (mouse look, scroll zoom): `observer` sees `Fire<A>` and
-    /// reads `event.value` for as long as the action is active.
-    ///
-    /// `settings` is explicit rather than defaulted: `consume_input` decides whether the
-    /// binding is hidden from every other context once fired, and `require_reset` decides
-    /// whether a held binding re-fires — both change behaviour invisibly if guessed at.
     fn register_gameplay_action<A, B, O, M>(
         &mut self,
         label: &'static str,
@@ -159,8 +137,6 @@ pub trait InputAppExt {
         B: IntoIterator<Item = Binding>,
         O: IntoObserverSystem<Fire<A>, M>;
 
-    /// Register a **one-shot** hotkey (toggle a menu, switch view): `observer` sees
-    /// `Start<A>` once per press.
     fn register_gameplay_hotkey<A, B, O, M>(
         &mut self,
         label: &'static str,
@@ -232,12 +208,6 @@ impl InputAppExt for App {
     }
 }
 
-/// Attach `observer` to `A` and spawn the action on the shared gameplay context at startup.
-///
-/// `E` is the enhanced-input event the observer listens for (`Fire<A>` for value actions,
-/// `Start<A>` for one-shot hotkeys). The two trait entry points pin it explicitly so call
-/// sites never have to name it, and so a `Fire` observer can never be registered as a
-/// one-shot hotkey or vice versa.
 fn register_action<'a, A, B, E, O, M>(
     app: &'a mut App,
     label: &'static str,

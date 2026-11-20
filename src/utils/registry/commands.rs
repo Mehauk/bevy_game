@@ -27,13 +27,8 @@ macro_rules! command {
 
 pub use crate::command;
 
-/// The parameters of the command currently being run.
-///
-/// Written immediately before each command system runs, so a command can only ever observe
-/// its own arguments (see [`handle_run_commands`]).
 #[derive(Resource, Default, Clone, Debug)]
 pub struct CommandArgs {
-    /// Whitespace-separated tokens after the command name.
     pub args: Vec<String>,
 }
 
@@ -43,11 +38,6 @@ impl CommandArgs {
     }
 }
 
-/// The return value of the command currently being run.
-///
-/// Command systems have no native return channel (`run_system` only reports errors), so a
-/// command that produces a result writes it here; [`handle_run_commands`] clears it before
-/// each run and attaches whatever survives to the history entry for the console to show.
 #[derive(Resource, Default)]
 pub struct CommandOutput(Option<String>);
 
@@ -57,7 +47,6 @@ impl CommandOutput {
     }
 }
 
-/// One executed command line and the value it returned, if any.
 #[derive(Clone, Debug)]
 pub struct HistoryEntry {
     pub command: String,
@@ -129,20 +118,11 @@ impl Plugin for CommandRegistryPlugin {
 #[derive(Message, Debug, Clone)]
 pub struct RunCommand(pub String);
 
-/// How many executed command lines the console history keeps.
 const HISTORY_LIMIT: usize = 200;
 
-/// Recently executed command lines, oldest first.
-///
-/// Lives on the world (not in the palette script) so the history survives the menu
-/// closing and reopening — the script, and with it all its Lua state, is recreated
-/// on every open.
 #[derive(Resource, Default)]
 pub struct CommandHistory {
     pub entries: VecDeque<HistoryEntry>,
-    /// Bumped on every append; menus dispatch on change so the palette learns a
-    /// command's output the frame it finishes (the run is queued, so Lua cannot
-    /// read the result at Enter time).
     pub version: usize,
 }
 
@@ -228,13 +208,6 @@ impl CommandRegistry {
     }
 }
 
-/// Resolve and run each requested command, in the order requested.
-///
-/// Each run is queued as a world closure rather than issued with `commands.run_system`,
-/// because [`CommandArgs`] is a single shared resource: writing it here and deferring the run
-/// would let a second command issued in the same frame overwrite the arguments before the
-/// first system had executed. Queuing writes the arguments immediately before *their* run, so
-/// a command can only ever observe its own.
 fn handle_run_commands(
     mut commands: Commands,
     registry: Res<CommandRegistry>,
@@ -246,7 +219,6 @@ fn handle_run_commands(
             continue;
         }
 
-        // Command names never contain whitespace, so the first token is always the name.
         let mut parts = trimmed.split_whitespace();
         let Some(name) = parts.next() else { continue };
         let args: Vec<String> = parts.map(String::from).collect();
@@ -254,8 +226,6 @@ fn handle_run_commands(
 
         let Some(entry) = registry.find_command(name) else {
             warn!("Unknown command '{}'", trimmed);
-            // Unknown attempts are recorded too — a real console shows what you typed,
-            // not just what worked. Queued so history order matches request order.
             commands.queue(move |world: &mut World| push_history(world, line, None));
             continue;
         };
@@ -276,7 +246,6 @@ fn handle_run_commands(
     }
 }
 
-/// Append one history entry, dropping the oldest beyond the cap.
 fn push_history(world: &mut World, command: String, output: Option<String>) {
     let mut history = world.resource_mut::<CommandHistory>();
     history.entries.push_back(HistoryEntry { command, output });
@@ -311,7 +280,6 @@ mod tests {
         let mut reg = CommandRegistry::default();
         reg.register("character>respawn_character".into(), "d", id);
 
-        // This is what the palette actually types, so it is the load-bearing behaviour.
         assert!(reg.find_command("respawn_character").is_some());
         assert!(reg.find_command("RESPAWN_CHARACTER").is_some());
         assert!(reg.find_command("character").is_none(), "a namespace segment is not a command");
@@ -375,8 +343,6 @@ mod tests {
             .iter()
             .map(|e| e.command.as_str())
             .collect();
-        // Unknown commands are recorded too — a real console shows what you typed,
-        // not just what worked.
         assert_eq!(commands, vec!["ok 1", "not_a_command"]);
     }
 
@@ -440,9 +406,6 @@ mod tests {
 
     #[test]
     fn command_macro_derives_its_name_from_the_module_path() {
-        // The palette shows this name and the user types its last segment, so the derivation
-        // is a user-facing contract: moving a command's module renames it. This test is the
-        // guard rail for that (a real regression was nearly shipped during the refactor).
         let mut app = App::new();
         app.init_resource::<CommandRegistry>();
         command!(app, "does nothing", a_registered_command);
@@ -462,9 +425,6 @@ mod tests {
 
     #[test]
     fn two_commands_in_one_frame_each_see_their_own_args() {
-        // `CommandArgs` is one shared resource, so writing it and *then* deferring the run
-        // let the second command clobber the first one's arguments. Each run must observe
-        // exactly its own.
         let mut app = App::new();
         app.init_resource::<CommandRegistry>()
             .init_resource::<CommandArgs>()

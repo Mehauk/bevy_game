@@ -1,8 +1,11 @@
 mod camera;
 mod character;
+mod dev;
+mod docgen;
 mod input;
 mod integration;
 mod menus;
+mod profiler;
 mod state;
 mod terrain;
 mod utils;
@@ -18,16 +21,15 @@ use bevy_mod_scripting::BMSPlugin;
 
 use camera::CameraPlugin;
 use character::CharacterPlugin;
+use dev::DevUtilsPlugin;
+use docgen::DocgenPlugin;
 use input::InputPlugin;
 use integration::IntegrationPlugin;
 use menus::MenuPlugin;
+use profiler::ProfilerPlugin;
 use state::StatePlugin;
 use terrain::TerrainPlugin;
-use utils::{
-    DevUtilsPlugin,
-    ProfilerPlugin,
-    registry::commands::CommandRegistryPlugin,
-};
+use utils::registry::commands::CommandRegistryPlugin;
 
 fn main() {
     let _ = std::fs::create_dir_all("mods");
@@ -40,20 +42,18 @@ fn main() {
             FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
-            // Plugin order is load-bearing: a plugin that registers a command needs the
-            // command registry's resource to exist first, because `register_system`
-            // initialises its `SystemParam`s immediately. `IntegrationPlugin` is added
-            // last — it wires the feature modules together, so it needs all of them built.
-            //   CommandRegistryPlugin  -> anything using `command!` or `register_command`
             CommandRegistryPlugin,
             InputPlugin,
             MenuPlugin,
+        ))
+        .add_plugins((
             StatePlugin,
             DevUtilsPlugin,
             ProfilerPlugin,
             CameraPlugin,
             CharacterPlugin,
             TerrainPlugin,
+            DocgenPlugin,
             IntegrationPlugin,
         ))
         .run();

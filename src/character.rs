@@ -12,26 +12,18 @@ pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
 pub const CAPSULE_RADIUS: f32 = 0.4;
 pub const CAPSULE_HEIGHT: f32 = 1.0;
 
-/// Ground probe `ShapeCaster` geometry (shares center with the capsule's bottom hemisphere).
 const GROUND_PROBE_RADIUS: f32 = 0.35;
 const GROUND_PROBE_OFFSET_Y: f32 = -(CAPSULE_HEIGHT * 0.5);
 const GROUND_PROBE_MAX_DISTANCE: f32 = 0.5;
-/// Max capsule-to-ground gap that transitions from airborne to grounded.
 const GROUND_LAND_TOLERANCE: f32 = 0.04;
-/// Max capsule-to-ground gap that stays grounded while following slopes/steps down.
 const GROUND_SNAP_DISTANCE: f32 = 0.35;
-/// Downward velocity applied to keep the character flush with the ground/slopes.
 const SLOPE_SNAP_MIN_DISTANCE: f32 = 0.005;
 const SLOPE_SNAP_SPEED: f32 = 10.0;
 const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
 const MIN_GROUND_NORMAL_Y: f32 = 0.01;
 const HORIZ_VEL_EPSILON: f32 = 0.001;
-/// Walk-speed delta assumed by `increase_speed` when no argument is given.
 const DEFAULT_SPEED_DELTA: f32 = 2.0;
 
-/// Systems that run only while the player is actively playing (not paused). The
-/// `run_if(in_state(PlayState::Running))` gate is applied to this set by `crate::integration`,
-/// so `character` never names the state machine itself.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CharacterSystems {
     Playing,
@@ -84,9 +76,6 @@ struct AlignToCamera;
 #[action_output(bool)]
 struct Jump;
 
-/// Bound and labelled so the keyboard overlay shows what Ctrl does, but crouching is not
-/// implemented — nothing reads this action. Left in place rather than removed so the overlay
-/// binding (and the user's expectation of it) is unchanged; see `refactor.md`.
 #[derive(InputAction)]
 #[action_output(bool)]
 struct Crouch;
@@ -134,10 +123,6 @@ pub struct GroundState {
 #[derive(Component)]
 struct CharacterBody;
 
-/// The slice of camera state the character needs, copied in each frame by `crate::integration`.
-///
-/// `character` reads this instead of the camera rig so it never imports `camera`: `yaw` drives
-/// camera-relative movement and body alignment, `first_person` drives body visibility.
 #[derive(Component, Default)]
 pub(crate) struct CameraFacing {
     pub yaw: f32,
@@ -151,27 +136,18 @@ pub fn camera_relative_direction(move_vec: Vec2, cam_yaw: f32) -> Vec3 {
     right * move_vec.x + forward * move_vec.y
 }
 
-/// Distance the ground probe must travel before it is touching a surface with the given
-/// normal. The probe sphere is smaller than the capsule, so on a slope the probe touches
-/// later than the capsule body would — this is that correction.
 fn ground_touch_distance(normal_y: f32) -> f32 {
     (CAPSULE_RADIUS - GROUND_PROBE_RADIUS) / normal_y.max(MIN_GROUND_NORMAL_Y)
 }
 
-/// Vertical gap between the capsule surface and the ground hit by the probe.
 fn ground_gap(hit_distance: f32, normal_y: f32) -> f32 {
     (hit_distance - ground_touch_distance(normal_y)).max(0.0)
 }
 
-/// A surface is walkable while its normal stays within the character's max slope angle
-/// of straight up.
 fn is_walkable(normal: Vec3, max_slope_angle_rad: f32) -> bool {
     normal.angle_between(Vec3::Y) <= max_slope_angle_rad
 }
 
-/// Ramp horizontal velocity toward `target`, capped so the change this step never exceeds
-/// `accel * dt`. Lands exactly on the target when close enough, so movement does not
-/// asymptotically crawl into full speed.
 fn accelerate_toward(current: Vec3, target: Vec3, accel: f32, dt: f32) -> Vec3 {
     let diff = target - current;
     let max_change = accel * dt;
@@ -182,14 +158,10 @@ fn accelerate_toward(current: Vec3, target: Vec3, accel: f32, dt: f32) -> Vec3 {
     }
 }
 
-/// A jump fires on the press *edge* only, and only while grounded with the cooldown
-/// spent — so holding the key does not bunny-hop.
 fn jump_fires(jumping: bool, held_last_frame: bool, grounded: bool, cooldown_left: f32) -> bool {
     jumping && !held_last_frame && grounded && cooldown_left <= 0.0
 }
 
-/// Gravity while airborne is heavier once the character is falling or has released the
-/// jump key, which is what makes a short tap produce a short hop.
 fn air_gravity_scale(velocity_y: f32, jumping: bool, character: &Character) -> f32 {
     if velocity_y < 0.0 || !jumping {
         character.fall_gravity
@@ -198,13 +170,10 @@ fn air_gravity_scale(velocity_y: f32, jumping: bool, character: &Character) -> f
     }
 }
 
-/// Vertical velocity that keeps the character riding a slope instead of drifting off it.
 fn slope_tangent_y(vx: f32, vz: f32, normal: Vec3) -> f32 {
     -(vx * normal.x + vz * normal.z) / normal.y
 }
 
-/// Downward speed used to close a `gap` to the ground when stepping down, ramped so the
-/// character settles without snapping or bouncing.
 fn slope_snap_speed(gap: f32) -> f32 {
     if gap > SLOPE_SNAP_MIN_DISTANCE {
         ((gap - SLOPE_SNAP_MIN_DISTANCE) * SLOPE_SNAP_SPEED).min(SLOPE_SNAP_MAX_SPEED)
@@ -527,9 +496,6 @@ fn respawn_character(
     gravity.0 = character.base_gravity;
 }
 
-/// Run `edit` against the single player character, warning once if it is missing.
-///
-/// Takes a callback rather than returning a `Mut` so the borrow stays local to this call.
 fn with_player_character(query: &mut Query<&mut Character>, edit: impl FnOnce(&mut Character)) -> bool {
     let Ok(mut character) = query.single_mut() else {
         warn!("No character found for speed command");
@@ -559,7 +525,6 @@ fn set_character_speed(
             return;
         };
         character.walk_speed = walk;
-        // Sprint defaults to twice walk, so a one-argument call stays internally consistent.
         character.sprint_speed = args.get_f32(1).unwrap_or(walk * 2.0);
         output.set(format!(
             "Set character speed -> walk: {:.1}, sprint: {:.1}",
@@ -600,12 +565,10 @@ mod tests {
 
     #[test]
     fn forward_follows_the_camera() {
-        // With yaw 0, pushing the stick forward must move down -Z (Bevy's forward).
         let dir = camera_relative_direction(Vec2::new(0.0, 1.0), 0.0);
         assert!(dir.z < -0.99, "expected -Z, got {dir}");
         assert!(dir.x.abs() < 1e-6);
 
-        // Turning the camera 90° left must carry the movement vector with it.
         let turned = camera_relative_direction(Vec2::new(0.0, 1.0), 90f32.to_radians());
         assert!(turned.x < -0.99, "expected -X, got {turned}");
     }
@@ -621,7 +584,6 @@ mod tests {
 
     #[test]
     fn acceleration_lands_exactly_on_target_when_close() {
-        // Without this the character asymptotically crawls and never quite reaches speed.
         let out = accelerate_toward(Vec3::X * 5.5, Vec3::X * 6.0, 60.0, 1.0 / 60.0);
         assert_eq!(out, Vec3::X * 6.0);
     }

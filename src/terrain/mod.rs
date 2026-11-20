@@ -1,10 +1,3 @@
-//! Terrain: a procedurally generated heightfield, its collider/mesh, and the atmosphere
-//! (fog, sun, skybox) that renders it.
-//!
-//! The pure heightfield model (Voronoi cells + FBM noise, `height_at`) lives in [`map`] and
-//! has no rendering concern; this module is the Bevy side that consumes it — mesh/collider
-//! building, fog, lighting, and the console commands that poke the model.
-
 use avian3d::prelude::*;
 use bevy::{
     light::{CascadeShadowConfigBuilder, NotShadowCaster},
@@ -26,8 +19,6 @@ impl Plugin for TerrainPlugin {
         app.init_resource::<TerrainMap>()
             .init_resource::<TerrainFog>();
 
-        // Publish the origin surface height now (at build, before any Startup runs) so the
-        // player spawns at the right height even though `character` never reads `TerrainMap`.
         let origin_height = app.world().resource::<TerrainMap>().height_at(0.0, 0.0);
         app.insert_resource(SpawnGroundHeight(origin_height))
             .add_systems(Startup, (setup_terrain, setup_atmosphere))
@@ -76,9 +67,6 @@ struct TerrainMesh;
 #[derive(Component)]
 pub(crate) struct SkyBox;
 
-/// Height-band boundaries, as normalized 0..1 upper edges. Each band's width is *derived*
-/// from these edges so the three widths cannot drift out of sync with the boundaries they
-/// span (a hand-copied width silently mis-colours every vertex in the band).
 const VALLEY_BAND: f32 = 0.45;
 const SLOPE_BAND: f32 = 0.72;
 const HILLSIDE_BAND: f32 = SLOPE_BAND - VALLEY_BAND;
@@ -89,14 +77,10 @@ const HILLSIDE_COLOUR: Color = Color::srgb(0.28, 0.42, 0.20);
 const SLOPE_ROCK_COLOUR: Color = Color::srgb(0.38, 0.36, 0.31);
 const RIDGE_COLOUR: Color = Color::srgb(0.48, 0.46, 0.43);
 
-/// Map a world-space height to 0..1 across the terrain's amplitude range.
 fn normalized_height(y: f32, amplitude: f32) -> f32 {
     ((y / amplitude) * 0.5 + 0.5).clamp(0.0, 1.0)
 }
 
-/// Vertex colour for a normalized height in 0..1: valley floor blends into hillside, then
-/// rock, then ridge. Each band blends across its own width, so there are no hard seams.
-/// Blending happens in linear space, which is what keeps the mid-tones from going muddy.
 fn height_colour(h: f32) -> LinearRgba {
     let (from, to, t) = if h < VALLEY_BAND {
         (VALLEY_COLOUR, HILLSIDE_COLOUR, h / VALLEY_BAND)
@@ -184,7 +168,6 @@ fn rebuild_terrain_on_change(
     }
     let first_run = last_generation.is_none();
     *last_generation = Some(terrain_map.generation());
-    // Keep the published origin height in sync with the (possibly edited) heightfield.
     spawn_height.0 = terrain_map.height_at(0.0, 0.0);
     if first_run {
         return;
@@ -256,10 +239,8 @@ fn sync_terrain_fog(
 
 const DEFAULT_FOG_ALPHA: f32 = 1.0;
 const DEFAULT_FOG_LIGHT_ALPHA: f32 = 0.5;
-/// An alpha above this counts as "on" when toggling, so a faded-out value toggles back on.
 const FOG_ON_THRESHOLD: f32 = 0.05;
 
-/// Flip a fog colour between fully off and `on_alpha`.
 fn toggle_fog_alpha(color: &mut Color, on_alpha: f32) {
     color.set_alpha(if color.alpha() > FOG_ON_THRESHOLD {
         0.0
@@ -346,7 +327,6 @@ mod tests {
 
     #[test]
     fn height_colour_is_continuous_across_band_boundaries() {
-        // A discontinuity here would show up as a hard ring painted on the terrain.
         for edge in [VALLEY_BAND, SLOPE_BAND] {
             let below = height_colour(edge - 1e-4).to_f32_array();
             let above = height_colour(edge + 1e-4).to_f32_array();

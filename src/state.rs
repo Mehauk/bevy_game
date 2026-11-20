@@ -1,12 +1,3 @@
-//! Application and gameplay state machines.
-//!
-//! [`GameState`] models top-level game phases. [`PlayState`] is a sub-state scoped to
-//! [`GameState::InGame`] via Bevy's `SubStates` derive. Pausing the game switches
-//! [`PlayState`] between `Running` and `Paused`, automatically halting or resuming
-//! virtual time and Avian physics simulation.
-//!
-//! Also registers the `state` Lua namespace so scripts can pause or resume gameplay.
-
 use avian3d::prelude::Physics;
 use avian3d::schedule::PhysicsTime;
 use bevy::prelude::*;
@@ -15,8 +6,6 @@ use bevy_mod_scripting::bindings::{
     function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
     script_value::ScriptValue,
 };
-
-use crate::menus::MenuManager;
 
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GameState {
@@ -32,22 +21,19 @@ pub enum PlayState {
     Paused,
 }
 
-/// Reference-counted pause state separating menu-initiated pauses from manual pauses.
 #[derive(Resource, Default)]
-struct PauseTracker {
-    menu_pauses: u32,
-    manual_paused: bool,
-    last_reload_gen: u64,
+pub(crate) struct PauseTracker {
+    pub(crate) menu_pauses: u32,
+    pub(crate) manual_paused: bool,
+    pub(crate) last_reload_gen: u64,
 }
 
 impl PauseTracker {
-    fn is_paused(&self) -> bool {
+    pub(crate) fn is_paused(&self) -> bool {
         self.menu_pauses > 0 || self.manual_paused
     }
 
-    /// Register a pause request: a menu pause while any menu is open, else a manual pause.
-    /// Returns whether the simulation should now be paused.
-    fn request(&mut self, menu_open: bool) -> bool {
+    pub(crate) fn request(&mut self, menu_open: bool) -> bool {
         if menu_open {
             self.menu_pauses += 1;
         } else {
@@ -56,8 +42,7 @@ impl PauseTracker {
         self.is_paused()
     }
 
-    /// Release one pause request. Returns whether the simulation should now be running.
-    fn release(&mut self, menu_open: bool) -> bool {
+    pub(crate) fn release(&mut self, menu_open: bool) -> bool {
         if menu_open && self.menu_pauses > 0 {
             self.menu_pauses -= 1;
         } else {
@@ -79,49 +64,9 @@ impl Plugin for StatePlugin {
             .init_resource::<PauseTracker>()
             .add_systems(OnEnter(PlayState::Paused), pause_simulation)
             .add_systems(OnExit(PlayState::Paused), unpause_simulation)
-            .add_systems(OnExit(GameState::InGame), clear_pauses)
-            .add_systems(
-                PostUpdate,
-                sync_menu_pauses
-                    .run_if(in_state(GameState::InGame))
-                    .run_if(resource_exists::<MenuManager>),
-            );
+            .add_systems(OnExit(GameState::InGame), clear_pauses);
 
         NamespaceBuilder::in_namespace(app.world_mut(), "state")
-            .register(
-                "pause",
-                |ctx: FunctionCallContext| -> Result<(), InteropError> {
-                    let world = ctx.world()?;
-                    let menu_open = world
-                        .with_resource(|mgr: &MenuManager| mgr.any_open())
-                        .unwrap_or(false);
-                    let should_pause = world
-                        .with_resource_mut(|mut tracker: Mut<PauseTracker>| tracker.request(menu_open))?;
-                    if should_pause {
-                        world.with_resource_mut(|mut next_state: Mut<NextState<PlayState>>| {
-                            next_state.set(PlayState::Paused);
-                        })?;
-                    }
-                    Ok(())
-                },
-            )
-            .register(
-                "resume",
-                |ctx: FunctionCallContext| -> Result<(), InteropError> {
-                    let world = ctx.world()?;
-                    let menu_open = world
-                        .with_resource(|mgr: &MenuManager| mgr.any_open())
-                        .unwrap_or(false);
-                    let should_resume = world
-                        .with_resource_mut(|mut tracker: Mut<PauseTracker>| tracker.release(menu_open))?;
-                    if should_resume {
-                        world.with_resource_mut(|mut next_state: Mut<NextState<PlayState>>| {
-                            next_state.set(PlayState::Running);
-                        })?;
-                    }
-                    Ok(())
-                },
-            )
             .register(
                 "is_paused",
                 |ctx: FunctionCallContext| -> Result<ScriptValue, InteropError> {
@@ -159,33 +104,6 @@ fn clear_pauses(mut tracker: ResMut<PauseTracker>) {
     tracker.manual_paused = false;
 }
 
-/// Resets menu pause counts on hot-reload or once all menus have closed.
-fn sync_menu_pauses(
-    menu_manager: Res<MenuManager>,
-    mut tracker: ResMut<PauseTracker>,
-    play_state: Res<State<PlayState>>,
-    mut next_play_state: ResMut<NextState<PlayState>>,
-) {
-    let reload_gen = menu_manager.reload_generation();
-    if reload_gen != tracker.last_reload_gen {
-        tracker.last_reload_gen = reload_gen;
-        tracker.menu_pauses = 0;
-    }
-
-    if !menu_manager.any_open() {
-        // Menus that closed without calling state.resume() leave stale counts behind.
-        if tracker.menu_pauses > 0 {
-            tracker.menu_pauses = 0;
-        }
-        // Invariant: with no menus open and nothing requesting a pause, the game must
-        // not stay Paused — covers both the stale-count reset above and a counter that
-        // reached zero without its resume side effect.
-        if !tracker.is_paused() && *play_state.get() == PlayState::Paused {
-            next_play_state.set(PlayState::Running);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,8 +111,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, StatesPlugin, StatePlugin))
-            .init_resource::<MenuManager>();
+        app.add_plugins((MinimalPlugins, StatesPlugin, StatePlugin));
         app.update();
         app
     }
@@ -203,76 +120,6 @@ mod tests {
     fn default_state_is_in_game_and_running() {
         let app = test_app();
         assert_eq!(*app.world().resource::<State<GameState>>().get(), GameState::InGame);
-        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
-        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
-    }
-
-    #[test]
-    fn stacked_pausing_menus_stay_paused_until_last_closes() {
-        let mut app = test_app();
-
-        let menu_a = app.world_mut().spawn_empty().id();
-        let menu_b = app.world_mut().spawn_empty().id();
-        {
-            let mut mgr = app.world_mut().resource_mut::<MenuManager>();
-            mgr.push("menu_a".into(), menu_a);
-            mgr.push("menu_b".into(), menu_b);
-        }
-
-        // Simulate two menus calling state.pause().
-        app.world_mut().resource_mut::<PauseTracker>().menu_pauses = 2;
-        app.world_mut()
-            .resource_mut::<NextState<PlayState>>()
-            .set(PlayState::Paused);
-        app.update();
-        app.update();
-        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Paused);
-
-        // Close one menu (topmost or bottommost); one menu remains open with menu_pauses == 1.
-        {
-            let mut mgr = app.world_mut().resource_mut::<MenuManager>();
-            let pos = mgr.index_of("menu_b").unwrap();
-            mgr.remove_at(pos);
-        }
-        app.world_mut().resource_mut::<PauseTracker>().menu_pauses -= 1;
-        app.update();
-        app.update();
-        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Paused);
-
-        // Close remaining menu.
-        {
-            let mut mgr = app.world_mut().resource_mut::<MenuManager>();
-            let pos = mgr.index_of("menu_a").unwrap();
-            mgr.remove_at(pos);
-        }
-        app.world_mut().resource_mut::<PauseTracker>().menu_pauses -= 1;
-        app.update();
-        app.update();
-        assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
-    }
-
-    #[test]
-    fn closing_all_menus_without_resume_auto_resumes() {
-        let mut app = test_app();
-
-        let menu = app.world_mut().spawn_empty().id();
-        app.world_mut()
-            .resource_mut::<MenuManager>()
-            .push("command_palette".into(), menu);
-        app.world_mut().resource_mut::<PauseTracker>().menu_pauses = 1;
-        app.world_mut()
-            .resource_mut::<NextState<PlayState>>()
-            .set(PlayState::Paused);
-        app.update();
-        app.update();
-        assert!(app.world().resource::<Time<Virtual>>().is_paused());
-
-        let mut mgr = app.world_mut().resource_mut::<MenuManager>();
-        let pos = mgr.index_of("command_palette").unwrap();
-        mgr.remove_at(pos);
-        app.update();
-        app.update();
-
         assert_eq!(*app.world().resource::<State<PlayState>>().get(), PlayState::Running);
         assert!(!app.world().resource::<Time<Virtual>>().is_paused());
     }

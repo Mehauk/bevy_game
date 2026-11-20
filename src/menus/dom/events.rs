@@ -1,9 +1,3 @@
-//! Bridging Bevy UI pointer/keyboard/text events to Lua handlers bound with `dom.on`.
-//!
-//! Handlers are found by walking *up* the node tree, so binding `click` on a container
-//! catches clicks on any descendant — and the nearest binding wins, which is what makes
-//! "bind the row, not the row's twelve spans" work.
-
 use bevy::{
     ecs::system::SystemParam,
     input::keyboard::KeyboardInput,
@@ -23,12 +17,11 @@ use bevy_mod_scripting::{
 
 use super::node::MenuTextInput;
 use super::{DomHandle, DomHandlers};
-use crate::input::{current_modifier_flags, modifier_entries};
 use crate::menus::OnDomEvent;
 use crate::menus::lifecycle::MenuRoot;
+use crate::utils::keys::{current_modifier_flags, modifier_entries};
 use crate::utils::{script_map, script_str};
 
-/// Shared read-only access for the DOM event observers.
 #[derive(SystemParam)]
 pub(crate) struct DomEventCtx<'w, 's> {
     handlers: Query<'w, 's, &'static DomHandlers>,
@@ -39,7 +32,6 @@ pub(crate) struct DomEventCtx<'w, 's> {
 }
 
 impl DomEventCtx<'_, '_> {
-    /// Nearest ancestor of `target` (inclusive) that has a handler for `event`, with the handler name.
     fn find_handler(&self, target: Entity, event: &str) -> Option<(Entity, String)> {
         std::iter::once(target)
             .chain(self.parents.iter_ancestors(target))
@@ -55,7 +47,6 @@ impl DomEventCtx<'_, '_> {
         self.find_handler(target, event).is_some()
     }
 
-    /// Dispatch `event` to the owning menu's script; returns whether anything was sent.
     fn emit(&mut self, target: Entity, event: &str, payload: ScriptValue) -> bool {
         let Some((target_entity, handler)) = self.find_handler(target, event) else {
             return false;
@@ -88,8 +79,6 @@ impl DomEventCtx<'_, '_> {
 }
 
 pub(crate) fn on_dom_click(mut event: On<PointerClick>, mut ctx: DomEventCtx) {
-    // The secondary button is its own event so menus can use right-click as a
-    // cancel/dismiss gesture without also triggering whatever `click` is bound to.
     let event_name = match event.button {
         PointerButton::Secondary => "right_click",
         _ => "click",
@@ -107,11 +96,6 @@ pub(crate) fn on_dom_hover_exit(event: On<PointerOut>, mut ctx: DomEventCtx) {
     ctx.emit(event.event_target(), "hover_exit", ScriptValue::Unit);
 }
 
-/// Bridge raw mouse-wheel messages to the DOM node the pointer is over as `wheel` events.
-///
-/// Picking has no wheel event, so we take the hover stack from the last picking update and
-/// hand the wheel to the deepest node that bound a `wheel` handler. The UI hit stack is a
-/// chain of ancestors, so the deepest bound handler is the one the cursor is really over.
 pub(crate) fn dispatch_dom_wheel(
     mut mouse_wheel: MessageReader<MouseWheel>,
     hover_map: Option<Res<HoverMap>>,
@@ -156,7 +140,6 @@ pub(crate) fn on_dom_key_input(
         return;
     }
     let key = event.input.key_code;
-    // Navigation and close keys belong to the menu script, not to text-edit caret movement.
     if matches!(
         key,
         KeyCode::ArrowDown | KeyCode::ArrowUp | KeyCode::Tab | KeyCode::Enter | KeyCode::Escape
@@ -193,8 +176,6 @@ pub(crate) fn on_dom_text_change(
     }
 }
 
-/// Strip caret up/down edits from menu text fields so arrow keys drive menu selection
-/// instead of moving an invisible cursor.
 pub(crate) fn strip_menu_nav_text_edits(
     mut q_editable: Query<&mut EditableText, With<MenuTextInput>>,
 ) {

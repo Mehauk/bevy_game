@@ -1,9 +1,3 @@
-//! Translating a menu's HTML/`dom.create` description into real UI entities.
-//!
-//! [`NodeSpec`] is the neutral description produced by either source (XML attribute or
-//! Lua options map); [`spawn_node_entity`] is the one place that decides which Bevy
-//! components a tag maps to.
-
 use bevy::{
     input_focus::AutoFocus,
     picking::hover::Hovered,
@@ -18,7 +12,6 @@ use bevy_mod_scripting::bindings::script_value::ScriptValue;
 
 use super::{DomHandle, DomHandlers};
 
-/// A menu node before it becomes an entity: tag, `id`, classes, text and interaction flags.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NodeSpec {
     pub tag: String,
@@ -30,8 +23,6 @@ pub(crate) struct NodeSpec {
 }
 
 impl NodeSpec {
-    /// Default spec for a tag: the tag is stored lowercased, and `input`/`button` opt in to
-    /// mouse picking unless a caller overrides it.
     fn defaults_for_tag(tag: &str) -> Self {
         let tag = tag.to_ascii_lowercase();
         let mouse_input = matches!(tag.as_str(), "input" | "button");
@@ -115,14 +106,9 @@ fn split_classes(raw: &str) -> Vec<String> {
     raw.split_whitespace().map(str::to_string).collect()
 }
 
-/// Text input marker; the inner string caches the last emitted value so `text_change`
-/// only fires on an actual change.
 #[derive(Component, Default)]
 pub(crate) struct MenuTextInput(pub String);
 
-/// Spawn the entity for one DOM node and wire up its observers.
-///
-/// `id` is the Lua-facing DOM id; `spec.tag` decides the component set.
 pub(crate) fn spawn_node_entity(
     world: &mut World,
     id: i64,
@@ -206,8 +192,6 @@ mod tests {
 
     #[test]
     fn tag_is_lowercased_and_drives_the_mouse_default() {
-        // Regression: the mouse default must be computed from the *lowercased* tag, so a
-        // script may write `dom.create(p, "INPUT", {})` and still get a picking input.
         for tag in ["input", "INPUT", "Input"] {
             let spec = NodeSpec::from_script_opts(tag.into(), ScriptValue::Unit);
             assert_eq!(spec.tag, "input", "tag must be stored lowercased");

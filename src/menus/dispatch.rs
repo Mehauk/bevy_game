@@ -1,9 +1,3 @@
-//! Pushing engine state changes out to open menu scripts.
-//!
-//! Every dispatcher here has the same shape — "if any menu is open and loaded, send this
-//! payload to each" — so that shape lives in [`broadcast_to_menus`] once, and the
-//! per-dispatcher code is only the change detection that decides *whether* to send.
-
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::ModKeys;
 use bevy_mod_scripting::{
@@ -11,31 +5,27 @@ use bevy_mod_scripting::{
     core::event::{CallbackLabel, IntoCallbackLabel, ScriptCallbackMessage},
 };
 
-use crate::input::{RemapStatus, current_modifier_flags, modifier_map, mouse_button_name};
 use crate::menus::OnHistoryChanged;
 use crate::menus::OnMenuModifiersChanged;
 use crate::menus::OnMenuRemapResult;
 use crate::menus::lifecycle::MenuRoot;
 use crate::menus::state::MenuManager;
+use crate::utils::RemapStatus;
+use crate::utils::keys::{current_modifier_flags, modifier_map, mouse_button_name};
 use crate::utils::registry::commands::CommandHistory;
 use crate::utils::{script_str, script_str_list};
 
-/// Change-detection cache for [`dispatch_modifier_changes`].
-///
-/// Lives here rather than on [`MenuManager`] because no one else cares about it.
 #[derive(Resource, Default)]
 pub(crate) struct ModifierTracking {
     last_mods: ModKeys,
     last_pressed: Vec<String>,
 }
 
-/// Change-detection cache for [`dispatch_history_changes`].
 #[derive(Resource, Default)]
 pub(crate) struct HistoryTracking {
     last_version: usize,
 }
 
-/// Send `label`/`payload` to every menu whose script is ready.
 fn broadcast_to_menus(
     roots: &Query<(Entity, &MenuRoot)>,
     callbacks: &mut MessageWriter<ScriptCallbackMessage>,
@@ -55,11 +45,6 @@ fn broadcast_to_menus(
     }
 }
 
-/// Tell open menus which modifiers and keys are held, so the keyboard overlay can show
-/// the bindings for the currently-pinned modifier set.
-///
-/// `just_pressed_list` is sent only to the topmost menu so stacked menus do not both
-/// react to the same key press (e.g. `Escape`).
 pub(crate) fn dispatch_modifier_changes(
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
@@ -85,8 +70,6 @@ pub(crate) fn dispatch_modifier_changes(
     if mouse_wheel.read().count() > 0 {
         pressed.push("MouseWheel".to_string());
     }
-    // We intentionally drain mouse motion so the message reader does not accumulate,
-    // but do not add MouseMotion to pressed keys (Aim/Look should never glow).
     let _ = mouse_motion.read().count();
 
     pressed.sort();
@@ -134,9 +117,6 @@ pub(crate) fn dispatch_modifier_changes(
     }
 }
 
-/// Tell ready menus that the console history gained an entry, so the palette can
-/// re-fetch it — a command's output only exists after its queued run, which is
-/// after the Enter keypress that asked for it.
 pub(crate) fn dispatch_history_changes(
     history: Res<CommandHistory>,
     manager: Res<MenuManager>,
@@ -156,7 +136,6 @@ pub(crate) fn dispatch_history_changes(
     );
 }
 
-/// Relay the outcome of the last `input.remap` to open menus.
 pub(crate) fn dispatch_remap_results(
     remap_status: Res<RemapStatus>,
     manager: Res<MenuManager>,

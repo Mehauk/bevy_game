@@ -1,9 +1,3 @@
-//! Locating menu assets and hot-reloading them.
-//!
-//! Menus live in `assets/menus/<id>/` and can be overridden per-file by placing a file at
-//! `mods/menus/<id>/`, which is what makes a mod able to restyle or replace a single menu
-//! without touching the game's own assets.
-
 use std::path::{Path, PathBuf};
 
 use bevy::{asset::AssetEvent, prelude::*};
@@ -12,10 +6,6 @@ use bevy_mod_scripting::asset::ScriptAsset;
 use crate::menus::lifecycle::{MenuRoot, close_top_menu, open_menu_in_world};
 use crate::menus::state::MenuManager;
 
-/// Resolve `relative_path` against the mod override first, then the game assets.
-///
-/// Returns the on-disk path plus the `AssetServer`-loadable path (`mods://…` when the
-/// override wins, plain otherwise).
 pub(crate) fn resolve_menu_file(relative_path: &str) -> Option<(PathBuf, String)> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok().map(PathBuf::from);
     for (folder, prefix) in [("mods", "mods://"), ("assets", "")] {
@@ -32,8 +22,6 @@ pub(crate) fn resolve_menu_file(relative_path: &str) -> Option<(PathBuf, String)
     None
 }
 
-/// HTML is read from disk (not via the `AssetServer`), so it has no change events; this
-/// timer polls its mtime instead. Scripts *do* use the `AssetServer` and arrive as events.
 #[derive(Resource)]
 pub(crate) struct HtmlHotReloadState {
     timer: Timer,
@@ -47,7 +35,6 @@ impl Default for HtmlHotReloadState {
     }
 }
 
-/// Rebuild every open menu when its HTML or script changes on disk.
 pub(crate) fn reload_menus_on_asset_change(
     time: Res<Time<Real>>,
     mut hot: ResMut<HtmlHotReloadState>,

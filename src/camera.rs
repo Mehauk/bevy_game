@@ -31,8 +31,6 @@ impl Plugin for CameraPlugin {
                 sync_camera_transform.in_set(CameraSystems::UpdateTransform),
             );
 
-        // Camera bindings hang off the shared gameplay context, so they are gated by menu
-        // focus exactly like every other gameplay action.
         app.register_gameplay_action::<Look, _, _, _>(
             "Camera Look",
             ActionSettings::default(),
@@ -128,25 +126,17 @@ impl Default for CameraRig {
     }
 }
 
-/// Pitch is clamped short of vertical so the camera never flips.
 const PITCH_LIMIT: f32 = 1.35;
-/// Scroll deltas below this are treated as noise.
 const ZOOM_EPSILON: f32 = 0.01;
-/// Keep the camera this far clear of geometry it would otherwise clip through.
 const CAMERA_CLIP_MARGIN: f32 = 0.05;
-/// …but never closer to the target than this.
 const MIN_CAMERA_CLIP: f32 = 0.4;
 
 impl CameraRig {
-    /// Apply a mouse-look delta, clamping pitch so the camera cannot flip over.
     pub fn apply_look(&mut self, delta: Vec2) {
         self.yaw -= delta.x * self.sensitivity;
         self.pitch = (self.pitch - delta.y * self.sensitivity).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
-    /// Step the zoom one scroll tick. Zooming in past [`MIN_THIRD_PERSON_DIST`] collapses
-    /// into first person; zooming out of first person pops back to third person just
-    /// outside that distance, so the two modes hand off without a dead zone.
     pub fn apply_zoom(&mut self, scroll_y: f32) {
         if scroll_y.abs() < ZOOM_EPSILON {
             return;
@@ -182,8 +172,6 @@ impl Default for CameraTarget {
     }
 }
 
-/// Camera hotkeys fire once per press but stay visible to other input contexts, so the
-/// character keeps receiving its own bindings while the camera is being driven.
 fn camera_hotkey() -> ActionSettings {
     ActionSettings {
         require_reset: true,
@@ -295,8 +283,6 @@ fn sync_camera_transform(
     }
 }
 
-/// Pull the camera back to just short of the geometry it hit, never closer to the target
-/// than [`MIN_CAMERA_CLIP`].
 fn occluded_distance(hit_distance: f32) -> f32 {
     (hit_distance - CAMERA_CLIP_MARGIN).max(MIN_CAMERA_CLIP)
 }
@@ -339,7 +325,6 @@ mod tests {
 
     #[test]
     fn look_leaves_yaw_unbounded() {
-        // Yaw must wrap freely; clamping it would make the camera stick after a full turn.
         let mut rig = CameraRig::default();
         rig.apply_look(Vec2::new(1e6, 0.0));
         assert!(rig.yaw.abs() > PITCH_LIMIT);
@@ -365,7 +350,6 @@ mod tests {
         assert_eq!(rig.distance, 6.0 - 2.0 * ZOOM_STEP);
         assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
 
-        // This step would undershoot the minimum, so it clamps and collapses instead.
         rig.apply_zoom(1.0);
         assert_eq!(rig.distance, MIN_THIRD_PERSON_DIST);
         assert_eq!(rig.view_mode, ViewMode::FirstPerson);
@@ -401,7 +385,6 @@ mod tests {
 
     #[test]
     fn zoom_round_trips_through_first_person() {
-        // Zooming all the way in and one step out must land in third person, not stall.
         let mut rig = rig_at(6.0, ViewMode::ThirdPerson);
         for _ in 0..10 {
             rig.apply_zoom(1.0);

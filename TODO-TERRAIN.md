@@ -1,6 +1,6 @@
 # Terrain Generation TODO
 
-Implementation and research roadmap for `docs/terrain.md`, grounded in the current `src/terrain/` (`TerrainMap`, `TerrainPlugin`), `Cargo.toml` (`bevy 0.20.1`, `avian3d 0.8`, `meshless_voronoi 0.7.2`, `noise 0.9.0`), and `assets/textures/` setup.
+Implementation and research roadmap for `docs/terrain.md`, grounded in the current `src/terrain/` (`TerrainMap`, `TerrainPlugin`) and `Cargo.toml` (`bevy 0.20.1`, `avian3d 0.8`, `meshless_voronoi 0.7.2`, `noise 0.9.0`).
 
 ---
 
@@ -8,7 +8,8 @@ Implementation and research roadmap for `docs/terrain.md`, grounded in the curre
 - [ ] Research `meshless_voronoi` 0.7.2 periodic mode (`periodic: true`), `VoronoiCell` neighbor/face geometry APIs, and edge cases on small or heavily jittered grids.
 - [ ] Research seamless 2D toroidal noise sampling with the `noise` crate (4D torus projection `(cos u, sin u, cos v, sin v)` vs domain-tiled noise) for artifact-free `FiniteTorus` worlds.
 - [ ] Research Voronoi boundary interpolation math that supports per-edge `cell_blend_width` without discontinuities at 3-cell triple junctions (e.g., perpendicular bisector distance vs natural-neighbor / smooth-minimum weights).
-- [ ] Research Bevy 0.20 custom material / `MaterialExtension<StandardMaterial>` designs for multi-biome terrain splatting using `Texture2DArray` or texture atlases (including albedo, normal, roughness, AO, and `.exr` textures already used in `assets/textures/mud/`).
+- [ ] Research CC0 PBR texture sources (e.g., ambientCG, Poly Haven) and Bevy 0.20-native formats (PNG/JPG/KTX2 with mipmaps, without `.exr`) for tileable terrain albedo, normal, roughness, and AO maps.
+- [ ] Research Bevy 0.20 custom material / `MaterialExtension<StandardMaterial>` designs for multi-biome terrain splatting using `Texture2DArray` or texture atlases (sampling PBR albedo, normal, roughness, and AO layers).
 - [ ] Research triplanar vs UV-projected cliff texturing in WGSL to prevent texture stretching on steep/sheer slopes and section-boundary cliffs.
 - [ ] Research water rendering and physics integration in Bevy 0.20 + `avian3d` 0.8 (water surface shader with depth absorption/foam/wave normals, underwater fog transition, and buoyancy/swimming sensor volumes).
 - [ ] Research terrain chunking, LOD, and incremental `Collider::trimesh_from_mesh` / heightfield collider rebuilds so grids larger than `200x200` subdivisions rebuild without frame hitches.
@@ -65,14 +66,17 @@ Implementation and research roadmap for `docs/terrain.md`, grounded in the curre
 - [ ] Combine macro `BaseHeightBand` elevation, cell base height, and `BaseGradient` tilt cleanly inside `cell_base_height_at`.
 - [ ] Write unit tests for Voronoi adjacency extraction, neighbor parameter smoothness bounds, per-boundary `cell_blend_width` symmetry, and `BaseGradient` plane math.
 
-## 6. Base Features — Region Materials, Cliff Texturing & Atmosphere
-- [ ] Audit existing PBR assets in `assets/textures/{ground,mud,rock,rocks}` (including `.exr` normal/roughness handling) and define texture slots for all substrate/region materials.
-- [ ] Define `RegionMaterialProfile` mapping each of the 36 `Region`s (plus substrate modifiers) to a base color/texture and cliff color/texture, roughness, and reflectance.
-- [ ] Build a custom Bevy `TerrainMaterial` / `MaterialExtension` supporting multi-layer PBR texture blending, triplanar cliff projection, and vertex/lookup-texture cell data.
+## 6. Base Features — Sourcing PBR Textures, Region Materials, Cliff Texturing & Atmosphere
+- [ ] Define the PBR texture slot catalog needed to cover all 36 `Region`s, `Substrate` types, cliff faces, and seasonal flood-zone surfaces (albedo, normal, roughness, AO).
+- [ ] Find and download CC0 / permissively licensed tileable PBR texture sets into `assets/textures/` using Bevy-native formats (PNG/KTX2; no `.exr`), and record asset sources/licenses.
+- [ ] Normalize and pack downloaded PBR textures to uniform resolution, color space (sRGB albedo vs linear normal/roughness/AO), mipmaps, and `ImageSampler` repeat addressing for `Texture2DArray` / atlas sampling.
+- [ ] Define `RegionMaterialProfile` mapping each of the 36 `Region`s (plus substrate modifiers) to base PBR texture layer indices and cliff PBR texture layer indices (with optional tint, roughness, and reflectance multipliers).
+- [ ] Build a custom Bevy `TerrainMaterial` / `MaterialExtension` that samples PBR texture layers (rather than relying on flat vertex colors), supporting multi-layer blending, triplanar cliff projection, and vertex/lookup-texture cell data.
 - [ ] Pack per-vertex or data-texture cell weights, dominant cell ID, higher-neighbor cliff ID, and steepness factors for shader consumption.
-- [ ] Implement low-angle base color/texture blending across section boundaries using each boundary's `cell_blend_width`.
-- [ ] Compute terrain steepness from surface normals/gradients and blend from base material to cliff material at steep angles.
-- [ ] Implement cross-boundary cliff preference so steep transitions across cell boundaries select the higher section's cliff color/texture.
+- [ ] Implement low-angle base PBR texture blending across section boundaries using each boundary's `cell_blend_width`.
+- [ ] Compute terrain steepness from surface normals/gradients and blend from base material to cliff texture at steep angles.
+- [ ] Implement cross-boundary cliff preference so steep transitions across cell boundaries select the higher section's cliff texture.
+- [ ] Add runtime asset validation and fallback guards ensuring all required PBR texture layers load into the `Texture2DArray` (failing/warning loudly instead of silently rendering flat vertex colors).
 - [ ] Define `RegionAtmosphereProfile` (fog color, visibility range, directional light tint/exponent, sky tint) per region/climate.
 - [ ] Implement `sync_terrain_atmosphere` to blend `TerrainFog`, `DirectionalLight`, and `SkyBox` settings smoothly between neighboring sections using the camera/player's Voronoi blend weights.
 - [ ] Upgrade `SkyBox` from a flat unlit color to a gradient/atmospheric sky material synchronized with the blended section atmosphere.
@@ -107,7 +111,7 @@ Implementation and research roadmap for `docs/terrain.md`, grounded in the curre
 - [ ] Define per-season `sea_level` values and smooth interpolation across the seasonal cycle.
 - [ ] Identify all terrain vertices inside the seasonal flood zone (`min_seasonal_sea_level <= height <= max_seasonal_sea_level`).
 - [ ] Implement coastal erosion on seasonal flood-zone vertices: interpolate heights into a smooth beach/tidal-flat gradient toward the water and soften steep cliffs in the flood band.
-- [ ] Override biome material/texture within the seasonal flood zone (e.g., wet sand, mudflat, salt pan, or frozen shore) with smooth blending at the upper boundary.
+- [ ] Override biome material/texture layers within the seasonal flood zone (e.g., wet sand, mudflat, salt pan, or frozen shore) with smooth blending at the upper boundary.
 - [ ] Implement dynamic runtime seasonal visual updates (snowline/ice coverage, foliage/ground tint shifts, sea-level mesh height, and atmospheric fog/light deltas).
 - [ ] Handle seasonal phase transitions affecting physics/gameplay (e.g., freezing water surfaces into walkable sea ice / frozen lakes in winter; refreshing `avian3d` colliders when solid/liquid transitions occur).
 - [ ] Write unit tests verifying seasonal parameter delta clamping, seasonal flood-zone vertex classification, coastal gradient monotonicity, and material overrides.
@@ -116,6 +120,8 @@ Implementation and research roadmap for `docs/terrain.md`, grounded in the curre
 - [ ] Benchmark full terrain generation, erosion, and mesh/collider rebuild stages using `ProfilerPlugin` and establish frame/load time budgets.
 - [ ] Add golden-seed deterministic regression tests for both `Finite` and `FiniteTorus` topologies across all pipeline stages.
 - [ ] Verify character spawning (`SpawnGroundHeight`), max-slope movement (`Character::max_slope_angle_rad`), and camera collision (`CameraRig`) work cleanly across cliffs, water planes, and torus seams.
+- [ ] Verify all terrain PBR texture assets exist on disk, load with expected dimensions/channels/formats, and populate every `RegionMaterialProfile` slot without falling back to flat colors.
+- [ ] Add a `terrain>debug_material <textured|flat_color|uv_grid>` console command to visually confirm textured PBR rendering vs flat color shading on demand.
 - [ ] Verify all existing and newly added terrain unit/integration tests pass with `cargo test` and `cargo check --all-targets`.
 - [ ] Verify all terrain code follows `CLAUDE.md` rules (no code comments, decoupled from other feature plugins except through `utils` and `integration`, and all terrain commands remain under `terrain>*`).
 - [ ] Add a CPU-only `cargo test` visual-export suite that renders top-down PNG previews for:
@@ -125,5 +131,5 @@ Implementation and research roadmap for `docs/terrain.md`, grounded in the curre
   - [ ] `PrecipitationMap`, flow accumulation, river networks, waterfalls, and lake basins.
   - [ ] Seasonal comparison strip (`Spring`, `Summer`, `Fall`, `Winter`) highlighting sea-level shifts and the seasonal flood zone.
   - [ ] A `2x2` tiled `FiniteTorus` render to visually verify seamless boundary wrapping across all layers.
-- [ ] Add an offscreen 3D headless render test (using `RenderTarget::Image` + `Screenshot::image` + `save_to_disk`, marked `#[ignore]` for GPU-optional CI) that captures multi-angle 3D snapshots (overview, boundary cliff close-up, river/coastline, and seasonal winter/fog view) for AI visual inspection.
+- [ ] Add an offscreen 3D headless render test (using `RenderTarget::Image` + `Screenshot::image` + `save_to_disk`, marked `#[ignore]` for GPU-optional CI) that captures multi-angle 3D snapshots (overview, boundary cliff close-up, river/coastline, and seasonal winter/fog view) and asserts non-flat local pixel variance / texture detail compared to a flat-color pass so AI/CI inspection confirms textures are rendering over colors.
 - [ ] Add a `terrain>export_preview [layer]` console command (optional helper) so the same diagnostic renderer can dump maps on demand from a live session.

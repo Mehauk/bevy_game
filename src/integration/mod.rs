@@ -8,6 +8,10 @@ use crate::state::PlayState;
 mod bridges;
 mod menu_wiring;
 mod state_pause;
+mod world_wrap;
+
+#[cfg(test)]
+mod world_checks;
 
 pub struct IntegrationPlugin;
 
@@ -36,5 +40,6 @@ impl Plugin for IntegrationPlugin {
         menu_wiring::register(app);
         bridges::register(app);
         state_pause::register(app);
+        world_wrap::register(app);
     }
 }

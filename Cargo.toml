@@ -12,6 +12,7 @@ bevy_enhanced_input = "0.27"
 bevy_flair = "0.9"
 bevy_mod_scripting = { version = "0.24", features = ["lua54"] }
 glam27 = { package = "glam", version = "0.27" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 meshless_voronoi = "0.7.2"
 noise = "0.9.0"
 roxmltree = "0.21"

@@ -8,10 +8,12 @@ use bevy_enhanced_input::prelude::*;
 use crate::camera::{
     CameraRig, CameraSystems, CameraTarget, MainCamera, ViewMode, WantedCursorLock,
 };
-use crate::character::{CameraFacing, Character};
+use crate::character::{CameraFacing, Character, CharacterSystems};
 use crate::input::{GameplayInput, set_context_active};
 use crate::menus::MenuManager;
-use crate::terrain::SkyBox;
+use crate::state::PlayState;
+use crate::terrain::{SkyBox, TerrainMap};
+use crate::utils::WaterImmersion;
 
 pub(super) fn register(app: &mut App) {
     app.add_systems(
@@ -21,6 +23,12 @@ pub(super) fn register(app: &mut App) {
             sync_camera_facing,
         ),
     )
+    .add_systems(
+        FixedUpdate,
+        sync_water_immersion
+            .before(CharacterSystems::Playing)
+            .run_if(in_state(PlayState::Running)),
+    )
     .add_systems(Update, attach_camera_target)
     .add_systems(PostUpdate, sync_cursor_with_menus)
     .add_systems(
@@ -29,6 +37,29 @@ pub(super) fn register(app: &mut App) {
             .after(CameraSystems::UpdateTransform)
             .before(TransformSystems::Propagate),
     );
+}
+
+pub fn water_immersion_at(map: &TerrainMap, position: Vec3) -> WaterImmersion {
+    let Some(sample) = map.water_surface_at(position.x, position.z) else {
+        return WaterImmersion::default();
+    };
+    let depth = sample.surface_y - position.y;
+    WaterImmersion {
+        submerged: depth > 0.0,
+        depth: depth.max(0.0),
+        surface_y: sample.surface_y,
+        flow: sample.flow,
+        frozen: sample.frozen,
+    }
+}
+
+fn sync_water_immersion(
+    map: Res<TerrainMap>,
+    mut characters: Query<(&Transform, &mut WaterImmersion), With<Character>>,
+) {
+    for (transform, mut immersion) in &mut characters {
+        *immersion = water_immersion_at(&map, transform.translation);
+    }
 }
 
 fn sync_camera_facing(rig: Single<&CameraRig>, mut facing: Single<&mut CameraFacing>) {
@@ -115,5 +146,67 @@ fn sync_skybox_to_camera(
 ) {
     if let Some(cam_transform) = camera.iter().next() {
         skybox.translation = cam_transform.translation;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::time::TimeUpdateStrategy;
+
+    #[test]
+    fn the_bridge_marks_immersion_only_in_water() {
+        let map = TerrainMap::compact();
+        let field = map.heights();
+        let lattice = (0..field.len())
+            .map(|i| field.world_of(field.coords(i).0, field.coords(i).1))
+            .collect::<Vec<_>>();
+        let water_point = lattice
+            .iter()
+            .find(|p| map.water_surface_at(p.x, p.y).is_some())
+            .expect("the compact world has water");
+        let dry_point = lattice
+            .iter()
+            .find(|p| map.water_surface_at(p.x, p.y).is_none())
+            .expect("the compact world has dry land");
+        let surface_y = map
+            .water_surface_at(water_point.x, water_point.y)
+            .expect("water sample")
+            .surface_y;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(std::time::Duration::from_secs_f32(
+            1.0 / 60.0,
+        )));
+        app.insert_resource(map);
+        app.add_systems(FixedUpdate, sync_water_immersion);
+
+        let swimmer = app
+            .world_mut()
+            .spawn((
+                Character::default(),
+                Transform::from_xyz(water_point.x, surface_y - 1.0, water_point.y),
+                WaterImmersion::default(),
+            ))
+            .id();
+        let walker = app
+            .world_mut()
+            .spawn((
+                Character::default(),
+                Transform::from_xyz(dry_point.x, 0.0, dry_point.y),
+                WaterImmersion::default(),
+            ))
+            .id();
+
+        app.update();
+        app.update();
+
+        let swim = app.world().get::<WaterImmersion>(swimmer).expect("swimmer");
+        assert!(swim.submerged, "a character under the surface must be submerged");
+        assert!(swim.depth > 0.9 && swim.surface_y.is_finite());
+        let walk = app.world().get::<WaterImmersion>(walker).expect("walker");
+        assert!(!walk.submerged, "dry land must report no immersion");
+        assert_eq!(walk.depth, 0.0);
     }
 }

@@ -4039,6 +4039,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -7938,6 +7940,7 @@ dependencies = [
  "bevy_flair",
  "bevy_mod_scripting",
  "glam 0.27.0",
+ "image",
  "meshless_voronoi",
  "noise",
  "roxmltree",

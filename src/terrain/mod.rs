@@ -1,28 +1,120 @@
-use avian3d::prelude::*;
-use bevy::{
-    light::{CascadeShadowConfigBuilder, NotShadowCaster},
-    mesh::VertexAttributeValues,
-    prelude::*,
-};
+use bevy::pbr::MaterialPlugin;
+use bevy::prelude::*;
 
-use crate::utils::registry::commands::{CommandAppExt, CommandArgs, command};
+use crate::utils::registry::commands::{CommandAppExt, command};
 use crate::utils::SpawnGroundHeight;
 
+pub mod atmosphere;
+mod bench;
+pub mod chunk;
+mod commands;
+mod colour;
+mod field;
+pub mod gpu;
+pub mod hydrology;
+mod job;
+mod macro_landform;
+pub mod material;
 mod map;
+pub mod noise;
+pub mod params;
+mod preview;
+pub mod region;
+pub mod season;
+pub mod seed;
+mod setup;
+pub mod sky;
+pub mod splat;
+pub mod stream;
+mod surfaces;
+pub mod topology;
+pub mod voronoi;
+pub mod water;
 
-pub use map::TerrainMap;
+use atmosphere::{UnderwaterState, sync_underwater_view};
+use chunk::{ChunkJobQueue, drain_chunk_builds, rebuild_terrain};
+use commands::{
+    benchmark_terrain, cell_info, debug_material, debug_view, export_preview, inspect_hydrology,
+    inspect_point, regenerate_terrain, set_cell_height, set_season, set_world_seed,
+    set_world_shape, set_world_topology, toggle_season_cycle,
+};
+use gpu::{SkyRenderMaterial, TerrainRenderMaterial, TileArrays, WaterRenderMaterial};
+use job::{TerrainJob, run_terrain_job};
+use material::DebugMaterialMode;
+pub use map::{TerrainConfig, TerrainMap};
+use season::SeasonClock;
+use setup::{build_terrain_tile_arrays, load_surface_tiles, validate_terrain_textures};
+pub use sky::SkyBox;
+use sky::{
+    TerrainAtmosphere, TerrainFog, setup_sky, sync_season_uniforms, sync_terrain_atmosphere,
+    sync_terrain_fog, toggle_atmospheric_fog, toggle_fog_light_influence,
+};
+use splat::SurfaceTiles;
+use stream::{ChunkFocus, StreamQueue, drain_stream_builds, stream_infinite_chunks};
+use surfaces::{
+    WaterJobQueue, animate_water_materials, drain_water_builds, rebuild_water_surfaces,
+    sync_sea_tide,
+};
 
 pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainMap>()
-            .init_resource::<TerrainFog>();
+            .init_resource::<TerrainFog>()
+            .init_resource::<SeasonClock>()
+            .init_resource::<TerrainAtmosphere>()
+            .init_resource::<TerrainJob>()
+            .init_resource::<TerrainDebugView>()
+            .init_resource::<SurfaceTiles>()
+            .init_resource::<TileArrays>()
+            .init_resource::<UnderwaterState>()
+            .init_resource::<ChunkJobQueue>()
+            .init_resource::<WaterJobQueue>()
+            .init_resource::<ChunkFocus>()
+            .init_resource::<StreamQueue>()
+            .insert_resource(DebugMaterialMode::Textured)
+            .insert_resource(GlobalAmbientLight::default())
+            .insert_resource(ClearColor(Color::srgb(0.4, 0.55, 0.75)));
+
+        app.add_plugins((
+            MaterialPlugin::<TerrainRenderMaterial>::default(),
+            MaterialPlugin::<WaterRenderMaterial>::default(),
+            MaterialPlugin::<SkyRenderMaterial>::default(),
+        ));
 
         let origin_height = app.world().resource::<TerrainMap>().height_at(0.0, 0.0);
         app.insert_resource(SpawnGroundHeight(origin_height))
-            .add_systems(Startup, (setup_terrain, setup_atmosphere))
-            .add_systems(Update, (sync_terrain_fog, rebuild_terrain_on_change));
+            .add_systems(
+                Startup,
+                (
+                    setup_sky,
+                    load_surface_tiles,
+                    build_terrain_tile_arrays,
+                ).chain(),
+            )
+            .add_systems(
+                Update,
+                (
+                    tick_season_clock,
+                    apply_season_to_map,
+                    run_terrain_job,
+                    rebuild_terrain,
+                    drain_chunk_builds,
+                    stream_infinite_chunks,
+                    drain_stream_builds,
+                    rebuild_water_surfaces,
+                    drain_water_builds,
+                    animate_water_materials,
+                    sync_sea_tide,
+                    sync_terrain_atmosphere,
+                    sync_season_uniforms,
+                    sync_underwater_view,
+                    sync_terrain_fog,
+                    validate_terrain_textures,
+                )
+                    .chain(),
+            );
 
         command!(app, "Toggle atmospheric fog", toggle_atmospheric_fog);
         command!(
@@ -40,326 +132,162 @@ impl Plugin for TerrainPlugin {
             "Inspect Voronoi terrain cells (optional: <x> <z>)",
             cell_info
         );
+        command!(
+            app,
+            "Set the macro world shape (continent|archipelago|island_chain|inland_sea)",
+            set_world_shape
+        );
+        command!(
+            app,
+            "Set the world topology (finite | torus | infinite)",
+            set_world_topology
+        );
+        command!(app, "Set the world seed and regenerate: <u64>", set_world_seed);
+        command!(
+            app,
+            "Regenerate the terrain from the current settings",
+            regenerate_terrain
+        );
+        command!(app, "Inspect terrain at a point: <x> <z>", inspect_point);
+        command!(
+            app,
+            "Inspect hydrology at a point: <x> <z>",
+            inspect_hydrology
+        );
+        command!(
+            app,
+            "Set the season (spring | summer | fall | winter)",
+            set_season
+        );
+        command!(app, "Toggle the seasonal cycle clock", toggle_season_cycle);
+        command!(
+            app,
+            "Set the debug visualisation (none|cells|region|slope|precipitation|flow|flood)",
+            debug_view
+        );
+        command!(
+            app,
+            "Set the terrain material mode (textured|flat_color|uv_grid)",
+            debug_material
+        );
+        command!(app, "Write terrain preview maps to disk: [layer]", export_preview);
+        command!(
+            app,
+            "Time every terrain generation stage against its budget",
+            benchmark_terrain
+        );
     }
 }
 
-#[derive(Resource, Clone)]
-pub struct TerrainFog(pub DistanceFog);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugView {
+    None,
+    CellBorders,
+    Region,
+    Slope,
+    Precipitation,
+    Flow,
+    FloodZone,
+}
 
-impl Default for TerrainFog {
+impl DebugView {
+    pub fn parse(input: &str) -> Option<Self> {
+        match input {
+            "none" => Some(DebugView::None),
+            "cells" | "voronoi" => Some(DebugView::CellBorders),
+            "region" | "biome" => Some(DebugView::Region),
+            "slope" => Some(DebugView::Slope),
+            "precipitation" | "rain" => Some(DebugView::Precipitation),
+            "flow" | "rivers" => Some(DebugView::Flow),
+            "flood" => Some(DebugView::FloodZone),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct TerrainDebugView(pub DebugView);
+
+impl Default for TerrainDebugView {
     fn default() -> Self {
-        Self(DistanceFog {
-            color: Color::srgba(0.35, 0.48, 0.66, 1.0),
-            directional_light_color: Color::srgba(1.0, 0.95, 0.85, 0.5),
-            directional_light_exponent: 30.0,
-            falloff: FogFalloff::from_visibility_colors(
-                110.0,
-                Color::srgb(0.35, 0.5, 0.66),
-                Color::srgb(0.8, 0.844, 1.0),
-            ),
-        })
+        Self(DebugView::None)
     }
 }
 
-#[derive(Component)]
-struct TerrainMesh;
-
-#[derive(Component)]
-pub(crate) struct SkyBox;
-
-const VALLEY_BAND: f32 = 0.45;
-const SLOPE_BAND: f32 = 0.72;
-const HILLSIDE_BAND: f32 = SLOPE_BAND - VALLEY_BAND;
-const RIDGE_BAND: f32 = 1.0 - SLOPE_BAND;
-
-const VALLEY_COLOUR: Color = Color::srgb(0.20, 0.34, 0.16);
-const HILLSIDE_COLOUR: Color = Color::srgb(0.28, 0.42, 0.20);
-const SLOPE_ROCK_COLOUR: Color = Color::srgb(0.38, 0.36, 0.31);
-const RIDGE_COLOUR: Color = Color::srgb(0.48, 0.46, 0.43);
-
-fn normalized_height(y: f32, amplitude: f32) -> f32 {
-    ((y / amplitude) * 0.5 + 0.5).clamp(0.0, 1.0)
+fn tick_season_clock(mut clock: ResMut<SeasonClock>, time: Res<Time>) {
+    clock.tick(time.delta_secs());
 }
 
-fn height_colour(h: f32) -> LinearRgba {
-    let (from, to, t) = if h < VALLEY_BAND {
-        (VALLEY_COLOUR, HILLSIDE_COLOUR, h / VALLEY_BAND)
-    } else if h < SLOPE_BAND {
-        (
-            HILLSIDE_COLOUR,
-            SLOPE_ROCK_COLOUR,
-            (h - VALLEY_BAND) / HILLSIDE_BAND,
-        )
-    } else {
-        (
-            SLOPE_ROCK_COLOUR,
-            RIDGE_COLOUR,
-            (h - SLOPE_BAND) / RIDGE_BAND,
-        )
-    };
-    let (from, to) = (from.to_linear(), to.to_linear());
-    from.mix(&to, t)
-}
-
-fn build_terrain_mesh(terrain_map: &TerrainMap) -> Mesh {
-    let mut terrain = Mesh::from(
-        Plane3d::default()
-            .mesh()
-            .size(terrain_map.size, terrain_map.size)
-            .subdivisions(terrain_map.subdivisions),
-    );
-
-    let max_extent = terrain_map.max_height_extent();
-    let mut colors = Vec::new();
-    if let Some(VertexAttributeValues::Float32x3(positions)) =
-        terrain.attribute_mut(Mesh::ATTRIBUTE_POSITION)
-    {
-        colors.reserve(positions.len());
-        for pos in positions.iter_mut() {
-            let y = terrain_map.height_at(pos[0], pos[2]);
-            pos[1] = y;
-            let h = normalized_height(y, max_extent);
-            colors.push(height_colour(h).to_f32_array());
-        }
-    }
-
-    terrain.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    terrain.compute_normals();
-    terrain
-}
-
-fn setup_terrain(
-    mut commands: Commands,
-    terrain_map: Res<TerrainMap>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let terrain = build_terrain_mesh(&terrain_map);
-    let collider = Collider::trimesh_from_mesh(&terrain)
-        .expect("Terrain mesh must create a trimesh collider");
-
-    commands.spawn((
-        Name::new("Terrain"),
-        TerrainMesh,
-        RigidBody::Static,
-        collider,
-        Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
-        Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
-        Transform::default(),
-        Mesh3d(meshes.add(terrain)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 0.92,
-            reflectance: 0.15,
-            ..default()
-        })),
-    ));
-}
-
-fn rebuild_terrain_on_change(
-    terrain_map: Res<TerrainMap>,
-    mut last_generation: Local<Option<u64>>,
-    mut spawn_height: ResMut<SpawnGroundHeight>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut query: Query<(&Mesh3d, &mut Collider), With<TerrainMesh>>,
-) {
-    if *last_generation == Some(terrain_map.generation()) {
-        return;
-    }
-    let first_run = last_generation.is_none();
-    *last_generation = Some(terrain_map.generation());
-    spawn_height.0 = terrain_map.height_at(0.0, 0.0);
-    if first_run {
-        return;
-    }
-
-    let mesh = build_terrain_mesh(&terrain_map);
-    let collider =
-        Collider::trimesh_from_mesh(&mesh).expect("Terrain mesh must create a trimesh collider");
-
-    for (mesh_handle, mut col) in &mut query {
-        if let Some(mut existing) = meshes.get_mut(&mesh_handle.0) {
-            *existing = mesh.clone();
-        }
-        *col = collider.clone();
-    }
-}
-
-fn setup_atmosphere(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let cascade_shadow_config = CascadeShadowConfigBuilder {
-        first_cascade_far_bound: 25.0,
-        maximum_distance: 200.0,
-        ..default()
-    }
-    .build();
-
-    commands.spawn((
-        DirectionalLight {
-            color: Color::srgb(0.98, 0.95, 0.82),
-            shadow_maps_enabled: true,
-            ..default()
-        },
-        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(-0.15, -0.05, 0.25), Vec3::Y),
-        cascade_shadow_config,
-    ));
-
-    commands.spawn((
-        SkyBox,
-        Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 1.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Srgba::hex("888888").unwrap().into(),
-            unlit: true,
-            cull_mode: None,
-            ..default()
-        })),
-        Transform::from_scale(Vec3::splat(600.0)),
-        NotShadowCaster,
-    ));
-}
-
-fn sync_terrain_fog(
-    terrain_fog: Res<TerrainFog>,
-    mut commands: Commands,
-    mut cameras: Query<(Entity, Option<&mut DistanceFog>), With<Camera3d>>,
-) {
-    for (entity, existing_fog) in &mut cameras {
-        if let Some(mut fog) = existing_fog {
-            if terrain_fog.is_changed() {
-                *fog = terrain_fog.0.clone();
-            }
-        } else {
-            commands.entity(entity).insert(terrain_fog.0.clone());
-        }
-    }
-}
-
-const DEFAULT_FOG_ALPHA: f32 = 1.0;
-const DEFAULT_FOG_LIGHT_ALPHA: f32 = 0.5;
-const FOG_ON_THRESHOLD: f32 = 0.05;
-
-fn toggle_fog_alpha(color: &mut Color, on_alpha: f32) {
-    color.set_alpha(if color.alpha() > FOG_ON_THRESHOLD {
-        0.0
-    } else {
-        on_alpha
-    });
-}
-
-fn toggle_atmospheric_fog(mut terrain_fog: ResMut<TerrainFog>) {
-    toggle_fog_alpha(&mut terrain_fog.0.color, DEFAULT_FOG_ALPHA);
-}
-
-fn toggle_fog_light_influence(mut terrain_fog: ResMut<TerrainFog>) {
-    toggle_fog_alpha(&mut terrain_fog.0.directional_light_color, DEFAULT_FOG_LIGHT_ALPHA);
-}
-
-fn set_cell_height(args: Res<CommandArgs>, mut terrain_map: ResMut<TerrainMap>) {
-    let Some(cell_id) = args.args.first().and_then(|s| s.parse::<usize>().ok()) else {
-        warn!("Usage: set_cell_height <cell_id> <height>");
-        return;
-    };
-    let Some(height) = args.get_f32(1) else {
-        warn!("Usage: set_cell_height <cell_id> <height>");
-        return;
-    };
-
-    if terrain_map.set_cell_base_height(cell_id, height) {
-        info!("Set Voronoi cell {} base_height to {:.2}", cell_id, height);
-    } else {
-        warn!(
-            "Voronoi cell {} not found (valid ids: 0..{})",
-            cell_id,
-            terrain_map.cells().len()
-        );
-    }
-}
-
-fn cell_info(args: Res<CommandArgs>, terrain_map: Res<TerrainMap>) {
-    let x = args.get_f32(0).unwrap_or(0.0);
-    let z = args.get_f32(1).unwrap_or(0.0);
-    let cells = terrain_map.cells();
-    let min_h = cells
-        .iter()
-        .map(|c| c.base_height)
-        .fold(f32::INFINITY, f32::min);
-    let max_h = cells
-        .iter()
-        .map(|c| c.base_height)
-        .fold(f32::NEG_INFINITY, f32::max);
-
-    info!(
-        "Voronoi cells: {} | base_height range: [{:.2}, {:.2}]",
-        cells.len(),
-        min_h,
-        max_h
-    );
-    if let Some(cell) = terrain_map.cell_at(x, z) {
-        info!(
-            "Cell at ({:.1}, {:.1}) -> id={}, center=({:.1}, {:.1}), base_height={:.2}",
-            x, z, cell.id, cell.center.x, cell.center.y, cell.base_height
-        );
+fn apply_season_to_map(mut map: ResMut<TerrainMap>, clock: Res<SeasonClock>) {
+    if clock.is_changed() && map.sync_season_state(&clock) {
+        info!("Season advanced to {}", clock.season.label());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use season::Season;
 
     #[test]
-    fn colour_bands_tile_the_unit_range_exactly() {
-        assert!(VALLEY_BAND < SLOPE_BAND, "band edges must be ordered");
-        let total = VALLEY_BAND + HILLSIDE_BAND + RIDGE_BAND;
-        assert!((total - 1.0).abs() < 1e-6, "bands must tile 0..1 exactly, got {total}");
-    }
-
-    #[test]
-    fn normalized_height_spans_and_clamps_to_zero_one() {
-        assert!((normalized_height(0.0, 22.0) - 0.5).abs() < 1e-6, "mid height is mid range");
-        assert_eq!(normalized_height(22.0, 22.0), 1.0);
-        assert_eq!(normalized_height(-22.0, 22.0), 0.0);
-        assert_eq!(normalized_height(1000.0, 22.0), 1.0, "must clamp above");
-        assert_eq!(normalized_height(-1000.0, 22.0), 0.0, "must clamp below");
-    }
-
-    #[test]
-    fn height_colour_is_continuous_across_band_boundaries() {
-        for edge in [VALLEY_BAND, SLOPE_BAND] {
-            let below = height_colour(edge - 1e-4).to_f32_array();
-            let above = height_colour(edge + 1e-4).to_f32_array();
-            let delta: f32 = (0..3).map(|i| (below[i] - above[i]).abs()).sum();
-            assert!(delta < 0.01, "colour jumps at band edge {edge}: delta {delta}");
+    fn debug_views_parse_and_cover_the_checklist() {
+        for label in [
+            "none",
+            "cells",
+            "region",
+            "slope",
+            "precipitation",
+            "flow",
+            "flood",
+        ] {
+            assert!(DebugView::parse(label).is_some(), "{label} must parse");
         }
+        assert_eq!(DebugView::parse("bogus"), None);
     }
 
     #[test]
-    fn height_colour_endpoints_are_the_outer_band_colours() {
-        assert_eq!(
-            height_colour(0.0).to_f32_array(),
-            VALLEY_COLOUR.to_linear().to_f32_array()
+    fn material_modes_parse_and_cover_the_checklist() {
+        for label in ["textured", "flat_color", "uv_grid"] {
+            assert!(DebugMaterialMode::parse(label).is_some(), "{label} must parse");
+        }
+        assert_eq!(DebugMaterialMode::parse("bogus"), None);
+    }
+
+    #[test]
+    fn the_spawn_origin_stays_on_solid_ground_through_the_seasons() {
+        let mut map = TerrainMap::compact();
+        let origin = map.height_at(0.0, 0.0);
+        assert!(origin.is_finite());
+        assert!(origin >= map.heights().min() - 1e-3);
+        assert!(origin <= map.heights().max() + 1e-3);
+        for season in Season::ALL {
+            map.set_season(season);
+            let height = map.height_at(0.0, 0.0);
+            assert!(
+                (height - origin).abs() < 1e-3,
+                "{} must not move the spawn floor",
+                season.label()
+            );
+        }
+        assert_eq!(SpawnGroundHeight(origin).0, origin);
+    }
+
+    #[test]
+    fn most_of_the_world_is_walkable_at_the_character_slope_limit() {
+        let map = TerrainMap::compact();
+        let limit = 50.0f32.to_radians().tan();
+        let field = map.heights();
+        let walkable = (0..field.len())
+            .filter(|&index| {
+                let (x, z) = field.coords(index);
+                let point = field.world_of(x, z);
+                map.slope_at(point.x, point.y) <= limit
+            })
+            .count();
+        let fraction = walkable as f32 / field.len() as f32;
+        assert!(
+            fraction > 0.6,
+            "only {fraction:.2} of the world is walkable at the slope limit"
         );
-        assert_eq!(
-            height_colour(1.0).to_f32_array(),
-            RIDGE_COLOUR.to_linear().to_f32_array()
-        );
-    }
-
-    #[test]
-    fn fog_toggle_round_trips() {
-        let mut color = Color::srgba(0.1, 0.2, 0.3, DEFAULT_FOG_ALPHA);
-        toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
-        assert_eq!(color.alpha(), 0.0, "on -> off");
-        toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
-        assert_eq!(color.alpha(), DEFAULT_FOG_ALPHA, "off -> on");
-    }
-
-    #[test]
-    fn a_faded_fog_counts_as_off() {
-        let mut color = Color::srgba(0.1, 0.2, 0.3, FOG_ON_THRESHOLD / 2.0);
-        toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
-        assert_eq!(color.alpha(), DEFAULT_FOG_ALPHA, "a near-zero alpha must toggle back on");
     }
 }

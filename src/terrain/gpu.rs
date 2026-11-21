@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::asset::RenderAssetUsages;
-use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
@@ -24,7 +24,8 @@ pub const WATER_SHADER_PATH: &str = "shaders/water_material.wesl";
 pub const SKY_SHADER_PATH: &str = "shaders/sky_material.wesl";
 
 #[cfg(test)]
-pub const TERRAIN_SHADER_BINDINGS: [u32; 13] = [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43];
+pub const TERRAIN_SHADER_BINDINGS: [u32; 15] =
+    [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45];
 #[cfg(test)]
 pub const WATER_SHADER_BINDINGS: [u32; 1] = [31];
 #[cfg(test)]
@@ -141,6 +142,9 @@ pub struct TerrainSurface {
     pub cell_data: Handle<Image>,
     #[texture(43, sample_type = "float", filterable = true)]
     pub cliff_meta: Handle<Image>,
+    #[texture(44, sample_type = "float", filterable = true)]
+    #[sampler(45)]
+    pub region_tint: Handle<Image>,
 }
 
 impl MaterialExtension for TerrainSurface {
@@ -482,14 +486,16 @@ pub fn terrain_render_material(
     control: Option<&ControlHandles>,
     params: TerrainSurfaceUniform,
 ) -> TerrainRenderMaterial {
-    let (weights, indices, cell_data, cliff_meta) = match control {
+    let (weights, indices, cell_data, cliff_meta, region_tint) = match control {
         Some(handles) => (
             handles.weights.clone(),
             handles.indices.clone(),
             handles.cell_data.clone(),
             handles.cliff_meta.clone(),
+            handles.tint.clone(),
         ),
         None => (
+            arrays.fallback_2d.clone(),
             arrays.fallback_2d.clone(),
             arrays.fallback_2d.clone(),
             arrays.fallback_2d.clone(),
@@ -527,6 +533,7 @@ pub fn terrain_render_material(
             splat_indices: indices,
             cell_data,
             cliff_meta,
+            region_tint,
         },
     }
 }
@@ -720,7 +727,13 @@ mod tests {
             }
         }
         let terrain_text = terrain.source.as_str();
-        for token in ["stochastic_offsets", "sample_albedo_st", "textureSampleLevel"] {
+        for token in [
+            "stochastic_offsets",
+            "sample_albedo_st",
+            "textureSampleLevel",
+            "region_tint",
+            "REGION_ROUGHNESS_MIX",
+        ] {
             assert!(
                 terrain_text.contains(token),
                 "the loaded terrain shader lost {token}"
@@ -764,6 +777,27 @@ mod tests {
             text.contains("uv_grid_colour(vertex_output.uv)"),
             "the uv-grid debug view must read the raw mesh uv, never a stochastic one"
         );
+        let region_sample = text
+            .find("textureSampleLevel(region_tint")
+            .expect("the region tint sample vanished from the terrain fragment");
+        for marker in [
+            "terrain.debug_mode == 1u",
+            "terrain.debug_mode == 2u",
+            "terrain.debug_mode == 3u",
+        ] {
+            let at = text.find(marker).expect(marker);
+            assert!(
+                at < region_sample,
+                "the {marker} branch must return before any region tint sampling"
+            );
+        }
+        let tint_apply = text
+            .find("select(vec3<f32>(1.0), region.rgb, tint_ok)")
+            .expect("the region tint modulation vanished from the terrain fragment");
+        assert!(
+            tint_apply > region_sample,
+            "the region tint must modulate the splatted albedo, not the debug branches"
+        );
         let water = shader_text(WATER_SHADER_PATH);
         assert!(
             !water.contains("debug_mode") && !water.contains("stochastic"),
@@ -788,7 +822,7 @@ mod tests {
             );
             assert_eq!(image.texture_descriptor.mip_level_count, TILE_MIP_LEVELS);
             assert_eq!(image.data_order, TextureDataOrder::MipMajor);
-            let expected = padded_array_bytes(splat::TILE_RESOLUTION, SurfaceLayer::ALL.len());
+            let expected = mip_array_bytes(splat::TILE_RESOLUTION, SurfaceLayer::ALL.len());
             assert_eq!(image.data.as_ref().map(|data| data.len()), Some(expected));
             match &image.sampler {
                 ImageSampler::Descriptor(descriptor) => {
@@ -800,13 +834,12 @@ mod tests {
         }
     }
 
-    fn padded_array_bytes(resolution: u32, layers: usize) -> usize {
+    fn mip_array_bytes(resolution: u32, layers: usize) -> usize {
         let mut total = 0usize;
         for mip in 0..resolution.ilog2() + 1 {
             let width = (resolution >> mip).max(1);
             let height = (resolution >> mip).max(1);
-            let padded_row = (width * 4).next_multiple_of(256);
-            total += padded_row as usize * height as usize * layers;
+            total += width as usize * height as usize * 4 * layers;
         }
         total
     }
@@ -1075,8 +1108,31 @@ mod tests {
         };
         let profile = crate::terrain::material::material_profile(Region::TemperateGrassland);
         let built = terrain_render_material(profile, &arrays, None, TerrainSurfaceUniform::default());
-        assert_eq!(built.extension.splat_weights, arrays.fallback);
+        assert_eq!(built.extension.splat_weights, arrays.fallback_2d);
+        assert_eq!(built.extension.region_tint, arrays.fallback_2d);
         assert_eq!(built.extension.albedo_array, arrays.fallback);
         assert_eq!(built.base.base_color, Color::WHITE);
+    }
+
+    #[test]
+    fn control_tint_texture_uploads_linear_and_clamped() {
+        let map = TerrainMap::new(TerrainConfig::compact());
+        let chunk_size = 120.0f32.min(map.size());
+        let controls =
+            splat::bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let mut app = image_app();
+        let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+        let handles = splat::upload_control(&controls, &mut images);
+        let image = images.get(&handles.tint).expect("tint texture uploaded");
+        assert_eq!(image.texture_descriptor.format, TextureFormat::Rgba8Unorm);
+        match &image.sampler {
+            ImageSampler::Descriptor(descriptor) => {
+                assert_eq!(descriptor.address_mode_u, ImageAddressMode::ClampToEdge);
+                assert_eq!(descriptor.address_mode_v, ImageAddressMode::ClampToEdge);
+                assert_eq!(descriptor.mag_filter, ImageFilterMode::Linear);
+            }
+            ImageSampler::Default => panic!("the tint control map needs an explicit sampler"),
+        }
+        assert!(image.texture_descriptor.mip_level_count > 1);
     }
 }

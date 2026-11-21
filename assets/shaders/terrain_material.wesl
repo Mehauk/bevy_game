@@ -40,11 +40,14 @@ struct TerrainSurface {
 @group(constants::MATERIAL_BIND_GROUP) @binding(41) var cell_data: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(42) var cell_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(43) var cliff_meta: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(44) var region_tint: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(45) var region_sampler: sampler;
 
 const TILE_TEXELS: f32 = 256.0;
 const MAX_MIP: f32 = 8.0;
 const SNOW_LAYER: u32 = 8u;
 const STOCH_GRID: f32 = 0.37;
+const REGION_ROUGHNESS_MIX: f32 = 0.5;
 
 fn hash21(p: vec2<f32>) -> f32 {
     let s = dot(p, vec2<f32>(127.1, 311.7));
@@ -197,6 +200,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     let weights = textureSampleLevel(splat_weights, weights_sampler, c_uv, 0.0);
     let idx_raw = textureLoad(splat_indices, c_texel, 0) * 255.0 + 0.5;
     let layers = vec4<u32>(u32(idx_raw.x), u32(idx_raw.y), u32(idx_raw.z), u32(idx_raw.w));
+    let region = textureSampleLevel(region_tint, region_sampler, c_uv, 0.0);
 
     let uv_near = world_pos.xz / terrain.tile_scale;
     let uv_far = world_pos.xz / terrain.far_scale;
@@ -235,6 +239,10 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         albedo = albedo / total;
         orm = orm / total;
         nrm = normalize(nrm / total);
+        let tint_ok = max(max(region.r, region.g), region.b) > 0.004;
+        albedo = albedo * select(vec3<f32>(1.0), region.rgb, tint_ok);
+        let region_rough = select(terrain.roughness, region.a, region.a > 0.0);
+        orm.y = mix(orm.y, region_rough, REGION_ROUGHNESS_MIX);
     }
 
     let macro_tint = value_noise(world_pos.xz / terrain.macro_scale);

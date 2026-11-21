@@ -250,14 +250,14 @@ Your suspicion is completely accurate. Looking closely at `src/terrain/`, `TODO-
 ---
 
 ## 10. World Topologies, Chunk Streaming & Verification
-- [ ] **Make `WorldTopology::FiniteTorus` truly playable end-to-end**
+- [x] **Make `WorldTopology::FiniteTorus` truly playable end-to-end**
   - Either render a `3×3` wrapped grid of chunk instances around the camera (offset by `±size`) and wrap player/camera positions across `[-size/2, +size/2)` seamlessly in `integration`, or maintain a toroidal chunk ring around the viewer so there is never a visible edge or fall-off cliff.
-- [ ] **Implement `WorldTopology::Infinite` chunk streaming & LOD**
+- [x] **Implement `WorldTopology::Infinite` chunk streaming & LOD**
   - Replace the `Infinite` stub with chunk-keyed (`IVec2`) deterministic macro + Voronoi + height + hydrology generation on demand around the camera, paired with distance-based LOD (e.g., `2×`/`4×` step decimation or quadtree/CDLOD with skirt/stitching to hide T-junction cracks).
   - Either implement `TerrainSource::StaticAsset` (loading PNG/R16 heightmaps + optional biome/splat masks) or remove the dead enum variant until ready.
-- [ ] **Verify `character` & `camera` across edge cases**
+- [x] **Verify `character` & `camera` across edge cases**
   - Add integration tests (in `integration` or headless test harness) verifying: spawn height stays dry (`>= sea_level` or safely above seabed if coastal), camera `ShapeCast` never clips through chunk seams or water, and walking across chunk/torus boundaries maintains continuous ground contact.
-- [ ] **Expand `preview.rs` & offscreen GPU checks**
+- [x] **Expand `preview.rs` & offscreen GPU checks**
   - Add a **normal/cliff-stretch** preview and a **dual-scale splat material** preview; ensure the `#[ignore]` offscreen 3D test asserts non-trivial texture detail on *close-up* ground and cliff shots (catching low-res `64×64` bakes) and verifies zero seam discontinuity on `FiniteTorus`.
 
   Every single visual artifact in these 17 images traces directly to concrete bugs in `src/terrain/`. Three global issues affect almost all of them, followed by specific bugs per layer:
@@ -467,7 +467,7 @@ Issues i found that you might have resolved
 ### 14.1 Splatting, Chunk Mesh & Sky Rendering Bugs
 - [x] **Fix cross-boundary cliff height comparison in `splat::plan_texel` (`splat.rs`)**
   - `plan_texel` currently compares `cell.base_height` (the small `[-6, +6]` per-cell jitter) instead of `cell.macro_elevation + cell.base_height` when picking the "highest contributing cell" for steep cliff textures—allowing low-elevation cells with positive jitter to steal cliff textures from adjacent alpine peaks.
-- [ ] **Apply `RegionMaterialProfile` tint, roughness & reflectance in splat baking (`splat.rs`, `material.rs`)**
+- [x] **Apply `RegionMaterialProfile` tint, roughness & reflectance in splat baking (`splat.rs`, `material.rs`)**
   - `bake_chunk` and `splat_material` ignore `profile.tint`, `profile.roughness`, and `profile.reflectance` (`splat_material` hardcodes `base_color: Color::WHITE, perceptual_roughness: 1.0, reflectance: 0.2`), discarding colour/roughness distinction across regions that share the same base `SurfaceLayer` (e.g. `Savanna` vs `TemperateGrassland` vs `TropicalRainforest`).
   - Re-normalize normal vectors after `imageops::resize` in `splat::read_tile`, and generate mipmaps on uploaded `SplatMaps` images to prevent distant aliasing.
 - [ ] **Fix `FlatColor` debug mode & quad triangulation in `chunk.rs`**

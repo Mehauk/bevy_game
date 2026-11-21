@@ -82,7 +82,6 @@ fn fbm(base: u64, x: f32, z: f32, scale: f32, octaves: usize, gain: f32) -> f32 
 
 #[derive(Clone, Copy, Debug)]
 pub struct StreamCell {
-    pub id: u64,
     pub base: f32,
     pub edge: f32,
 }
@@ -92,7 +91,6 @@ fn voronoi_at(base: u64, x: f32, z: f32, cell: f32) -> StreamCell {
     let cz = (z / cell).floor() as i64;
     let mut best = f32::MAX;
     let mut second = f32::MAX;
-    let mut best_id = 0u64;
     let mut best_base = 0.0f32;
     for dz in -1..=1 {
         for dx in -1..=1 {
@@ -107,7 +105,6 @@ fn voronoi_at(base: u64, x: f32, z: f32, cell: f32) -> StreamCell {
             if distance < best {
                 second = best;
                 best = distance;
-                best_id = lattice_hash(base ^ 0x77, ix, iz);
                 best_base = unit_at(base ^ 0x91, ix, iz) * 2.0 - 1.0;
             } else if distance < second {
                 second = distance;
@@ -115,7 +112,6 @@ fn voronoi_at(base: u64, x: f32, z: f32, cell: f32) -> StreamCell {
         }
     }
     StreamCell {
-        id: best_id,
         base: best_base,
         edge: ((second - best) / cell).clamp(0.0, 1.0),
     }
@@ -124,19 +120,13 @@ fn voronoi_at(base: u64, x: f32, z: f32, cell: f32) -> StreamCell {
 #[derive(Clone, Copy, Debug)]
 pub struct InfiniteSampler {
     base: u64,
-    seed: WorldSeed,
 }
 
 impl InfiniteSampler {
     pub fn new(seed: WorldSeed) -> Self {
         Self {
             base: seed.stage(STREAM_STAGE),
-            seed,
         }
-    }
-
-    pub fn seed(&self) -> WorldSeed {
-        self.seed
     }
 
     pub fn macro_elevation(&self, x: f32, z: f32) -> f32 {
@@ -251,8 +241,6 @@ fn river_cut(rivers: &CoarseField, x: f32, z: f32) -> f32 {
 
 #[derive(Clone, Debug)]
 pub struct StreamField {
-    pub key: IVec2,
-    pub lod: usize,
     pub steps: usize,
     pub origin: Vec2,
     pub step: f32,
@@ -293,8 +281,6 @@ pub fn build_stream_field(
         }
     }
     StreamField {
-        key,
-        lod,
         steps,
         origin,
         step,

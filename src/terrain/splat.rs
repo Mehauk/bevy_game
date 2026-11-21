@@ -9,7 +9,9 @@ use bevy::render::render_resource::{
 use image::{ImageBuffer, RgbaImage};
 
 use crate::terrain::map::TerrainMap;
-use crate::terrain::material::{SurfaceLayer, material_profile};
+use crate::terrain::material::{
+    RegionMaterialProfile, SurfaceLayer, material_profile, tint_multiplier,
+};
 use crate::terrain::region::Region;
 use crate::terrain::season::{self, Season};
 
@@ -314,6 +316,8 @@ struct TexelPlan {
     dominant_weight: f32,
     cliff: f32,
     flooded: bool,
+    tint: [f32; 3],
+    roughness: f32,
 }
 
 fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
@@ -337,13 +341,23 @@ fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
     let mut mix = LayerMix::new();
     let mut highest: Option<(f32, Region)> = None;
     let mut dominant_weight = 0.0f32;
+    let mut tint_acc = [0f32; 3];
+    let mut roughness_acc = 0f32;
+    let mut tint_weight = 0f32;
     for (id, weight) in &weights {
         dominant_weight = dominant_weight.max(*weight);
         let Some(region) = map.region_of_cell(*id) else {
             continue;
         };
         let profile = material_profile(region);
-        mix.add(shore.unwrap_or(profile.base), weight * (1.0 - cliff));
+        let share = weight * (1.0 - cliff);
+        mix.add(shore.unwrap_or(profile.base), share);
+        let multiplier = tint_multiplier(profile);
+        for channel in 0..3 {
+            tint_acc[channel] += multiplier[channel] * share;
+        }
+        roughness_acc += profile.roughness * share;
+        tint_weight += share;
         let elevation = map
             .cell(*id)
             .map(|cell| cell.macro_elevation + cell.base_height)
@@ -357,6 +371,18 @@ fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
     } else {
         None
     };
+    if cliff > 0.0 {
+        if let Some((_, region)) = highest {
+            let profile = material_profile(region);
+            let multiplier = tint_multiplier(profile);
+            for channel in 0..3 {
+                tint_acc[channel] += multiplier[channel] * cliff;
+            }
+            roughness_acc += profile.roughness * cliff;
+            tint_weight += cliff;
+        }
+    }
+    let blended = tint_weight > f32::EPSILON;
 
     TexelPlan {
         mix,
@@ -365,6 +391,20 @@ fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
         dominant_weight,
         cliff,
         flooded: map.flood_zone().contains(height),
+        tint: if blended {
+            [
+                tint_acc[0] / tint_weight,
+                tint_acc[1] / tint_weight,
+                tint_acc[2] / tint_weight,
+            ]
+        } else {
+            [1.0, 1.0, 1.0]
+        },
+        roughness: if blended {
+            roughness_acc / tint_weight
+        } else {
+            0.0
+        },
     }
 }
 
@@ -442,6 +482,7 @@ pub struct ControlMaps {
     pub indices: RgbaImage,
     pub cell_data: RgbaImage,
     pub cliff_meta: RgbaImage,
+    pub tint: RgbaImage,
 }
 
 #[derive(Clone)]
@@ -450,6 +491,7 @@ pub struct ControlHandles {
     pub indices: Handle<Image>,
     pub cell_data: Handle<Image>,
     pub cliff_meta: Handle<Image>,
+    pub tint: Handle<Image>,
 }
 
 pub fn bake_control_chunk(
@@ -467,6 +509,7 @@ pub fn bake_control_chunk(
     let mut indices = ImageBuffer::from_pixel(edge, edge, image::Rgba([0, 0, 0, 0]));
     let mut cell_data = ImageBuffer::from_pixel(edge, edge, image::Rgba([0, 0, 0, 255]));
     let mut cliff_meta = ImageBuffer::from_pixel(edge, edge, image::Rgba([0, 0, 0, 255]));
+    let mut tint = ImageBuffer::from_pixel(edge, edge, image::Rgba([255, 255, 255, 0]));
 
     for iz in 0..resolution {
         for ix in 0..resolution {
@@ -501,6 +544,16 @@ pub fn bake_control_chunk(
                 .map(|layer| layer as u8 + 1)
                 .unwrap_or(0);
             cliff_meta.put_pixel(px, py, image::Rgba([meta, 0, 0, 255]));
+            tint.put_pixel(
+                px,
+                py,
+                image::Rgba([
+                    byte(plan.tint[0]),
+                    byte(plan.tint[1]),
+                    byte(plan.tint[2]),
+                    byte(plan.roughness),
+                ]),
+            );
         }
     }
 
@@ -509,6 +562,7 @@ pub fn bake_control_chunk(
         indices,
         cell_data,
         cliff_meta,
+        tint,
     }
 }
 
@@ -588,6 +642,7 @@ pub fn upload_control(maps: &ControlMaps, images: &mut Assets<Image>) -> Control
         indices: images.add(control_texture(maps.indices.clone(), false)),
         cell_data: images.add(control_texture(maps.cell_data.clone(), true)),
         cliff_meta: images.add(control_texture(maps.cliff_meta.clone(), false)),
+        tint: images.add(control_texture(maps.tint.clone(), true)),
     }
 }
 
@@ -875,6 +930,96 @@ mod tests {
             }
         }
         assert!(checked > 0, "the compact world must resolve layers");
+    }
+
+    fn shared_layer_pair(
+        map: &TerrainMap,
+        differs: impl Fn(&RegionMaterialProfile, &RegionMaterialProfile) -> bool,
+        score: impl Fn(&RegionMaterialProfile, &RegionMaterialProfile) -> f32,
+    ) -> Option<(Vec2, Vec2)> {
+        let mut best: Option<(f32, Vec2, Vec2)> = None;
+        for a in map.cells() {
+            let Some(region_a) = map.region_of_cell(a.id) else {
+                continue;
+            };
+            let profile_a = material_profile(region_a);
+            for b in map.cells() {
+                let Some(region_b) = map.region_of_cell(b.id) else {
+                    continue;
+                };
+                let profile_b = material_profile(region_b);
+                if region_a == region_b || profile_a.base != profile_b.base || !differs(profile_a, profile_b) {
+                    continue;
+                }
+                let strength = score(profile_a, profile_b);
+                if best.is_none_or(|(strongest, _, _)| strength > strongest) {
+                    best = Some((strength, a.center, b.center));
+                }
+            }
+        }
+        best.map(|(_, a, b)| (a, b))
+    }
+
+    fn tint_drift(a: [f32; 3], b: [f32; 3]) -> f32 {
+        (a[0] - b[0])
+            .abs()
+            .max((a[1] - b[1]).abs())
+            .max((a[2] - b[2]).abs())
+    }
+
+    #[test]
+    fn control_bake_tint_separates_regions_sharing_a_layer() {
+        let map = map();
+        let (a, b) = shared_layer_pair(
+            &map,
+            |x, y| tint_multiplier(x) != tint_multiplier(y),
+            |x, y| tint_drift(tint_multiplier(x), tint_multiplier(y)),
+        )
+        .expect("the compact world must contain two regions sharing a base layer with distinct tints");
+        let plan_a = plan_core(&map, a, Season::Summer);
+        let plan_b = plan_core(&map, b, Season::Summer);
+        assert!(
+            tint_drift(plan_a.tint, plan_b.tint) > 1.0 / 255.0,
+            "regions sharing a SurfaceLayer must bake distinct tints: {:?} vs {:?}",
+            plan_a.tint,
+            plan_b.tint
+        );
+        let chunk_size = 120.0f32.min(map.size());
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        assert_eq!(controls.tint.dimensions(), controls.indices.dimensions());
+        let distinct: std::collections::HashSet<[u8; 4]> =
+            controls.tint.pixels().map(|pixel| pixel.0).collect();
+        assert!(
+            distinct.len() > 1,
+            "the tint control map must vary across the chunk"
+        );
+    }
+
+    #[test]
+    fn control_bake_roughness_separates_regions_sharing_a_layer() {
+        let map = map();
+        let (a, b) = shared_layer_pair(
+            &map,
+            |x, y| x.roughness != y.roughness,
+            |x, y| (x.roughness - y.roughness).abs(),
+        )
+        .expect("the compact world must contain two regions sharing a base layer with distinct roughness");
+        let plan_a = plan_core(&map, a, Season::Summer);
+        let plan_b = plan_core(&map, b, Season::Summer);
+        assert!(
+            (plan_a.roughness - plan_b.roughness).abs() > 0.01,
+            "regions sharing a SurfaceLayer must bake distinct roughness: {} vs {}",
+            plan_a.roughness,
+            plan_b.roughness
+        );
+        let chunk_size = 120.0f32.min(map.size());
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let alphas: std::collections::HashSet<u8> =
+            controls.tint.pixels().map(|pixel| pixel.0[3]).collect();
+        assert!(
+            alphas.len() > 1,
+            "the tint alpha channel must carry the blended region roughness"
+        );
     }
 
     #[test]

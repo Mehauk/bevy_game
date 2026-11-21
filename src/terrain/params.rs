@@ -136,6 +136,22 @@ param_enum!(Substrate, "substrate", [
     Volcanic => "volcanic",
 ]);
 
+impl Substrate {
+    pub fn hardness(self) -> f32 {
+        match self {
+            Substrate::Sand => 0.10,
+            Substrate::SiltClay => 0.25,
+            Substrate::LimestoneKarst => 0.60,
+            Substrate::Volcanic => 0.72,
+            Substrate::RockCrystalline => 0.90,
+        }
+    }
+
+    pub fn erodibility(self) -> f32 {
+        1.0 - self.hardness()
+    }
+}
+
 param_enum!(Geothermal, "geothermal", [
     None => "none",
     Geothermal => "geothermal",
@@ -547,9 +563,9 @@ pub fn roll_gradient(
         aspect = Vec2::X;
     }
     let hardness = match substrate {
-        Substrate::Sand => -1,
-        Substrate::SiltClay | Substrate::LimestoneKarst => 0,
-        Substrate::RockCrystalline | Substrate::Volcanic => 1,
+        s if s.hardness() < 0.2 => -1,
+        s if s.hardness() < 0.7 => 0,
+        _ => 1,
     };
     let drift = ((seed.unit(STAGE_PARAMETERS, cell_index, 43) * 3.0).floor() as i32) - 1;
     let slope = slope_from_relief(ctx.slope_magnitude).shift(hardness + drift);

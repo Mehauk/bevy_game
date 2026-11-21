@@ -23,6 +23,7 @@ struct WaterSurface {
     fresnel_strength: f32,
     kind: u32,
     use_vertex_data: u32,
+    caustics: f32,
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(31) var<uniform> water: WaterSurface;
@@ -40,6 +41,11 @@ const FLOW_SLOPE_GAIN: f32 = 0.9;
 const RIPPLE_FREQ: f32 = 2.4;
 const RIPPLE_AMP: f32 = 0.35;
 const PI: f32 = 3.14159265;
+const CAUSTIC_SCALE: f32 = 0.45;
+const CAUSTIC_DETAIL: f32 = 1.9;
+const CAUSTIC_SHARP: f32 = 6.0;
+const CAUSTIC_GAIN: f32 = 0.55;
+const CAUSTIC_DEPTH: f32 = 2.6;
 
 fn hash21(p: vec2<f32>) -> f32 {
     let s = dot(p, vec2<f32>(127.1, 311.7));
@@ -55,6 +61,36 @@ fn value_noise(p: vec2<f32>) -> f32 {
     let c = hash21(i + vec2<f32>(0.0, 1.0));
     let d = hash21(i + vec2<f32>(1.0, 1.0));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn caustic_hash(p: vec2<f32>) -> vec2<f32> {
+    let sx = fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+    let sy = fract(sin(dot(p, vec2<f32>(269.5, 183.3))) * 43758.5453123);
+    return vec2<f32>(sx, sy);
+}
+
+fn caustic_layer(p: vec2<f32>) -> f32 {
+    let g = floor(p);
+    let f = fract(p);
+    var best = 8.0;
+    for (var j: i32 = -1; j <= 1; j = j + 1) {
+        for (var i: i32 = -1; i <= 1; i = i + 1) {
+            let cell = vec2<f32>(f32(i), f32(j));
+            let seed = caustic_hash(g + cell);
+            let drift = 0.5 + 0.5 * sin(water.time * 0.6 + seed * 6.2831853);
+            let point = cell + drift;
+            let dist = length(point - f);
+            best = min(best, dist);
+        }
+    }
+    let edge = clamp(1.0 - best, 0.0, 1.0);
+    return pow(edge, CAUSTIC_SHARP);
+}
+
+fn caustic_field(world_xz: vec2<f32>) -> f32 {
+    let a = caustic_layer(world_xz * CAUSTIC_SCALE + vec2<f32>(water.time * 0.05, water.time * 0.03));
+    let b = caustic_layer(world_xz * (CAUSTIC_SCALE * CAUSTIC_DETAIL) - vec2<f32>(water.time * 0.04, water.time * 0.06));
+    return clamp((a + b) * water.caustics, 0.0, 1.0);
 }
 
 fn wave_height(p: vec2<f32>) -> f32 {

@@ -152,6 +152,19 @@ pub fn material_profile(region: Region) -> &'static RegionMaterialProfile {
         .unwrap_or(&REGION_MATERIAL_TABLE[0])
 }
 
+pub fn tint_multiplier(profile: &RegionMaterialProfile) -> [f32; 3] {
+    let linear = profile.tint.to_linear().to_f32_array();
+    let luma = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    if luma <= f32::EPSILON {
+        return [1.0, 1.0, 1.0];
+    }
+    [
+        (linear[0] / luma).clamp(0.0, 1.0),
+        (linear[1] / luma).clamp(0.0, 1.0),
+        (linear[2] / luma).clamp(0.0, 1.0),
+    ]
+}
+
 #[cfg(test)]
 pub fn cliff_layer_for(substrate: Substrate, slope: SlopeMagnitude) -> SurfaceLayer {
     if slope.index() >= SlopeMagnitude::Steep.index() {
@@ -242,6 +255,31 @@ mod tests {
                 .filter(|entry| entry.region == definition.region)
                 .count();
             assert_eq!(hits, 1, "{:?} must appear exactly once", definition.region);
+        }
+    }
+
+    #[test]
+    fn tint_multiplier_separates_regions_sharing_a_base_layer() {
+        let savanna = material_profile(Region::Savanna);
+        let grassland = material_profile(Region::TemperateGrassland);
+        let rainforest = material_profile(Region::TropicalRainforest);
+        assert_eq!(savanna.base, grassland.base);
+        assert_eq!(grassland.base, rainforest.base);
+        let savanna_mul = tint_multiplier(savanna);
+        let grassland_mul = tint_multiplier(grassland);
+        let rainforest_mul = tint_multiplier(rainforest);
+        assert_ne!(savanna_mul, grassland_mul);
+        assert_ne!(grassland_mul, rainforest_mul);
+        assert_ne!(savanna_mul, rainforest_mul);
+        assert_ne!(savanna.roughness, rainforest.roughness);
+        for multiplier in [savanna_mul, grassland_mul, rainforest_mul] {
+            for channel in multiplier {
+                assert!(channel >= 0.0 && channel <= 1.0);
+            }
+            assert!(
+                multiplier.iter().any(|channel| *channel >= 0.99),
+                "a luminance-normalized multiplier must keep its brightest channel at one"
+            );
         }
     }
 

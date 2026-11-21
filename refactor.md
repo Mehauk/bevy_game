@@ -1117,3 +1117,54 @@ from absolute to relative criteria. Two dead-code warnings that Pass 3 deliberat
 
 Cost notes: droplet erosion is ~2.6 s per world against a 6000 ms budget, and the 1024² bench world
 takes 20.8 s, which is why it is `#[ignore]`d and why the suite reports 2 ignored tests.
+
+### Implementation batches — sections 11–17 and the preamble
+
+Nine more batches after the ones above, run as parallel agents with a strict file-ownership rule:
+each batch owned a disjoint file set, and any cross-file need went to that file's owner as a one-line
+handoff rather than an edit. That cost handoff latency and prevented lost writes.
+
+| batch | section | files owned | what landed |
+| --- | --- | --- | --- |
+| 10 | §10 topologies/streaming | `topology.rs`, `chunk.rs`, `stream.rs`, `preview.rs`, `integration/` | 9-copy torus instancing, real `Infinite` streaming with ring LOD, `world_checks.rs` integration harness, 12 preview layers |
+| 11 | §11 splat/mips | `splat.rs` | mip chains on control textures, `plan_core` comparing absolute elevation, resize re-normalises normals |
+| 12 | §12 field/hydrology | `field.rs`, `hydrology.rs` | one-sided border gradients, blended Voronoi precipitation, plateau-tilt normalisation, scarp-aware waterfalls |
+| 13 | §13 params/climate | `params.rs`, `macro_landform.rs`, `atmosphere.rs`, `sky.rs` | wind band/exposure/jitter, sun from slope aspect, salinity re-derive, metre-based sea distance, `profile_for` replacing 36 hand-tuned rows, frame-rate-independent atmosphere easing |
+| 14 | §14 shaders | `water_material.wesl`, `terrain_material.wesl`, `gpu.rs`, `water.rs` | stochastic tile-offset grid, per-channel Beer–Lambert absorption, standing vs running water, real flow in river vertex colours, cascade lip width from the feeding channel |
+| 15 | §15 commands/bench | `commands.rs`, `bench.rs` | every handler reports `CommandOutput`, two new stage budgets |
+| 17b | §17 voronoi robustness | `voronoi.rs` | clamped finite `raw_axis`, 64-bit boundary seed keys, inline candidate set, zero-allocation weight path, shared vertex cache |
+| 18 | §12 noise | `noise.rs` | torus warp through an angle embedding, `octave_budget` with a smoothstep fade instead of `.round()` |
+| 19 | §11 region tint | `material.rs`, `splat.rs`, `gpu.rs`, `terrain_material.wesl` | per-region albedo tint and roughness through the control bake into the shader |
+
+Two things worth keeping from the record:
+
+- **A real bug, found by the new integration harness, not by inspection.** `Collider::heightfield`
+  grids were built transposed: parry's `Array2` is column-major while avian flattens `Vec<Vec>`
+  row-major, so a square grid silently produced a collider mirrored across its diagonal. The probe
+  hit 8 m away from the queried point and the test walker was 100 % ungrounded. Fixed at both call
+  sites (`chunk.rs`, `stream.rs`). No unit test on the heightfield itself would have caught this,
+  because the grid was self-consistent; only casting a ray through the real physics world did.
+- **Two batches failed by doing nothing.** Batches 16 and 17 spent three to four hours reading,
+  reported "proceeding with the implementation now", and exited with zero edits. Both were relaunched
+  with a reduced scope and an explicit instruction to make the first edit inside eight tool calls;
+  both then landed. Reading-heavy agents need a write-early constraint, not a bigger budget.
+
+Cost and verification notes:
+
+- Bench budgets pass in isolation. `droplet_erosion` sits inside its 6000 ms budget and `evolving`
+  measured 2148 ms against 4000 ms. Both were reported as overruns by agents running under a shared
+  cargo lock with several parallel test processes; the contention inflated wall-clock by roughly
+  3×. A budget violation reported by a parallel agent is not a regression until it reproduces
+  single-threaded.
+- Golden checksums were re-recorded once, deliberately, from a settled tree
+  (`map.rs`: `GOLDEN_FINITE = 0x2A55_4426_7310_3317`, `GOLDEN_TORUS = 0x3690_4CC8_5156_300D`).
+  Several agents offered values mid-flight and all were refused: a checksum captured over a tree
+  another agent is mutating is not a regression baseline.
+- Shader correctness is not verifiable headlessly. The tests prove the Wesl imports resolve, the
+  tokens survive processing, and the Rust and WGSL struct layouts agree via `offset_of!`. They do
+  not prove the shading, sky, or water looks right. That remains a human check.
+- The `TODO-TERRAIN.md` preamble (lines 1–44) sat outside every prior audit, which had only scanned
+  `- [ ]` bullets inside numbered sections. A dedicated audit found 19 of its ~24 "Key Gaps" claims
+  already fixed. The remaining real finding was the character-does-not-fall report, diagnosed to
+  four mechanisms: swimming overrides descent, frozen water carries real colliders at the ice plane,
+  the ground state is one physics step stale, and `Finite` worlds have no kill plane or auto-respawn.

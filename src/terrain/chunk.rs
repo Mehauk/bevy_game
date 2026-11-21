@@ -200,14 +200,10 @@ pub fn chunk_heightfield(
     chunk_size: f32,
     steps: usize,
 ) -> Collider {
-    let samples = map.height_in_chunk(chunk, chunk_size, steps);
     let stride = steps + 1;
+    let grid = heightfield_grid(map, chunk, chunk_size, steps);
     let columns: Vec<Vec<f32>> = (0..stride)
-        .map(|column| {
-            (0..stride)
-                .map(|row| samples[row * stride + column].1)
-                .collect()
-        })
+        .map(|column| (0..stride).map(|row| grid[row][column]).collect())
         .collect();
     Collider::heightfield(columns, Vec3::new(chunk_size, 1.0, chunk_size))
 }

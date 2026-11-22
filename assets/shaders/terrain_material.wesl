@@ -3,6 +3,7 @@ import bevy_pbr::render::{
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     forward_io::{VertexOutput, FragmentOutput},
 };
+import super::shaderutils::{hash22, fbm2};
 
 struct TerrainSurface {
     tint: vec4<f32>,
@@ -48,28 +49,6 @@ const MAX_MIP: f32 = 8.0;
 const SNOW_LAYER: u32 = 8u;
 const STOCH_GRID: f32 = 0.37;
 const REGION_ROUGHNESS_MIX: f32 = 0.5;
-
-fn hash21(p: vec2<f32>) -> f32 {
-    let s = dot(p, vec2<f32>(127.1, 311.7));
-    return fract(sin(s) * 43758.5453123);
-}
-
-fn hash22(p: vec2<f32>) -> vec2<f32> {
-    let sx = fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
-    let sy = fract(sin(dot(p, vec2<f32>(269.5, 183.3))) * 43758.5453123);
-    return vec2<f32>(sx, sy);
-}
-
-fn value_noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    let a = hash21(i);
-    let b = hash21(i + vec2<f32>(1.0, 0.0));
-    let c = hash21(i + vec2<f32>(0.0, 1.0));
-    let d = hash21(i + vec2<f32>(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
 
 fn tile_mip(uv: vec2<f32>) -> f32 {
     let dx = abs(dpdx(uv.x)) + abs(dpdy(uv.x));
@@ -218,15 +197,25 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     for (var i: u32 = 0u; i < 4u; i = i + 1u) {
         let w = weights[i];
         let layer = layers[i];
-        if (layer == 0u || w <= 0.0) {
+        if (layer == 0u || w <= 0.02) {
             continue;
         }
         let l = layer - 1u;
-        let near_a = sample_albedo_st(l, uv_near, st_near, mip_near);
-        let far_a = sample_albedo_st(l, uv_far, st_far, mip_far);
+        var near_a = vec3<f32>(0.0);
+        if (w > 0.15) {
+            near_a = sample_albedo_st(l, uv_near, st_near, mip_near);
+        } else {
+            near_a = sample_albedo(l, uv_near + st_near.o0, mip_near);
+        }
+        let far_a = sample_albedo(l, uv_far + st_far.o0, mip_far);
         albedo = albedo + w * mix(near_a, far_a, far_w);
-        orm = orm + w * sample_orm_st(l, uv_near, st_near, mip_near);
-        nrm = nrm + w * sample_normal_st(l, uv_near, st_near, mip_near);
+        if (far_w < 0.99) {
+            orm = orm + w * sample_orm_st(l, uv_near, st_near, mip_near);
+            nrm = nrm + w * sample_normal_st(l, uv_near, st_near, mip_near);
+        } else {
+            orm = orm + w * sample_orm(l, uv_near + st_near.o0, mip_near);
+            nrm = nrm + w * sample_normal(l, uv_near + st_near.o0, mip_near);
+        }
         total = total + w;
     }
 
@@ -245,7 +234,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         orm.y = mix(orm.y, region_rough, REGION_ROUGHNESS_MIX);
     }
 
-    let macro_tint = value_noise(world_pos.xz / terrain.macro_scale);
+    let macro_tint = fbm2(world_pos.xz / terrain.macro_scale, 2);
     albedo = albedo * mix(vec3<f32>(1.0), mix(vec3<f32>(0.82, 0.86, 0.90), vec3<f32>(1.18, 1.12, 1.00), macro_tint), 0.35);
     albedo = albedo * terrain.season_tint.rgb;
 

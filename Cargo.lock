@@ -8199,6 +8199,7 @@ dependencies = [
  "meshless_voronoi",
  "noise",
  "roxmltree",
+ "wgsl-parse",
 ]
 
 [[package]]

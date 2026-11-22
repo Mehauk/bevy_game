@@ -3,6 +3,7 @@ import bevy_pbr::render::{
     pbr_functions::main_pass_post_lighting_processing,
     forward_io::{VertexOutput, FragmentOutput},
 };
+import super::shaderutils::{PI, hash21, smooth_noise2, schlick_fresnel};
 
 struct WaterSurface {
     shallow_color: vec4<f32>,
@@ -43,7 +44,6 @@ const FLOW_RAPID_LO: f32 = 2.4;
 const FLOW_RAPID_HI: f32 = 4.2;
 const RIPPLE_FREQ: f32 = 2.4;
 const RIPPLE_AMP: f32 = 0.35;
-const PI: f32 = 3.14159265;
 const CAUSTIC_SCALE: f32 = 0.45;
 const CAUSTIC_DETAIL: f32 = 1.9;
 const CAUSTIC_SHARP: f32 = 6.0;
@@ -51,22 +51,6 @@ const CAUSTIC_GAIN: f32 = 0.55;
 const SSS_POWER: f32 = 3.0;
 const SSS_DEPTH: f32 = 0.55;
 const SSS_GAIN: f32 = 0.6;
-
-fn hash21(p: vec2<f32>) -> f32 {
-    let s = dot(p, vec2<f32>(127.1, 311.7));
-    return fract(sin(s) * 43758.5453123);
-}
-
-fn value_noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    let a = hash21(i);
-    let b = hash21(i + vec2<f32>(1.0, 0.0));
-    let c = hash21(i + vec2<f32>(0.0, 1.0));
-    let d = hash21(i + vec2<f32>(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
 
 fn caustic_hash(p: vec2<f32>) -> vec2<f32> {
     let sx = fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
@@ -99,8 +83,8 @@ fn caustic_field(world_xz: vec2<f32>) -> f32 {
 }
 
 fn wave_height(p: vec2<f32>) -> f32 {
-    let a = value_noise(p);
-    let b = value_noise(p * 2.17 + vec2<f32>(17.0, 3.0));
+    let a = smooth_noise2(p);
+    let b = smooth_noise2(p * 2.17 + vec2<f32>(17.0, 3.0));
     return a + 0.5 * b;
 }
 
@@ -219,12 +203,12 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 
     let V = pbr_input.V;
     let ndv = max(dot(N, V), 0.0);
-    let fresnel = clamp(water.fresnel_strength + (1.0 - water.fresnel_strength) * pow(1.0 - ndv, 5.0), 0.0, 1.0);
+    let fresnel = clamp(schlick_fresnel(ndv, water.fresnel_strength), 0.0, 1.0);
 
     let transmit = exp(-depth * water.absorption.rgb * water.absorption.w);
     var body = mix(water.deep_color.rgb, water.shallow_color.rgb, transmit);
 
-    let streak = value_noise(vec2<f32>(world_pos.x * 0.7, world_pos.z * 2.2 - water.time * 1.8));
+    let streak = smooth_noise2(vec2<f32>(world_pos.x * 0.7, world_pos.z * 2.2 - water.time * 1.8));
     var foam = 0.0;
     if (water.kind == KIND_WATERFALL) {
         foam = clamp(0.55 + 0.6 * streak, 0.0, 1.0);
@@ -263,14 +247,14 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     } else {
         under_absorb = clamp(1.0 - shallow_light, 0.0, 1.0);
         colour = mix(water.shallow_color.rgb, water.deep_color.rgb, 0.2 + 0.6 * under_absorb);
-        let shimmer = value_noise(vec2<f32>(world_pos.x * 1.3 + water.time * 0.6, world_pos.z * 1.1 - water.time * 0.4));
+        let shimmer = smooth_noise2(vec2<f32>(world_pos.x * 1.3 + water.time * 0.6, world_pos.z * 1.1 - water.time * 0.4));
         colour = colour + water.sun_color.rgb * water.sun_direction.w * (0.16 + 0.24 * shimmer) * (1.0 - under_absorb);
         colour = colour + caustic_light * (1.0 - under_absorb);
         colour = colour + vec3<f32>(0.04 * streak);
     }
 
     if (frozen > 0.0) {
-        let crack_field = abs(value_noise(world_pos.xz * 0.35) - 0.5);
+        let crack_field = abs(smooth_noise2(world_pos.xz * 0.35) - 0.5);
         let cracks = 1.0 - smoothstep(0.0, 0.035, crack_field);
         let ice = mix(vec3<f32>(0.82, 0.90, 0.95), vec3<f32>(0.45, 0.58, 0.68), cracks);
         colour = mix(colour, ice, frozen);

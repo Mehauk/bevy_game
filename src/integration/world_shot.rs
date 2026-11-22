@@ -358,6 +358,7 @@ fn apply_world_shot(
             Projection::from(projection),
             transform,
             WorldShotCamera,
+            bevy::ui::IsDefaultUiCamera,
             disabled_fog(),
         ));
     }
@@ -744,6 +745,15 @@ mod tests {
                 .filter(|entity| entity.contains::<WorldShotCamera>())
                 .count(),
             1
+        );
+        let shot_cam = app
+            .world_mut()
+            .iter_entities()
+            .find(|entity| entity.contains::<WorldShotCamera>())
+            .expect("a shot camera must exist");
+        assert!(
+            shot_cam.contains::<bevy::ui::IsDefaultUiCamera>(),
+            "the top-down camera must be the default UI camera so the console and overlays stay visible"
         );
         assert_eq!(*app.world().get::<Visibility>(sky).unwrap(), Visibility::Hidden);
         assert_eq!(*app.world().get::<Visibility>(chunk).unwrap(), Visibility::Visible);

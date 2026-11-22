@@ -7,12 +7,12 @@ This ticket is to check the correctness of world. You will zoom in to various pa
   - [x] only the rivers renderd
   - [x] only the rivers rendered with splines overlayed
   - [x] rivers and lakes rendered
-  - [ ] a series of images that only shows one terrain type (texture) (wil be used to check how the terrain blends into each other)
+  - [x] a series of images that only shows one terrain type (texture) (wil be used to check how the terrain blends into each other)
   - [x] two images showing the world without water and the world with water to be able to inspect if underwater textures are correctly set
   - [x] images of the character inside various water fixtures to check the shader interactions
   - [x] two images that compares where the water is and where the meshes are (should overlap exactly)
 
-- [ ] also compare with the images from the videos to check for similarity
+- [x] also compare with the images from the videos to check for similarity
 
 ---
 
@@ -84,15 +84,63 @@ Drive it from BRP by setting `AgentConsole.request` to e.g. `world_shot full`, t
     - plan: shoreline foam term keyed to water/land intersection depth.
     - fix: deferred.
 
-## Not completed in this environment
+8. [ ] issue: three of the nine `SurfaceLayer`s (Dune, Snow, Volcanic) never dominate a single texel in
+   the default world (seed 1337, finite), so no dune field, no snow cap on the rock summits, and no
+   volcanic surface appear anywhere — even though the rock isolation pass shows summits well above the
+   snowline.
+    - proof: `docs/.compiled/terrain-previews/layer_snow_seed-1337_finite.png`,
+      `layer_dune_seed-1337_finite.png`, `layer_volcanic_seed-1337_finite.png` (all fully black, identical
+      2357-byte files) vs `layer_rock_seed-1337_finite.png` (rock summits present).
+    - plan: check whether any region profile in this seed resolves to Dune/Volcanic, and whether
+      `snow_coverage_with_slope` ever reaches dominance on the high-elevation cells the rock pass reveals.
+    - fix: not attempted — needs region/temperature distribution diagnosis beyond a safe edit.
 
-- "a series of images that only shows one terrain type": needs a per-`SurfaceLayer` isolation pass. The
-  terrain shader blends 4 layers per texel and `export_preview` has no single-layer mode, so this needs
-  new CPU preview code (paint texels where a given `SurfaceLayer` dominates) or a shader isolate uniform.
-- "compare with the images from the videos": the referenced videos are the UE5 river/water tutorials
-  (tickets 0005/0006). `yt-dlp` is not installed and there is no network fetch path here, so reference
-  frames cannot be extracted; the prior tickets' frames were in temp dirs that are gone.
+9. [ ] issue: compared to the reference water shader (UE5 water tutorial, ticket 0006), our water has no
+   depth-driven colour gradient, no transparency to the bed, no reflection of nearby terrain (only the
+   sky), and no shoreline foam — it is a flat opaque sky-mirror with a hard edge.
+    - proof: reference `target/video_ref/frames/water_12.jpg` (sandy shallows → green depths, tree
+      reflections, shoreline blend) vs `target/shots/char_lake.png` and `target/shots/compare_main.png`
+      (flat grey mirror, hard bank edge, no bed).
+    - plan: the reference material graph uses PixelDepthFade + WaterGradientColor + SubsurfaceScattering;
+      our water shader lacks the depth-fade gradient and terrain reflection terms.
+    - fix: deferred — shader feature work, tracked by findings 2/6/7.
 
-The ticket's "100 inconsistencies" target is aspirational: a genuine 100 requires the per-texture
-isolation pass and a zoomed seam sweep across every chunk, both gated on the items above. The findings
-above are the ones actually observed and evidenced from the top-down captures.
+10. [ ] issue: a straight vertical white seam line runs through open deep water in the NE quadrant — a
+    water-mesh / chunk-boundary edge, not natural foam (foam follows shorelines, not straight lines across
+    the open sea).
+    - proof: `target/shots/sweep_NE.png` (vertical white line through open water at focus 90,90).
+    - plan: confirm against the `Sea Surface` mesh partitioning from finding 3; the bright line is the
+      shared edge of two water mesh tiles.
+    - fix: not attempted — same root cause as finding 3.
+
+11. [ ] issue: the terrain surface blend shows a regular checkerboard blocking pattern at moderate zoom —
+    the splat control map's texel grid is visible as blocks, so layer transitions step on a grid instead
+    of blending smoothly.
+    - proof: `target/shots/sweep_SW.png` (checkerboard across the green field at focus -90,-90, zoom 3).
+    - plan: `SPLAT_RESOLUTION` (128) control texels per chunk are too coarse for the chunk world size;
+      raise control resolution or interpolate the control lookup in the shader.
+    - fix: not attempted — resolution/quality tuning, needs a perf budget check.
+
+## Per-layer isolation pass (new)
+
+`export_preview layers` (and `export_preview layer_<name>`) now renders one image per `SurfaceLayer`,
+painting each texel with that layer's albedo only where it is the dominant layer (`plan_texel` mix
+dominant) and black elsewhere. Implemented in `src/terrain/preview.rs::layer_isolation` over new public
+helpers `splat::dominant_surface_at` and `splat::albedo_at`. Output:
+`docs/.compiled/terrain-previews/layer_{sand,dune,silt,gravel,rock,moss,soil,volcanic,snow}_seed-*.png`.
+This is what surfaced finding 8 (dune/snow/volcanic never dominate).
+
+## Video comparison (new)
+
+Reference frames extracted with `yt-dlp` + `ffmpeg` into `target/video_ref/frames/` (river: 105 frames,
+water: 36 frames, one per 20 s). The videos are UE5 editor screen-recordings (material graph + plane
+preview), not rendered worlds; the usable rendered-water frames are the lake/pond viewport shots
+(e.g. `water_12.jpg`). Comparison against our captures is recorded as finding 9.
+
+## Sweep coverage
+
+Systematic top-down sweep performed: full world (`sweep_full.png`) plus zoomed quadrant captures at
+focus (90,90) `sweep_NE.png` and (-90,-90) `sweep_SW.png`, zoom 3 (~130 m/frame). New findings 8–11
+recorded from these. The "100 inconsistencies" target is not met: 11 issues are evidenced so far. The
+remaining regions (NW/SE quadrants, the full chunk-boundary grid at zoom ≥4, and the river/lake mesh
+edges at high zoom) are the exact next regions to sweep on resume.

@@ -10,7 +10,7 @@ use crate::terrain::colour::{
 };
 use crate::terrain::gpu::SNOWLINE_METRES;
 use crate::terrain::map::TerrainMap;
-use crate::terrain::material::DISK_ROOT;
+use crate::terrain::material::{SurfaceLayer, DISK_ROOT};
 use crate::terrain::params::BaseGradient;
 use crate::terrain::season::{self, Season, SeasonClock};
 use crate::terrain::splat::{self, SurfaceTiles, cliff_share};
@@ -39,13 +39,18 @@ pub const LAYERS: [&str; 13] = [
 type Image = ImageBuffer<Rgb<u8>, Vec<u8>>;
 
 pub fn export(map: &TerrainMap, clock: &SeasonClock, layer: &str) -> Result<Vec<PathBuf>, String> {
-    let wanted: Vec<&str> = if layer == "all" {
-        LAYERS.to_vec()
-    } else if LAYERS.contains(&layer) {
-        vec![layer]
+    let wanted: Vec<String> = if layer == "all" {
+        LAYERS.iter().map(|name| name.to_string()).collect()
+    } else if layer == "layers" {
+        SurfaceLayer::ALL
+            .iter()
+            .map(|surface| format!("layer_{}", surface.dir()))
+            .collect()
+    } else if LAYERS.contains(&layer) || parse_surface_layer(layer).is_some() {
+        vec![layer.to_string()]
     } else {
         return Err(format!(
-            "unknown layer '{layer}' (expected all | {})",
+            "unknown layer '{layer}' (expected all | layers | {} | layer_<name>)",
             LAYERS.join(" | ")
         ));
     };
@@ -53,13 +58,22 @@ pub fn export(map: &TerrainMap, clock: &SeasonClock, layer: &str) -> Result<Vec<
     fs::create_dir_all(PREVIEW_ROOT).map_err(|error| error.to_string())?;
     let mut files = Vec::new();
     let tiled_variants = map.topology().wraps();
-    for name in wanted {
+    for name in &wanted {
+        let name = name.as_str();
         write(&mut files, map, clock, name, false)?;
         if tiled_variants && name != "tiling" && name != "splat" {
             write(&mut files, map, clock, name, true)?;
         }
     }
     Ok(files)
+}
+
+fn parse_surface_layer(name: &str) -> Option<SurfaceLayer> {
+    let dir = name.strip_prefix("layer_")?;
+    SurfaceLayer::ALL
+        .iter()
+        .copied()
+        .find(|layer| layer.dir() == dir)
 }
 
 fn write(
@@ -202,6 +216,9 @@ impl Grid {
 }
 
 fn paint_layer(map: &TerrainMap, clock: &SeasonClock, name: &str, grid: &Grid) -> Image {
+    if let Some(target) = parse_surface_layer(name) {
+        return layer_isolation(map, grid, target);
+    }
     match name {
         "world" => composite_layer(map, clock, grid),
         "slope" => styled_layer(map, DebugView::Slope, grid),
@@ -216,6 +233,21 @@ fn paint_layer(map: &TerrainMap, clock: &SeasonClock, name: &str, grid: &Grid) -
         "splat" => splat_pair(map).expect("the splat preview needs the full tile set"),
         _ => height_layer(map, grid),
     }
+}
+
+fn layer_isolation(map: &TerrainMap, grid: &Grid, target: SurfaceLayer) -> Image {
+    let tiles = SurfaceTiles::load(DISK_ROOT);
+    grid.paint(|point| {
+        if splat::dominant_surface_at(map, point) != Some(target) {
+            return LinearRgba::BLACK;
+        }
+        let u = point.x / splat::TEXTURE_TILE_METRES;
+        let v = point.y / splat::TEXTURE_TILE_METRES;
+        match splat::albedo_at(&tiles, target, u, v) {
+            Some(albedo) => LinearRgba::new(albedo[0], albedo[1], albedo[2], 1.0),
+            None => LinearRgba::BLACK,
+        }
+    })
 }
 
 fn normal_layer(map: &TerrainMap, grid: &Grid) -> Image {

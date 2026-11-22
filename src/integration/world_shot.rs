@@ -689,7 +689,14 @@ mod tests {
     #[test]
     fn world_shot_spawns_and_restores_cameras_and_cascades() {
         let mut app = App::new();
-        app.add_plugins((MinimalPlugins, CommandRegistryPlugin))
+        app.add_plugins((
+            MinimalPlugins,
+            CommandRegistryPlugin,
+            bevy::input::InputPlugin,
+            bevy::asset::AssetPlugin::default(),
+            bevy::mesh::MeshPlugin,
+            bevy::gizmos::GizmoPlugin,
+        ))
             .insert_resource(TerrainMap::compact())
             .init_resource::<ClearColor>();
         register(&mut app);
@@ -732,9 +739,9 @@ mod tests {
 
         assert!(!app.world().get::<Camera>(main_cam).unwrap().is_active);
         assert_eq!(
-            app.world()
-                .query_filtered::<Entity, With<WorldShotCamera>>()
-                .iter(app.world())
+            app.world_mut()
+                .iter_entities()
+                .filter(|entity| entity.contains::<WorldShotCamera>())
                 .count(),
             1
         );
@@ -763,9 +770,9 @@ mod tests {
 
         assert!(app.world().get::<Camera>(main_cam).unwrap().is_active);
         assert_eq!(
-            app.world_mut()
-                .query_filtered::<Entity, With<WorldShotCamera>>()
-                .iter(app.world())
+            app.world()
+                .iter_entities()
+                .filter(|entity| entity.contains::<WorldShotCamera>())
                 .count(),
             0
         );

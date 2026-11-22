@@ -252,7 +252,6 @@ impl LayerMix {
         self.0.is_empty()
     }
 
-    #[cfg(test)]
     fn dominant(&self) -> Option<SurfaceLayer> {
         self.0
             .iter()
@@ -442,6 +441,14 @@ fn plan_texel(map: &TerrainMap, point: Vec2) -> TexelPlan {
     }
     plan.mix.normalize();
     plan
+}
+
+pub fn dominant_surface_at(map: &TerrainMap, point: Vec2) -> Option<SurfaceLayer> {
+    plan_texel(map, point).mix.dominant()
+}
+
+pub fn albedo_at(tiles: &SurfaceTiles, layer: SurfaceLayer, u: f32, v: f32) -> Option<[f32; 3]> {
+    tiles.sample(layer, TileSlot::Albedo, u, v)
 }
 
 pub fn bake_chunk(

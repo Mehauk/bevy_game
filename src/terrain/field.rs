@@ -143,6 +143,59 @@ impl ScalarField {
         Vec2::new(gx, gz)
     }
 
+    pub fn gradient_world(&self, p: Vec2) -> Vec2 {
+        let wrapped = self.topology.wrap_xz(p, self.size);
+        let gx = self.lattice_axis(wrapped.x);
+        let gz = self.lattice_axis(wrapped.y);
+        let x0 = gx.floor();
+        let z0 = gz.floor();
+        let tx = gx - x0;
+        let tz = gz - z0;
+
+        let x0i = self.wrap(x0 as isize);
+        let x1i = self.wrap(x0 as isize + 1);
+        let z0i = self.wrap(z0 as isize);
+        let z1i = self.wrap(z0 as isize + 1);
+
+        let g00 = self.gradient(x0i, z0i);
+        let g10 = self.gradient(x1i, z0i);
+        let g01 = self.gradient(x0i, z1i);
+        let g11 = self.gradient(x1i, z1i);
+
+        let top = g00 + (g10 - g00) * tx;
+        let bottom = g01 + (g11 - g01) * tx;
+        top + (bottom - top) * tz
+    }
+
+    fn catmull(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        0.5 * ((2.0 * p1)
+            + (-p0 + p2) * t
+            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+    }
+
+    pub fn sample_catmull_rom(&self, p: Vec2) -> f32 {
+        let wrapped = self.topology.wrap_xz(p, self.size);
+        let gx = self.lattice_axis(wrapped.x);
+        let gz = self.lattice_axis(wrapped.y);
+        let x0 = gx.floor();
+        let z0 = gz.floor();
+        let tx = gx - x0;
+        let tz = gz - z0;
+
+        let mut rows = [0.0f32; 4];
+        for (row, dz) in (-1..=2).enumerate() {
+            let a = self.get(self.wrap(x0 as isize - 1), self.wrap(z0 as isize + dz));
+            let b = self.get(self.wrap(x0 as isize), self.wrap(z0 as isize + dz));
+            let c = self.get(self.wrap(x0 as isize + 1), self.wrap(z0 as isize + dz));
+            let d = self.get(self.wrap(x0 as isize + 2), self.wrap(z0 as isize + dz));
+            rows[row] = Self::catmull(a, b, c, d, tx);
+        }
+        Self::catmull(rows[0], rows[1], rows[2], rows[3], tz)
+    }
+
     pub fn neighbours8(&self, x: usize, z: usize) -> Vec<usize> {
         let mut out = Vec::with_capacity(8);
         for dz in -1..=1 {
@@ -350,6 +403,106 @@ mod tests {
             );
             previous = value;
         }
+    }
+
+    #[test]
+    fn gradient_world_of_a_linear_ramp_is_constant_everywhere() {
+        let field = ramp(WorldTopology::Finite);
+        let expected = 10.0 / field.spacing();
+        for step in 0..=40 {
+            let x = -38.0 + step as f32 * 1.9;
+            let g = field.gradient_world(Vec2::new(x, -12.5));
+            assert!(
+                (g.x - expected).abs() < 1e-3,
+                "interpolated gradient at x {x} was {g:?}, expected x {expected}"
+            );
+            assert!(g.y.abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn gradient_world_agrees_with_lattice_gradient_at_nodes() {
+        for topology in [WorldTopology::Finite, WorldTopology::FiniteTorus] {
+            let field = ramp(topology);
+            for z in 0..8 {
+                for x in 0..8 {
+                    let point = field.world_of(x, z);
+                    let interpolated = field.gradient_world(point);
+                    let lattice = field.gradient(x, z);
+                    assert!(
+                        (interpolated - lattice).length() < 1e-4,
+                        "({x},{z}) interpolated {interpolated:?} vs lattice {lattice:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gradient_world_varies_smoothly_between_lattice_nodes() {
+        let mut field = ScalarField::new(8, 70.0, WorldTopology::Finite);
+        for z in 0..8 {
+            for x in 0..8 {
+                field.set(x, z, (x as f32) * (x as f32));
+            }
+        }
+        let z = field.world_of(0, 3).y;
+        let left = field.world_of(3, 3).x;
+        let right = field.world_of(4, 3).x;
+        let mut previous = f32::NEG_INFINITY;
+        let mut distinct = 0usize;
+        for step in 0..=8 {
+            let t = step as f32 / 8.0;
+            let x = left + (right - left) * t;
+            let slope = field.gradient_world(Vec2::new(x, z)).x;
+            if slope > previous + 1e-6 {
+                distinct += 1;
+            }
+            previous = slope;
+        }
+        assert!(
+            distinct >= 6,
+            "a quadratic ramp must produce smoothly increasing slopes between nodes, got {distinct} increases"
+        );
+    }
+
+    #[test]
+    fn catmull_rom_interpolates_lattice_values() {
+        let field = ramp(WorldTopology::Finite);
+        for z in 0..8 {
+            for x in 0..8 {
+                let world = field.world_of(x, z);
+                assert!(
+                    (field.sample_catmull_rom(world) - field.get(x, z)).abs() < 1e-3,
+                    "catmull-rom must pass through the lattice at ({x},{z})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn catmull_rom_reproduces_a_linear_ramp() {
+        let field = ramp(WorldTopology::Finite);
+        for step in 0..=20 {
+            let x = -20.0 + step as f32 * 2.0;
+            let expected = (x + 40.0) / field.spacing() * 10.0;
+            let value = field.sample_catmull_rom(Vec2::new(x, 0.0));
+            assert!(
+                (value - expected).abs() < 0.05,
+                "catmull-rom drifted off the linear ramp at x {x}: {value} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn catmull_rom_wraps_on_the_torus() {
+        let field = ramp(WorldTopology::FiniteTorus);
+        let left = field.sample_catmull_rom(Vec2::new(-40.0, 0.0));
+        let right = field.sample_catmull_rom(Vec2::new(40.0, 0.0));
+        assert!(
+            (left - right).abs() < 1e-3,
+            "catmull-rom must be periodic across the seam: {left} vs {right}"
+        );
     }
 
     #[test]

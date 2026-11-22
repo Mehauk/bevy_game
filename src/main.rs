@@ -16,6 +16,7 @@ use bevy::{
     dev_tools::fps_overlay::FpsOverlayPlugin,
     prelude::*,
 };
+use bevy_brp_extras::BrpExtrasPlugin;
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 
@@ -42,6 +43,7 @@ fn main() {
             FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
+            BrpExtrasPlugin::default(),
             CommandRegistryPlugin,
             InputPlugin,
             MenuPlugin,

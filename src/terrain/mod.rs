@@ -2,7 +2,8 @@ use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 
 use crate::utils::registry::commands::{CommandAppExt, command};
-use crate::utils::SpawnGroundHeight;
+use crate::utils::scatter::{ScatterClass, fbm, poisson_scatter};
+use crate::utils::{SpawnGroundHeight, TeleportRequest};
 
 pub mod atmosphere;
 mod bench;
@@ -34,12 +35,12 @@ pub mod water;
 use atmosphere::{UnderwaterState, sync_underwater_view};
 use chunk::{ChunkJobQueue, drain_chunk_builds, rebuild_terrain};
 use commands::{
-    benchmark_terrain, cell_info, debug_material, debug_view, export_preview, inspect_hydrology,
-    inspect_point, regenerate_terrain, set_cell_height, set_season, set_world_seed,
-    set_world_shape, set_world_topology, toggle_season_cycle,
+    benchmark_terrain, cell_info, debug_material, debug_view, export_preview, find_feature,
+    inspect_hydrology, inspect_point, regenerate_terrain, set_cell_height, set_season,
+    set_world_seed, set_world_shape, set_world_topology, toggle_season_cycle, world_summary,
 };
 use gpu::{SkyRenderMaterial, TerrainRenderMaterial, TileArrays, WaterRenderMaterial};
-use job::{TerrainJob, run_terrain_job};
+use job::{TerrainJob, queue_regeneration, run_terrain_job};
 use material::DebugMaterialMode;
 pub use map::{TerrainConfig, TerrainMap};
 use season::SeasonClock;
@@ -60,7 +61,11 @@ pub struct TerrainPlugin;
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TerrainMap>()
+        let mut placeholder = TerrainMap::new(TerrainConfig::compact());
+        *placeholder.config_mut() = TerrainConfig::default();
+        let origin_height = pick_spawn_height(&placeholder);
+
+        app.insert_resource(placeholder)
             .init_resource::<TerrainFog>()
             .init_resource::<SeasonClock>()
             .init_resource::<TerrainAtmosphere>()
@@ -73,6 +78,7 @@ impl Plugin for TerrainPlugin {
             .init_resource::<WaterJobQueue>()
             .init_resource::<ChunkFocus>()
             .init_resource::<StreamQueue>()
+            .init_resource::<TeleportRequest>()
             .insert_resource(DebugMaterialMode::Textured)
             .insert_resource(GlobalAmbientLight::default())
             .insert_resource(ClearColor(Color::srgb(0.4, 0.55, 0.75)));
@@ -83,7 +89,8 @@ impl Plugin for TerrainPlugin {
             MaterialPlugin::<SkyRenderMaterial>::default(),
         ));
 
-        let origin_height = app.world().resource::<TerrainMap>().height_at(0.0, 0.0);
+        queue_regeneration(&mut app.world_mut().resource_mut::<TerrainJob>());
+
         app.insert_resource(SpawnGroundHeight(origin_height))
             .add_systems(
                 Startup,
@@ -176,6 +183,16 @@ impl Plugin for TerrainPlugin {
             "Time every terrain generation stage against its budget",
             benchmark_terrain
         );
+        command!(
+            app,
+            "Print a copy-friendly summary of the current world",
+            world_summary
+        );
+        command!(
+            app,
+            "Locate a feature and teleport there: <lake|waterfall|river> [index] | region <label>",
+            find_feature
+        );
     }
 }
 
@@ -222,6 +239,102 @@ fn apply_season_to_map(mut map: ResMut<TerrainMap>, clock: Res<SeasonClock>) {
     if clock.is_changed() && map.sync_season_state(&clock) {
         info!("Season advanced to {}", clock.season.label());
     }
+}
+
+pub fn pick_spawn_height(map: &TerrainMap) -> f32 {
+    let origin = map.height_at(0.0, 0.0);
+    let sea = map.sea_level();
+    let limit = 50.0f32.to_radians().tan();
+    let half = map.size() * 0.5;
+    let step = (map.size() / 24.0).max(1.0);
+    let mut best: Option<(f32, f32)> = None;
+    let mut z = -half;
+    while z <= half {
+        let mut x = -half;
+        while x <= half {
+            let height = map.height_at(x, z);
+            if height >= sea + 0.5 && map.slope_at(x, z) <= limit {
+                let score = -(x * x + z * z);
+                if best.is_none_or(|(previous, _)| score > previous) {
+                    best = Some((score, height));
+                }
+            }
+            x += step;
+        }
+        z += step;
+    }
+    best.map(|(_, height)| height).unwrap_or(origin)
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PropScatter {
+    pub trees: Vec<Vec2>,
+    pub rocks: Vec<Vec2>,
+    pub grass: Vec<Vec2>,
+}
+
+pub fn scatter_props(map: &TerrainMap, centre: Vec2, extent: f32) -> PropScatter {
+    let seed = map.seed().0.rotate_left(17)
+        ^ map.generation()
+        ^ (centre.x.to_bits() as u64)
+        ^ ((centre.y.to_bits() as u64) << 32);
+    let sea = map.sea_level();
+    let tree_slope = 35.0f32.to_radians().tan();
+    let classes = [
+        ScatterClass {
+            min_spacing: 4.0,
+            max_count: 48,
+        },
+        ScatterClass {
+            min_spacing: 2.0,
+            max_count: 32,
+        },
+        ScatterClass {
+            min_spacing: 0.9,
+            max_count: 240,
+        },
+    ];
+    let density = |class: usize, point: Vec2| -> f32 {
+        if map.is_underwater(point.x, point.y) {
+            return 0.0;
+        }
+        let height = map.height_at(point.x, point.y);
+        let slope = map.slope_at(point.x, point.y);
+        let moisture = map.precipitation_at(point.x, point.y);
+        match class {
+            0 => {
+                if height < sea + 0.5 || slope > tree_slope || moisture < 0.2 {
+                    0.0
+                } else {
+                    fbm(seed, point.x, point.y, 18.0, 3)
+                }
+            }
+            1 => 0.3 + 0.7 * fbm(seed ^ 0x9E, point.x, point.y, 11.0, 2),
+            _ => {
+                if height < sea + 0.3 || slope > 1.5 {
+                    0.0
+                } else {
+                    fbm(seed ^ 0x5B, point.x, point.y, 9.0, 3) * moisture.min(1.0)
+                }
+            }
+        }
+    };
+    let points = poisson_scatter(
+        seed,
+        centre - Vec2::splat(extent * 0.5),
+        Vec2::splat(extent),
+        &classes,
+        &density,
+    );
+    let mut scatter = PropScatter::default();
+    for (class, point) in points {
+        match class {
+            0 => scatter.trees.push(point),
+            1 => scatter.rocks.push(point),
+            _ => scatter.grass.push(point),
+        }
+    }
+    scatter
 }
 
 #[cfg(test)]
@@ -289,5 +402,77 @@ mod tests {
             fraction > 0.6,
             "only {fraction:.2} of the world is walkable at the slope limit"
         );
+    }
+
+    #[test]
+    fn the_picked_spawn_height_is_dry_and_walkable() {
+        let map = TerrainMap::compact();
+        let height = pick_spawn_height(&map);
+        assert!(height.is_finite());
+        assert!(
+            height >= map.sea_level(),
+            "picked spawn {height} must sit at or above sea level {}",
+            map.sea_level()
+        );
+    }
+
+    #[test]
+    fn scatter_is_deterministic_and_stays_on_dry_ground() {
+        let map = TerrainMap::compact();
+        let centre = Vec2::ZERO;
+        let first = scatter_props(&map, centre, 40.0);
+        let second = scatter_props(&map, centre, 40.0);
+        assert_eq!(first, second, "the same patch must scatter identically");
+        let all: Vec<&Vec2> = first
+            .trees
+            .iter()
+            .chain(first.rocks.iter())
+            .chain(first.grass.iter())
+            .collect();
+        assert!(
+            !all.is_empty(),
+            "the dry spawn neighbourhood must scatter something"
+        );
+        for point in all {
+            assert!(
+                !map.is_underwater(point.x, point.y),
+                "prop at {point} must not scatter into water"
+            );
+            assert!((point.x - centre.x).abs() <= 20.0 + 1e-3);
+            assert!((point.y - centre.y).abs() <= 20.0 + 1e-3);
+        }
+    }
+
+    #[test]
+    fn scatter_separates_prop_classes_by_their_radii() {
+        let map = TerrainMap::compact();
+        let scatter = scatter_props(&map, Vec2::ZERO, 40.0);
+        let mut all: Vec<(f32, Vec2)> = Vec::new();
+        all.extend(scatter.trees.iter().map(|p| (4.0, *p)));
+        all.extend(scatter.rocks.iter().map(|p| (2.0, *p)));
+        all.extend(scatter.grass.iter().map(|p| (0.9, *p)));
+        for i in 0..all.len() {
+            for j in i + 1..all.len() {
+                let (radius_a, a) = all[i];
+                let (radius_b, b) = all[j];
+                assert!(
+                    a.distance(b) >= radius_a.max(radius_b) - 1e-3,
+                    "props at {a} and {b} overlap"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scatter_uses_the_perlin_clump_gate_not_a_uniform_field() {
+        let map = TerrainMap::compact();
+        let near = scatter_props(&map, Vec2::ZERO, 40.0);
+        let far = scatter_props(&map, Vec2::new(37.0, -23.0), 40.0);
+        let total = near.trees.len() + near.rocks.len() + near.grass.len()
+            + far.trees.len()
+            + far.rocks.len()
+            + far.grass.len();
+        assert!(total > 0, "dry patches must scatter something");
+        assert_ne!(near, far, "clumped scatter must differ between neighbouring patches");
     }
 }

@@ -312,7 +312,12 @@ impl FloodZone {
     }
 }
 
-pub fn coastal_erosion(field: &mut ScalarField, zone: &FloodZone, strength: f32) {
+pub fn coastal_erosion(
+    field: &mut ScalarField,
+    zone: &FloodZone,
+    strength: f32,
+    hardness: Option<&ScalarField>,
+) {
     if strength <= 0.0 {
         return;
     }
@@ -323,13 +328,17 @@ pub fn coastal_erosion(field: &mut ScalarField, zone: &FloodZone, strength: f32)
         if !zone.contains(snapshot[index]) {
             continue;
         }
+        let erodibility = hardness
+            .map(|field| 1.0 - field.get_at(index).clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        let local_strength = (strength * erodibility).min(1.0);
         let (x, z) = field.coords(index);
         let mut highest_neighbour = snapshot[index];
         for neighbour in field.neighbours8(x, z) {
             highest_neighbour = highest_neighbour.max(snapshot[neighbour]);
         }
         let pull = zone.high + (highest_neighbour - zone.high).max(0.0) * 0.15;
-        let blended = snapshot[index] + (pull - snapshot[index]) * strength.min(1.0);
+        let blended = snapshot[index] + (pull - snapshot[index]) * local_strength;
         targets[index] = Some(blended.min(highest_neighbour));
     }
 
@@ -392,7 +401,38 @@ pub fn shore_override(
     precipitation: Precipitation,
     sea_level: f32,
 ) -> Option<SurfaceLayer> {
+    shore_override_with_hardness(
+        season,
+        zone,
+        height,
+        salinity,
+        precipitation,
+        sea_level,
+        0.0,
+    )
+}
+
+pub const HARD_SHORE_HARDNESS: f32 = 0.5;
+
+pub fn shore_override_with_hardness(
+    season: Season,
+    zone: &FloodZone,
+    height: f32,
+    salinity: Salinity,
+    precipitation: Precipitation,
+    sea_level: f32,
+    hardness: f32,
+) -> Option<SurfaceLayer> {
     if !zone.contains(height) {
+        return None;
+    }
+    if hardness >= HARD_SHORE_HARDNESS {
+        if season == Season::Winter {
+            return Some(SurfaceLayer::Snow);
+        }
+        if salinity == Salinity::Hypersaline {
+            return Some(SurfaceLayer::Gravel);
+        }
         return None;
     }
     shore_surface(season, salinity, precipitation, height <= sea_level).layer()
@@ -411,24 +451,36 @@ pub fn is_water_frozen(
     if geothermal != Geothermal::None {
         return false;
     }
-    let temp = temperature.index();
+    let temperature_step = temperature.index();
     match salinity {
         Salinity::Freshwater => {
-            temp >= Temperature::Cold.index()
-                || (season == Season::Winter && temp >= Temperature::Temperate.index())
+            temperature_step >= Temperature::Cold.index()
+                || (season == Season::Winter
+                    && temperature_step >= Temperature::Temperate.index())
         }
         Salinity::Brackish => {
-            temp >= Temperature::Freezing.index()
-                || (season == Season::Winter && temp >= Temperature::Cold.index())
+            temperature_step >= Temperature::Freezing.index()
+                || (season == Season::Winter && temperature_step >= Temperature::Cold.index())
         }
-        Salinity::Marine => temp >= Temperature::Freezing.index(),
-        Salinity::Hypersaline => season == Season::Winter && temp >= Temperature::Freezing.index(),
+        Salinity::Marine => temperature_step >= Temperature::Freezing.index(),
+        Salinity::Hypersaline => {
+            season == Season::Winter && temperature_step >= Temperature::Freezing.index()
+        }
     }
 }
 
+pub const DEFAULT_SNOWLINE_METRES: f32 = 60.0;
+
+pub const SNOW_SHED_SLOPE: f32 = 0.5;
+
+const SNOW_COLD_RAMP_BANDS: f32 = 2.0;
+const SNOW_ALTITUDE_RAMP_METRES: f32 = 40.0;
+
 pub fn snow_coverage(season: Season, temperature: Temperature, height: f32, snowline: f32) -> f32 {
-    let cold = ((temperature.index() as f32 - Temperature::Temperate.index() as f32) / 2.0).clamp(0.0, 1.0);
-    let altitude = ((height - snowline) / 40.0).clamp(0.0, 1.0);
+    let cold = ((temperature.index() as f32 - Temperature::Temperate.index() as f32)
+        / SNOW_COLD_RAMP_BANDS)
+        .clamp(0.0, 1.0);
+    let altitude = ((height - snowline) / SNOW_ALTITUDE_RAMP_METRES).clamp(0.0, 1.0);
     let seasonal: f32 = match season {
         Season::Winter => 1.0,
         Season::Spring => 0.35,
@@ -451,6 +503,20 @@ pub fn snow_coverage_blend(
     }
     let next = snow_coverage(clock.season.next(), temperature, height, snowline);
     (current + (next - current) * t).clamp(0.0, 1.0)
+}
+
+pub const MAX_SNOW_SHED_FRACTION: f32 = 0.85;
+
+pub fn snow_coverage_with_slope(
+    clock: &SeasonClock,
+    temperature: Temperature,
+    height: f32,
+    snowline: f32,
+    slope: f32,
+) -> f32 {
+    let coverage = snow_coverage_blend(clock, temperature, height, snowline);
+    let shed = (slope / SNOW_SHED_SLOPE).clamp(0.0, 1.0) * MAX_SNOW_SHED_FRACTION;
+    (coverage * (1.0 - shed)).clamp(0.0, 1.0)
 }
 
 const SNOWLINE_SEASON_SHIFT: [f32; 4] = [-6.0, 8.0, 0.0, -18.0];
@@ -727,7 +793,7 @@ mod tests {
         }
         let zone = FloodZone::new(-1.0, 3.0);
         let before = field.clone();
-        coastal_erosion(&mut field, &zone, 0.8);
+        coastal_erosion(&mut field, &zone, 0.8, None);
 
         for z in 0..16 {
             let mut previous = f32::NEG_INFINITY;
@@ -747,6 +813,98 @@ mod tests {
         assert!(
             field.mean() > before.mean(),
             "the flood band should be smoothed up toward the beach"
+        );
+    }
+
+    fn shore_ramp() -> ScalarField {
+        let mut field = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        for z in 0..16 {
+            for x in 0..16 {
+                field.set(x, z, (x as f32 - 2.0) * 1.4);
+            }
+        }
+        field
+    }
+
+    #[test]
+    fn hard_coastal_bedrock_resists_beach_flattening() {
+        let zone = FloodZone::new(-1.0, 3.0);
+        let mut soft = shore_ramp();
+        let mut hard = shore_ramp();
+        let mut unmasked = shore_ramp();
+        let soft_hardness = {
+            let mut f = ScalarField::new(16, 160.0, WorldTopology::Finite);
+            f.fill(0.1);
+            f
+        };
+        let hard_hardness = {
+            let mut f = ScalarField::new(16, 160.0, WorldTopology::Finite);
+            f.fill(0.9);
+            f
+        };
+        coastal_erosion(&mut soft, &zone, 0.8, Some(&soft_hardness));
+        coastal_erosion(&mut hard, &zone, 0.8, Some(&hard_hardness));
+        coastal_erosion(&mut unmasked, &zone, 0.8, None);
+
+        let change = |field: &ScalarField| -> f32 {
+            field
+                .values
+                .iter()
+                .zip(shore_ramp().values.iter())
+                .map(|(a, b)| (a - b).abs())
+                .sum()
+        };
+        let soft_change = change(&soft);
+        let hard_change = change(&hard);
+        assert!(soft_change > 1.0, "soft shores must be flattened into beaches");
+        assert!(
+            hard_change < soft_change * 0.25,
+            "hard bedrock cliffs must keep their steepness: {hard_change} vs {soft_change}"
+        );
+        let unmasked_change = change(&unmasked);
+        assert!(
+            unmasked_change > hard_change,
+            "unmasked erosion must still flatten what hard rock resists"
+        );
+    }
+
+    #[test]
+    fn hard_shore_substrates_keep_rock_instead_of_wet_sand() {
+        let zone = FloodZone::new(-2.0, 2.0);
+        assert_eq!(
+            shore_override_with_hardness(
+                Season::Summer, &zone, -0.5, Salinity::Marine, Precipitation::Low, 0.0, 0.9,
+            ),
+            None,
+            "crystalline sea cliffs stay bedrock, never wet sand"
+        );
+        assert_eq!(
+            shore_override_with_hardness(
+                Season::Winter, &zone, -0.5, Salinity::Marine, Precipitation::Low, 0.0, 0.9,
+            ),
+            Some(SurfaceLayer::Snow),
+            "hard shores still ice over in winter"
+        );
+        assert_eq!(
+            shore_override_with_hardness(
+                Season::Summer, &zone, -0.5, Salinity::Hypersaline, Precipitation::Low, 0.0, 0.72,
+            ),
+            Some(SurfaceLayer::Gravel),
+            "hypersaline hard shores get salt pan gravel, not mudflat"
+        );
+        assert_eq!(
+            shore_override_with_hardness(
+                Season::Summer, &zone, -0.5, Salinity::Marine, Precipitation::Low, 0.0, 0.1,
+            ),
+            Some(SurfaceLayer::Sand),
+            "sandy shores still become wet sand"
+        );
+        assert_eq!(
+            shore_override_with_hardness(
+                Season::Summer, &zone, 9.0, Salinity::Marine, Precipitation::Low, 0.0, 0.9,
+            ),
+            None,
+            "outside the flood zone there is never an override"
         );
     }
 

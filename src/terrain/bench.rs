@@ -10,12 +10,11 @@ use crate::terrain::map::{
     run_parameter_stage, run_seasonal_stage,
 };
 use crate::terrain::material::DebugMaterialMode;
-use crate::terrain::season::Season;
 use crate::terrain::seed::WorldSeed;
 use crate::terrain::topology::WorldTopology;
 use crate::terrain::voronoi::{VoronoiConfig, VoronoiLayout};
 use crate::terrain::chunk::{
-    CHUNK_MESH_STEPS, DEFAULT_CHUNK_SIZE, bake_controls, build_chunk_mesh, chunk_heightfield,
+    DEFAULT_CHUNK_SIZE, bake_controls, build_chunk_mesh, chunk_heightfield, chunk_mesh_steps,
 };
 use crate::terrain::DebugView;
 
@@ -125,17 +124,23 @@ pub fn run(config: &TerrainConfig) -> TerrainBenchmark {
     timings.push(timing("voronoi", start));
 
     let start = Instant::now();
+    let macro_config = MacroConfig {
+        size: config.size,
+        topology: config.topology,
+        sea_level: SEA_LEVEL,
+        relief: config.relief,
+    };
     let macro_field = macro_landform::generate_macro_field(
         config.seed,
         &layout,
         config.shape,
-        &MacroConfig {
-            size: config.size,
-            topology: config.topology,
-            sea_level: SEA_LEVEL,
-            relief: config.relief,
-        },
+        &macro_config,
     );
+    let layout = layout.with_cell_weights(&macro_landform::cell_power_weights(
+        &macro_field,
+        &layout,
+        &macro_config,
+    ));
     timings.push(timing("macro", start));
 
     let start = Instant::now();
@@ -188,7 +193,12 @@ pub fn run(config: &TerrainConfig) -> TerrainBenchmark {
     timings.push(timing("chunk_mesh", start));
 
     let start = Instant::now();
-    let _collider = chunk_heightfield(&map, IVec2::ZERO, chunk_size, CHUNK_MESH_STEPS);
+    let _collider = chunk_heightfield(
+        &map,
+        IVec2::ZERO,
+        chunk_size,
+        chunk_mesh_steps(&map, IVec2::ZERO, chunk_size),
+    );
     timings.push(timing("chunk_collider", start));
 
     let wanted = map.chunk_keys(chunk_size);
@@ -199,7 +209,6 @@ pub fn run(config: &TerrainConfig) -> TerrainBenchmark {
         &map,
         DebugMaterialMode::Textured,
         DebugView::None,
-        Season::Summer,
         &wanted,
         &mut images,
     );
@@ -208,7 +217,8 @@ pub fn run(config: &TerrainConfig) -> TerrainBenchmark {
     let start = Instant::now();
     for key in &wanted {
         let _mesh = build_chunk_mesh(&map, *key, chunk_size, DebugView::None);
-        let _collider = chunk_heightfield(&map, *key, chunk_size, CHUNK_MESH_STEPS);
+        let steps = chunk_mesh_steps(&map, *key, chunk_size);
+        let _collider = chunk_heightfield(&map, *key, chunk_size, steps);
     }
     timings.push(timing("chunk_upload_total", start));
 

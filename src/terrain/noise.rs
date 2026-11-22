@@ -16,10 +16,11 @@ pub enum NoiseAlgorithm {
     Terraced,
     Billow,
     Cellular,
+    Plateau,
 }
 
 impl NoiseAlgorithm {
-    pub fn all() -> [NoiseAlgorithm; 6] {
+    pub fn all() -> [NoiseAlgorithm; 7] {
         [
             NoiseAlgorithm::Hilly,
             NoiseAlgorithm::Ridged,
@@ -27,6 +28,7 @@ impl NoiseAlgorithm {
             NoiseAlgorithm::Terraced,
             NoiseAlgorithm::Billow,
             NoiseAlgorithm::Cellular,
+            NoiseAlgorithm::Plateau,
         ]
     }
 
@@ -38,6 +40,7 @@ impl NoiseAlgorithm {
             NoiseAlgorithm::Terraced => "terraced",
             NoiseAlgorithm::Billow => "billow",
             NoiseAlgorithm::Cellular => "cellular",
+            NoiseAlgorithm::Plateau => "plateau",
         }
     }
 
@@ -75,6 +78,9 @@ pub fn select_algorithm(params: &CellParameters, sub_variant: &str) -> NoiseAlgo
     }
     if params.substrate == Substrate::Volcanic {
         return NoiseAlgorithm::Cellular;
+    }
+    if params.substrate == Substrate::RockCrystalline {
+        return NoiseAlgorithm::Plateau;
     }
     if params.substrate == Substrate::LimestoneKarst {
         return NoiseAlgorithm::Terraced;
@@ -143,9 +149,37 @@ const BILOW_FREQUENCY: f64 = 0.011;
 const TERRACE_FREQUENCY: f64 = 0.006;
 const DUNE_FREQUENCY: f64 = 0.05;
 const CELLULAR_FREQUENCY: f64 = 0.02;
+const PLATEAU_FREQUENCY: f64 = 0.012;
+const PLATEAU_STEPS: f64 = 5.0;
+const PLATEAU_RISER: f64 = 0.03;
+const PLATEAU_EXTRA_WARP: f64 = 9.0;
+const PLATEAU_MICRO_FREQUENCY: f64 = 0.4;
 const WARP_FREQUENCY: f64 = 0.004;
 const TORUS_WARP_FIELD_FREQUENCY: f64 = 0.45;
 const TORUS_WARP_DECORRELATION: f64 = 3.7;
+const WARP_FIELD_DECORRELATION_X: f64 = 11.3;
+const WARP_FIELD_DECORRELATION_Z: f64 = 7.7;
+
+const MIN_OCTAVES: usize = 3;
+const MAX_CRACK_OCTAVES: f64 = 3.0;
+const CRACK_PERSISTENCE: f64 = 0.3;
+const CRACK_LACUNARITY: f64 = 2.3;
+const HILLY_SWELL_MIX: f64 = 0.35;
+const TERRACE_STRATA_FREQUENCY_RATIO: f64 = 0.45;
+const TERRACE_STRATA_MIX: f64 = 0.6;
+const TERRACE_MICRO_FREQUENCY: f64 = 0.09;
+const TERRACE_MICRO_MIX: f64 = 0.07;
+const PLATEAU_MICRO_MIX: f64 = 0.12;
+const DUNE_WIGGLE_CROSS_FREQUENCY: f64 = 0.02;
+const DUNE_WIGGLE_ALONG_FREQUENCY: f64 = 0.007;
+const DUNE_WIGGLE_PHASE_GAIN: f64 = 0.8;
+const DUNE_RIDGE_MIX: f64 = 0.6;
+const DUNE_ASYMMETRY_MIX: f64 = 0.4;
+const DUNE_HARMONIC_RADIUS: i32 = 3;
+const DUNE_ALIGNMENT_EXPONENT: u32 = 8;
+const SLOPE_AMPLITUDE_GAIN_PER_STEP: f32 = 0.12;
+const WIND_WARP_GAIN_PER_STEP: f32 = 0.8;
+const GLACIER_AMPLITUDE_MULTIPLIER: f32 = 1.25;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NoiseShape {
@@ -223,8 +257,9 @@ pub fn shape_for(params: &CellParameters, region: Region, sub_variant: &str) -> 
         shape.amplitude = shape.amplitude.min(1.5);
         shape.frequency = shape.frequency.max(1.8);
     }
-    shape.amplitude *= 1.0 + 0.12 * params.base_gradient.slope.index() as f32;
-    shape.warp += 0.8 * (Wind::COUNT - 1 - params.wind.index()) as f32;
+    shape.amplitude *=
+        1.0 + SLOPE_AMPLITUDE_GAIN_PER_STEP * params.base_gradient.slope.index() as f32;
+    shape.warp += WIND_WARP_GAIN_PER_STEP * (Wind::COUNT - 1 - params.wind.index()) as f32;
     if sub_variant.contains("dune") {
         shape.frequency = shape.frequency.max(2.2);
         shape.warp = shape.warp.min(3.0);
@@ -233,7 +268,7 @@ pub fn shape_for(params: &CellParameters, region: Region, sub_variant: &str) -> 
         shape.amplitude = shape.amplitude.min(1.0);
     }
     if sub_variant.contains("glacier") || sub_variant.contains("ice") {
-        shape.amplitude *= 1.25;
+        shape.amplitude *= GLACIER_AMPLITUDE_MULTIPLIER;
         shape.octaves = shape.octaves.max(5);
     }
     if sub_variant.contains("reef") {
@@ -260,11 +295,11 @@ pub fn blend_shapes(items: &[(NoiseShape, f32)]) -> NoiseShape {
     if total <= f32::EPSILON {
         return NoiseShape::default();
     }
-    let budget = (octaves / total).clamp(3.0, MAX_OCTAVES as f32);
+    let budget = (octaves / total).clamp(MIN_OCTAVES as f32, MAX_OCTAVES as f32);
     NoiseShape {
         amplitude: amplitude / total,
         frequency: frequency / total,
-        octaves: (budget.floor() as usize).clamp(3, MAX_OCTAVES),
+        octaves: (budget.floor() as usize).clamp(MIN_OCTAVES, MAX_OCTAVES),
         octave_budget: budget,
         warp: warp / total,
     }
@@ -342,8 +377,8 @@ impl NoiseEngine {
                 let q = [x * WARP_FREQUENCY, z * WARP_FREQUENCY];
                 let wx = self.warp[0].eval(SamplePoint::Plane(q));
                 let wz = self.warp[1].eval(SamplePoint::Plane([
-                    q[0] + 11.3 * WARP_FREQUENCY,
-                    q[1] - 7.7 * WARP_FREQUENCY,
+                    q[0] + WARP_FIELD_DECORRELATION_X * WARP_FREQUENCY,
+                    q[1] - WARP_FIELD_DECORRELATION_Z * WARP_FREQUENCY,
                 ]));
                 SamplePoint::Plane([x + wx * amount, z + wz * amount])
             }
@@ -452,11 +487,17 @@ impl NoiseEngine {
         (normalized * 2.0 - 1.0).clamp(-1.0, 1.0)
     }
 
-    fn f2_minus_f1<const N: usize>(&self, point: &[f64; N], frequency: f64) -> f64 {
+    fn worley_f1_f2<const N: usize>(
+        &self,
+        point: &[f64; N],
+        frequency: f64,
+    ) -> (f64, f64, [i64; N], [i64; N]) {
         let p = point.map(|c| c * frequency);
         let cell = p.map(|c| c.floor() as i64);
         let mut f1 = f64::MAX;
         let mut f2 = f64::MAX;
+        let mut first = [0i64; N];
+        let mut second = [0i64; N];
         let corners = 3usize.pow(N as u32);
         for corner in 0..corners {
             let mut neighbor = [0i64; N];
@@ -480,16 +521,49 @@ impl NoiseEngine {
             }
             if distance_sq < f1 {
                 f2 = f1;
+                second = first;
                 f1 = distance_sq;
+                first = neighbor;
             } else if distance_sq < f2 {
                 f2 = distance_sq;
+                second = neighbor;
             }
         }
-        f2.sqrt() - f1.sqrt()
+        (f1.sqrt(), f2.sqrt(), first, second)
+    }
+
+    fn cell_level<const N: usize>(&self, cell: &[i64; N]) -> f64 {
+        let hash = cell.iter().fold(self.seed as u64 ^ 0x5bf0_3c1d, |acc, &c| {
+            mix64(acc ^ (c as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        });
+        (hash % (PLATEAU_STEPS as u64 + 1)) as f64 / PLATEAU_STEPS
+    }
+
+    fn f2_minus_f1<const N: usize>(&self, point: &[f64; N], frequency: f64) -> f64 {
+        let (f1, f2, _, _) = self.worley_f1_f2(point, frequency);
+        f2 - f1
+    }
+
+    fn plateau_field(&self, point: SamplePoint, frequency: f64) -> f64 {
+        let warped = self.warped(point, PLATEAU_EXTRA_WARP);
+        let (f1, f2, top, neighbour) = match warped {
+            SamplePoint::Plane(point) => {
+                let (f1, f2, first, second) = self.worley_f1_f2(&point, frequency);
+                (f1, f2, self.cell_level(&first), self.cell_level(&second))
+            }
+            SamplePoint::Torus(point) => {
+                let (f1, f2, first, second) = self.worley_f1_f2(&point, frequency);
+                (f1, f2, self.cell_level(&first), self.cell_level(&second))
+            }
+        };
+        let u = ((f2 - f1) / PLATEAU_RISER).clamp(0.0, 1.0);
+        let mesa = neighbour + (top - neighbour) * (u * u * (3.0 - 2.0 * u));
+        let micro = self.fbm(&self.cliff, warped, PLATEAU_MICRO_FREQUENCY, 2.0, 0.5);
+        ((mesa * 2.0 - 1.0) + micro * PLATEAU_MICRO_MIX * (1.0 - u)).clamp(-1.0, 1.0)
     }
 
     fn cracks(&self, point: SamplePoint, frequency: f64, budget: f64) -> f64 {
-        let budget = budget.clamp(1.0, 3.0);
+        let budget = budget.clamp(1.0, MAX_CRACK_OCTAVES);
         let full = budget.floor() as usize;
         let frac = budget - budget.floor();
         let count = if frac > 0.0 { full + 1 } else { full };
@@ -510,23 +584,23 @@ impl NoiseEngine {
             let crack = (gap / CRACK_WIDTH).clamp(0.0, 1.0);
             sum += (2.0 * crack - 1.0) * amplitude * gain;
             norm += amplitude * gain;
-            amplitude *= 0.3;
-            scale *= 2.3;
+            amplitude *= CRACK_PERSISTENCE;
+            scale *= CRACK_LACUNARITY;
         }
         (sum / norm).clamp(-1.0, 1.0)
     }
 
     fn dune_plane(&self, x: f32, z: f32, ctx: &NoiseContext, freq: f64) -> f32 {
         let wind = ctx.wind.normalize_or_zero();
-        let (ca, sa) = if wind.length_squared() < 1e-6 {
+        let (wind_x, wind_z) = if wind.length_squared() < 1e-6 {
             (1.0f64, 0.0)
         } else {
             (wind.x as f64, wind.y as f64)
         };
         let xf = x as f64;
         let zf = z as f64;
-        let along = xf * ca + zf * sa;
-        let cross = -xf * sa + zf * ca;
+        let along = xf * wind_x + zf * wind_z;
+        let cross = -xf * wind_z + zf * wind_x;
         let ridge = self.billow_field(
             &self.dune,
             SamplePoint::Plane([
@@ -537,17 +611,20 @@ impl NoiseEngine {
             3.0,
             0.5,
         );
-        let wiggle = self.dune[3].eval(SamplePoint::Plane([cross * 0.02, along * 0.007]));
-        let phase = along * DUNE_WAVE_FREQUENCY * freq + wiggle * 0.8;
+        let wiggle = self.dune[3].eval(SamplePoint::Plane([
+            cross * DUNE_WIGGLE_CROSS_FREQUENCY,
+            along * DUNE_WIGGLE_ALONG_FREQUENCY,
+        ]));
+        let phase = along * DUNE_WAVE_FREQUENCY * freq + wiggle * DUNE_WIGGLE_PHASE_GAIN;
         let asym = stoss_slipface(phase) * 2.0 - 1.0;
-        (0.6 * ridge + 0.4 * asym).clamp(-1.0, 1.0) as f32
+        (DUNE_RIDGE_MIX * ridge + DUNE_ASYMMETRY_MIX * asym).clamp(-1.0, 1.0) as f32
     }
 
     fn dune_torus(&self, x: f32, z: f32, ctx: &NoiseContext) -> f32 {
         let tau = std::f64::consts::TAU;
         let k = tau / ctx.size as f64;
         let wind = ctx.wind.normalize_or_zero();
-        let (wx, wz) = if wind.length_squared() < 1e-6 {
+        let (wind_x, wind_z) = if wind.length_squared() < 1e-6 {
             (1.0f64, 0.0)
         } else {
             (wind.x as f64, wind.y as f64)
@@ -556,15 +633,15 @@ impl NoiseEngine {
         let zf = z as f64;
         let mut sum = 0.0;
         let mut norm = 0.0;
-        for nx in -3..=3i32 {
-            for nz in -3..=3i32 {
+        for nx in -DUNE_HARMONIC_RADIUS..=DUNE_HARMONIC_RADIUS {
+            for nz in -DUNE_HARMONIC_RADIUS..=DUNE_HARMONIC_RADIUS {
                 let length_sq = nx * nx + nz * nz;
-                if length_sq == 0 || length_sq > 9 {
+                if length_sq == 0 || length_sq > DUNE_HARMONIC_RADIUS * DUNE_HARMONIC_RADIUS {
                     continue;
                 }
                 let length = (length_sq as f64).sqrt();
-                let align = ((nx as f64 * wx + nz as f64 * wz) / length).abs();
-                let weight = align.powi(8) / length;
+                let align = ((nx as f64 * wind_x + nz as f64 * wind_z) / length).abs();
+                let weight = align.powi(DUNE_ALIGNMENT_EXPONENT as i32) / length;
                 if weight < 1e-3 {
                     continue;
                 }
@@ -593,55 +670,76 @@ impl NoiseEngine {
         ctx: &NoiseContext,
         shape: &NoiseShape,
     ) -> f32 {
-        let oct = shape
+        let octave_budget = shape
             .octave_budget
             .max(shape.octaves as f32)
-            .clamp(3.0, MAX_OCTAVES as f32) as f64;
-        let freq = shape.frequency.max(0.05) as f64;
+            .clamp(MIN_OCTAVES as f32, MAX_OCTAVES as f32) as f64;
+        let frequency = shape.frequency.max(0.05) as f64;
         let base = self.project(x, z, ctx);
         let point = self.warped(base, shape.warp as f64);
         match algorithm {
             NoiseAlgorithm::Hilly => {
-                let broad = self.fbm(&self.hilly, point, HILLY_FREQUENCY * freq, oct, 0.42);
-                let swell = self.fbm(&self.swell, point, SWELL_FREQUENCY * freq, 2.0, 0.5);
-                (broad + swell * 0.35).clamp(-1.0, 1.0) as f32
+                let broad = self.fbm(
+                    &self.hilly,
+                    point,
+                    HILLY_FREQUENCY * frequency,
+                    octave_budget,
+                    0.42,
+                );
+                let swell = self.fbm(&self.swell, point, SWELL_FREQUENCY * frequency, 2.0, 0.5);
+                (broad + swell * HILLY_SWELL_MIX).clamp(-1.0, 1.0) as f32
             }
             NoiseAlgorithm::Ridged => {
-                self.ridged_field(point, RIDGED_FREQUENCY * freq, oct + 1.0) as f32
+                self.ridged_field(point, RIDGED_FREQUENCY * frequency, octave_budget + 1.0) as f32
             }
             NoiseAlgorithm::Billow => {
-                self.billow_field(&self.billow, point, BILOW_FREQUENCY * freq, oct, 0.5) as f32
+                self.billow_field(&self.billow, point, BILOW_FREQUENCY * frequency, octave_budget, 0.5)
+                    as f32
             }
             NoiseAlgorithm::Terraced => {
                 let raw = (self.fbm(
                     &self.terrace,
                     point,
-                    TERRACE_FREQUENCY * freq,
-                    oct.min(4.0),
+                    TERRACE_FREQUENCY * frequency,
+                    octave_budget.min(4.0),
                     0.5,
                 ) + 1.0)
                     * 0.5;
-                let strata =
-                    self.fbm(&self.strata, point, TERRACE_FREQUENCY * freq * 0.45, 2.0, 0.5);
-                let scaled = raw * TERRACE_STEPS + strata * 0.6;
-                let idx = scaled.floor();
-                let frac = scaled - idx;
+                let strata = self.fbm(
+                    &self.strata,
+                    point,
+                    TERRACE_FREQUENCY * frequency * TERRACE_STRATA_FREQUENCY_RATIO,
+                    2.0,
+                    0.5,
+                );
+                let scaled = raw * TERRACE_STEPS + strata * TERRACE_STRATA_MIX;
+                let step_index = scaled.floor();
+                let frac = scaled - step_index;
                 let riser_shape = riser_profile(frac, TERRACE_RISER);
                 let scarp =
                     1.0 - ((frac - TERRACE_RISER) / (1.0 - TERRACE_RISER)).clamp(0.0, 1.0);
-                let micro = self.fbm(&self.cliff, point, 0.09 * freq, 2.0, 0.5);
-                let shaped = (idx + riser_shape) / TERRACE_STEPS;
-                ((shaped * 2.0 - 1.0) + micro * 0.07 * scarp).clamp(-1.0, 1.0) as f32
+                let micro = self.fbm(
+                    &self.cliff,
+                    point,
+                    TERRACE_MICRO_FREQUENCY * frequency,
+                    2.0,
+                    0.5,
+                );
+                let shaped = (step_index + riser_shape) / TERRACE_STEPS;
+                ((shaped * 2.0 - 1.0) + micro * TERRACE_MICRO_MIX * scarp).clamp(-1.0, 1.0) as f32
             }
             NoiseAlgorithm::Dune => {
                 if ctx.topology.wraps() && ctx.size > 0.0 {
                     self.dune_torus(x, z, ctx)
                 } else {
-                    self.dune_plane(x, z, ctx, freq)
+                    self.dune_plane(x, z, ctx, frequency)
                 }
             }
             NoiseAlgorithm::Cellular => {
-                self.cracks(point, CELLULAR_FREQUENCY * freq, oct) as f32
+                self.cracks(point, CELLULAR_FREQUENCY * frequency, octave_budget) as f32
+            }
+            NoiseAlgorithm::Plateau => {
+                self.plateau_field(point, PLATEAU_FREQUENCY * frequency) as f32
             }
         }
     }
@@ -772,7 +870,7 @@ mod tests {
         for algorithm in NoiseAlgorithm::all() {
             values.insert(engine.sample(algorithm, 33.0, -17.0, &ctx).to_bits());
         }
-        assert_eq!(values.len(), 6, "each algorithm must contribute a distinct field");
+        assert_eq!(values.len(), 7, "each algorithm must contribute a distinct field");
     }
 
     #[test]
@@ -1294,6 +1392,51 @@ mod tests {
             near_border * 4 < total,
             "the zero band must be a thin ridge, not a broad cone: {near_border}/{total}"
         );
+    }
+
+    #[test]
+    fn plateau_field_forms_flat_mesa_tops_with_steep_risers() {
+        let engine = NoiseEngine::new(23);
+        let ctx = NoiseContext::default();
+        let mut flat_runs = 0;
+        let mut run = 0;
+        let mut previous = f32::NAN;
+        let mut max_step = 0.0f32;
+        let mut distinct = std::collections::HashSet::new();
+        for i in 0..4000 {
+            let value = engine.sample(NoiseAlgorithm::Plateau, i as f32 * 0.4, 7.0, &ctx);
+            distinct.insert(value.to_bits());
+            if (value - previous).abs() < 1e-6 {
+                run += 1;
+            } else {
+                if run > 4 {
+                    flat_runs += 1;
+                }
+                run = 0;
+            }
+            if previous.is_finite() {
+                max_step = max_step.max((value - previous).abs());
+            }
+            previous = value;
+        }
+        assert!(flat_runs > 5, "plateaus must produce flat mesa tops: {flat_runs}");
+        assert!(max_step > 0.05, "risers between mesas must be steep: {max_step}");
+        assert!(
+            distinct.len() > 100,
+            "mesa risers must be jagged, not a hard staircase: {}",
+            distinct.len()
+        );
+    }
+
+    #[test]
+    fn plateau_selection_follows_crystalline_bedrock() {
+        let mut params = roll_cell_parameters(WorldSeed::new(1), 0, &MacroContext::default());
+        params.geothermal = Geothermal::None;
+        params.substrate = Substrate::RockCrystalline;
+        params.base_height = BaseHeightBand::Lowland;
+        assert_eq!(select_algorithm(&params, ""), NoiseAlgorithm::Plateau);
+        params.base_height = BaseHeightBand::Peak;
+        assert_eq!(select_algorithm(&params, ""), NoiseAlgorithm::Ridged);
     }
 
     #[test]

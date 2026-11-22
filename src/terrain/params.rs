@@ -816,6 +816,52 @@ mod tests {
     }
 
     #[test]
+    fn substrate_hardness_is_ordered_and_bounded() {
+        let order = [
+            Substrate::Sand,
+            Substrate::SiltClay,
+            Substrate::LimestoneKarst,
+            Substrate::Volcanic,
+            Substrate::RockCrystalline,
+        ];
+        for pair in order.windows(2) {
+            assert!(
+                pair[0].hardness() < pair[1].hardness(),
+                "{:?} must be softer than {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        for substrate in Substrate::ALL {
+            assert!(
+                (0.0..=1.0).contains(&substrate.hardness()),
+                "{substrate:?} hardness out of [0, 1]"
+            );
+            assert!(
+                (substrate.erodibility() - (1.0 - substrate.hardness())).abs() < 1e-6,
+                "{substrate:?} erodibility must be the complement of hardness"
+            );
+        }
+        assert!(Substrate::Sand.hardness() < 0.2);
+        assert!(Substrate::RockCrystalline.hardness() > 0.8);
+    }
+
+    #[test]
+    fn harder_substrates_roll_steeper_base_slopes() {
+        let seed = WorldSeed::new(9);
+        let ctx = MacroContext {
+            slope_magnitude: 0.5,
+            ..Default::default()
+        };
+        let sand = roll_gradient(seed, 3, &ctx, Substrate::Sand);
+        let rock = roll_gradient(seed, 3, &ctx, Substrate::RockCrystalline);
+        assert!(
+            rock.slope.index() > sand.slope.index(),
+            "hard rock must hold steeper base slopes than sand"
+        );
+    }
+
+    #[test]
     fn index_round_trips_for_every_level() {
         for level in 0..Temperature::COUNT {
             let t = Temperature::from_index(level);

@@ -124,7 +124,71 @@ mod tests {
                 "{topology:?}: spawn ground {ground} sits under sea level {}",
                 map.sea_level()
             );
+            let picked = crate::terrain::pick_spawn_height(&map);
+            assert!(picked.is_finite(), "{topology:?}: picked spawn must be finite");
+            assert!(
+                picked >= map.sea_level(),
+                "{topology:?}: picked spawn {picked} must be dry (sea level {})",
+                map.sea_level()
+            );
+            assert!(
+                picked >= map.heights().min(),
+                "{topology:?}: picked spawn {picked} must sit above the seabed {}",
+                map.heights().min()
+            );
         }
+    }
+
+    #[test]
+    fn a_character_falls_when_there_is_no_ground_beneath() {
+        let map = TerrainMap::new(walk_config(WorldTopology::Finite));
+        let mut app = physics_app(map.clone());
+        let entity = spawn_walker(&mut app, 0.0, 0.0);
+        app.add_systems(
+            FixedUpdate,
+            (character_ground_check, drive_walker).chain(),
+        );
+        let start_y = app.world().get::<Transform>(entity).unwrap().translation.y;
+        let mut grounded = 0;
+        for _ in 0..60 {
+            app.update();
+            if app.world().get::<GroundState>(entity).unwrap().is_grounded {
+                grounded += 1;
+            }
+        }
+        let end_y = app.world().get::<Transform>(entity).unwrap().translation.y;
+        assert_eq!(grounded, 0, "with no collider beneath, the walker is never grounded");
+        assert!(
+            end_y < start_y - 1.0,
+            "the walker must fall through the missing terrain ({start_y} -> {end_y})"
+        );
+    }
+
+    #[test]
+    fn a_character_below_the_world_floor_is_respawned() {
+        let map = TerrainMap::new(walk_config(WorldTopology::Finite));
+        let mut app = physics_app(map.clone());
+        app.insert_resource(crate::utils::SpawnGroundHeight(0.0));
+        let entity = app
+            .world_mut()
+            .spawn((
+                Character::default(),
+                GroundState::default(),
+                RigidBody::Dynamic,
+                Collider::capsule(0.4, 1.0),
+                LinearVelocity::ZERO,
+                GravityScale(9.81),
+                Transform::from_xyz(0.0, map.heights().min() - 200.0, 0.0),
+            ))
+            .id();
+        app.add_systems(FixedFirst, super::super::bridges::character_kill_plane);
+        app.update();
+        app.update();
+        let y = app.world().get::<Transform>(entity).unwrap().translation.y;
+        assert!(
+            y > map.heights().min(),
+            "the kill plane must respawn the character above the floor, got {y}"
+        );
     }
 
     #[test]
@@ -401,5 +465,49 @@ mod tests {
             worst_sink < 1.5,
             "the wrapped collider floor diverged from the map by {worst_sink} m"
         );
+    }
+
+    #[test]
+    fn easing_does_not_smear_the_character_across_the_torus_seam() {
+        let map = TerrainMap::new(TerrainConfig::compact().with_topology(WorldTopology::FiniteTorus));
+        let mut app = physics_app(map.clone());
+        spawn_ground(&mut app);
+        let size = map.size();
+        let seam = size * 0.5;
+        let z = dry_lane(&map, seam, 8.0);
+        let entity = spawn_walker(&mut app, seam - 8.0, z);
+        app.world_mut()
+            .entity_mut(entity)
+            .insert(TransformInterpolation);
+        app.add_systems(
+            FixedFirst,
+            wrap_character_to_world
+                .after(TransformEasingSystems::Reset)
+                .before(TransformEasingSystems::UpdateStart),
+        );
+        app.add_systems(
+            FixedUpdate,
+            (character_ground_check, drive_walker).chain(),
+        );
+        let mut crossed = false;
+        for _ in 0..300 {
+            app.update();
+            let transform = app.world().get::<Transform>(entity).unwrap().translation;
+            let position = app.world().get::<Position>(entity).unwrap().0;
+            assert!(
+                transform.x >= -seam - 0.25 && transform.x <= seam + 0.25,
+                "the eased transform escaped the wrapped world at x = {}",
+                transform.x
+            );
+            assert!(
+                (transform.x - position.x).abs() < 4.0,
+                "the eased transform lagged physics by {:.1} m, a seam smear",
+                (transform.x - position.x).abs()
+            );
+            if transform.x < 0.0 {
+                crossed = true;
+            }
+        }
+        assert!(crossed, "the walker must cross the seam for this test to mean anything");
     }
 }

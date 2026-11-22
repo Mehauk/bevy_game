@@ -5,7 +5,7 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::terrain::field::ScalarField;
-use crate::terrain::hydrology::{Lake, Waterfall};
+use crate::terrain::hydrology::{FlowField, Lake, Waterfall};
 use crate::terrain::params::{Geothermal, Salinity, Temperature};
 use crate::terrain::season::{self, Season};
 use crate::terrain::topology::WorldTopology;
@@ -14,6 +14,38 @@ pub const RIBBON_LIFT: f32 = 0.06;
 pub const BANK_TUCK: f32 = 0.15;
 pub const WATER_NONE: f32 = f32::NEG_INFINITY;
 pub const FOAM_DEPTH: f32 = 0.8;
+
+const MIN_VISIBLE_LAKE_DEPTH: f32 = 0.05;
+const MIN_LAKE_CORNERS_PER_QUAD: usize = 3;
+const WATER_UV_TILE_METRES: f32 = 8.0;
+const RIVER_FLOW_SPEED_GAIN: f32 = 0.05;
+const RIVER_FLOW_SPEED_MIN: f32 = 0.3;
+const RIVER_FLOW_SPEED_MAX: f32 = 2.5;
+const RIVER_HALF_WIDTH_BASE_SPACING: f32 = 0.35;
+const RIVER_HALF_WIDTH_ACCUMULATION_GAIN: f32 = 0.05;
+const RIVER_HALF_WIDTH_MAX_SPACING: f32 = 3.0;
+const RIVER_BANK_SKIRT_SPACING: f32 = 0.3;
+const BANK_U_EXTENT: f32 = 0.15;
+const RIVER_UV_V_TILE_SPACING: f32 = 2.0;
+const WATERFALL_LIP_LIFT: f32 = 0.15;
+const WATERFALL_PLUNGE_LIFT: f32 = 0.08;
+const WATERFALL_LIP_FLOW_SPEED: f32 = 3.0;
+const WATERFALL_PLUNGE_FLOW_SPEED: f32 = 1.5;
+const LIP_PROBE_AHEAD_SPACING: f32 = 1.5;
+const LIP_PROBE_STEP_SPACING: f32 = 0.5;
+const LIP_MARGIN_DROP_FRACTION: f32 = 0.1;
+const LIP_MARGIN_MIN_METRES: f32 = 0.5;
+const LIP_MARGIN_MAX_METRES: f32 = 2.0;
+const LIP_MAX_WALK_SPACING: f32 = 8.0;
+const CASCADE_TOP_LIFT: f32 = 0.15;
+const CASCADE_BOTTOM_LIFT: f32 = 0.05;
+const CASCADE_SEGMENTS: usize = 6;
+const CASCADE_SPEED_MIN: f32 = 0.5;
+const CASCADE_SPEED_MAX: f32 = 6.0;
+const CASCADE_FLARE_PER_LENGTH: f32 = 0.5;
+const CASCADE_FOAM_LIFT: f32 = 0.08;
+const CASCADE_FOAM_RADIUS_FRACTION: f32 = 0.9;
+const CASCADE_FOAM_RING_SEGMENTS: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaterKind {
@@ -143,9 +175,10 @@ impl WaterField {
                         .topology
                         .delta_xz(here, there, heights.size)
                         .normalize_or_zero();
-                    let speed = (accumulation.get_at(vertex).max(0.0).sqrt() * 0.05)
-                        .clamp(0.3, 2.5);
-                    flow = delta * speed;
+                    let flow_speed = (accumulation.get_at(vertex).max(0.0).sqrt()
+                        * RIVER_FLOW_SPEED_GAIN)
+                        .clamp(RIVER_FLOW_SPEED_MIN, RIVER_FLOW_SPEED_MAX);
+                    flow = delta * flow_speed;
                 }
                 field.paint(
                     vertex,
@@ -166,19 +199,19 @@ impl WaterField {
                 .normalize_or_zero();
             field.paint(
                 fall.index,
-                heights.get_at(fall.index) + 0.15,
+                heights.get_at(fall.index) + WATERFALL_LIP_LIFT,
                 WaterKind::Waterfall,
                 Salinity::Freshwater,
-                delta * 3.0,
+                delta * WATERFALL_LIP_FLOW_SPEED,
                 season,
                 ctx,
             );
             field.paint(
                 fall.next,
-                heights.get_at(fall.next) + 0.08,
+                heights.get_at(fall.next) + WATERFALL_PLUNGE_LIFT,
                 WaterKind::Waterfall,
                 Salinity::Freshwater,
-                delta * 1.5,
+                delta * WATERFALL_PLUNGE_FLOW_SPEED,
                 season,
                 ctx,
             );
@@ -285,7 +318,7 @@ pub fn lake_planes(
     lakes
         .iter()
         .enumerate()
-        .filter(|(_, lake)| lake.cells.len() >= minimum_area && lake.depth > 0.05)
+        .filter(|(_, lake)| lake.cells.len() >= minimum_area && lake.depth > MIN_VISIBLE_LAKE_DEPTH)
         .map(|(index, lake)| {
             let mut centre = Vec2::ZERO;
             for &cell in &lake.cells {
@@ -317,6 +350,46 @@ pub fn lake_planes(
         .collect()
 }
 
+pub const BRACKISH_SURFACE_MARGIN_METRES: f32 = 1.0;
+pub const SALINITY_SAMPLE_STRIDE: usize = 4;
+
+pub fn classify_lake_salinity(
+    lakes: &[Lake],
+    sea_level: f32,
+    cell_of_vertex: &[usize],
+    cell_arid: &[bool],
+) -> Vec<Salinity> {
+    lakes
+        .iter()
+        .map(|lake| {
+            if lake.drains_to_sea {
+                return Salinity::Freshwater;
+            }
+            if lake.surface <= sea_level + BRACKISH_SURFACE_MARGIN_METRES {
+                return Salinity::Brackish;
+            }
+            let mut arid = 0usize;
+            let mut sampled = 0usize;
+            for &vertex in lake.cells.iter().step_by(SALINITY_SAMPLE_STRIDE) {
+                let cell = cell_of_vertex.get(vertex).copied().unwrap_or(0);
+                let Some(&arid_cell) = cell_arid.get(cell) else {
+                    continue;
+                };
+                sampled += 1;
+                if arid_cell {
+                    arid += 1;
+                }
+            }
+            let majority_arid = sampled > 0 && arid * 2 > sampled;
+            if majority_arid {
+                Salinity::Hypersaline
+            } else {
+                Salinity::Freshwater
+            }
+        })
+        .collect()
+}
+
 pub fn sea_chunk_mesh(
     heights: &ScalarField,
     ocean: &[bool],
@@ -334,7 +407,7 @@ pub fn sea_chunk_mesh(
 
     let mut ground = vec![0.0f32; stride * stride];
     let mut wet = vec![false; stride * stride];
-    let mut near_sea_top = false;
+    let mut any_wet_corner = false;
     for iz in 0..stride {
         for ix in 0..stride {
             let point = Vec2::new(
@@ -348,10 +421,10 @@ pub fn sea_chunk_mesh(
             let index = iz * stride + ix;
             ground[index] = height;
             wet[index] = connected && height <= sea_top;
-            near_sea_top = near_sea_top || wet[index];
+            any_wet_corner = any_wet_corner || wet[index];
         }
     }
-    if !near_sea_top {
+    if !any_wet_corner {
         return None;
     }
 
@@ -379,7 +452,7 @@ pub fn sea_chunk_mesh(
         let foam = (1.0 - depth / FOAM_DEPTH).clamp(0.0, 1.0);
         positions.push([point.x, 0.0, point.y]);
         normals.push([0.0, 1.0, 0.0]);
-        uvs.push([point.x / 8.0, point.y / 8.0]);
+        uvs.push([point.x / WATER_UV_TILE_METRES, point.y / WATER_UV_TILE_METRES]);
         colors.push([depth, if is_frozen { 1.0 } else { 0.0 }, foam, 1.0]);
         (positions.len() - 1) as u32
     };
@@ -461,7 +534,7 @@ pub fn lake_basin_mesh(lake: &Lake, heights: &ScalarField, frozen: bool) -> Opti
             let inside = corners.iter().filter(|&&(cx, cz)| {
                 in_lake.contains(&heights.index(heights.wrap(cx), heights.wrap(cz)))
             }).count();
-            if inside >= 3 {
+            if inside >= MIN_LAKE_CORNERS_PER_QUAD {
                 quads.insert((qx, qz));
             }
         }
@@ -493,7 +566,7 @@ pub fn lake_basin_mesh(lake: &Lake, heights: &ScalarField, frozen: bool) -> Opti
             };
             positions.push([local.x, y, local.y]);
             normals.push([0.0, 1.0, 0.0]);
-            uvs.push([local.x / 8.0, local.y / 8.0]);
+            uvs.push([local.x / WATER_UV_TILE_METRES, local.y / WATER_UV_TILE_METRES]);
             colors.push([
                 (lake.surface - ground).max(0.0),
                 if frozen { 1.0 } else { 0.0 },
@@ -514,8 +587,17 @@ pub fn lake_basin_mesh(lake: &Lake, heights: &ScalarField, frozen: bool) -> Opti
 }
 
 pub fn river_half_width(accumulation: f32, spacing: f32) -> f32 {
-    spacing * (0.35 + 0.05 * accumulation.max(0.0).sqrt()).clamp(0.35, 3.0)
+    spacing
+        * (RIVER_HALF_WIDTH_BASE_SPACING
+            + RIVER_HALF_WIDTH_ACCUMULATION_GAIN * accumulation.max(0.0).sqrt())
+            .clamp(
+                RIVER_HALF_WIDTH_BASE_SPACING,
+                RIVER_HALF_WIDTH_MAX_SPACING,
+            )
 }
+
+pub const SLOPE_SPEED_GAIN: f32 = 1.5;
+pub const FLOW_SPEED_MAX: f32 = 4.0;
 
 fn chaikin(points: &[Vec2]) -> Vec<Vec2> {
     if points.len() < 3 {
@@ -536,6 +618,7 @@ pub fn river_ribbon_mesh(
     path: &[usize],
     heights: &ScalarField,
     accumulation: &ScalarField,
+    flow: &FlowField,
 ) -> Option<(Vec2, Mesh)> {
     if path.len() < 2 {
         return None;
@@ -568,7 +651,7 @@ pub fn river_ribbon_mesh(
     }
 
     let spacing = heights.spacing();
-    let skirt = spacing * 0.3;
+    let skirt = spacing * RIVER_BANK_SKIRT_SPACING;
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
@@ -596,8 +679,19 @@ pub fn river_ribbon_mesh(
         } else {
             side
         };
-        let flow_speed = (accum.max(0.0).sqrt() * 0.05).clamp(0.3, 2.5);
-        let flow = tangent.normalize_or_zero() * flow_speed;
+        let baked = flow.direction_at(world);
+        let tangent_dir = tangent.normalize_or_zero();
+        let direction = if baked.length_squared() > 1e-6 {
+            baked.normalize_or_zero()
+        } else {
+            tangent_dir
+        };
+        let slope = flow.slope_at(world).max(0.0);
+        let base_speed = (accum.max(0.0).sqrt() * RIVER_FLOW_SPEED_GAIN)
+            .clamp(RIVER_FLOW_SPEED_MIN, RIVER_FLOW_SPEED_MAX);
+        let flow_speed = (base_speed * (1.0 + slope * SLOPE_SPEED_GAIN))
+            .clamp(RIVER_FLOW_SPEED_MIN, FLOW_SPEED_MAX);
+        let velocity = direction * flow_speed;
 
         if let Some(before) = previous {
             travelled += point.distance(before);
@@ -605,19 +699,23 @@ pub fn river_ribbon_mesh(
         previous = Some(point);
 
         let surface_y = ground + RIBBON_LIFT;
-        let skirt_y = ground - BANK_TUCK;
-        let v = travelled / (spacing * 2.0).max(1e-3);
+        let v = travelled / (spacing * RIVER_UV_V_TILE_SPACING).max(1e-3);
         let cross = [
-            (point - side * (half + skirt), skirt_y, 0.0),
-            (point - side * half, surface_y, 0.15),
-            (point + side * half, surface_y, 0.85),
-            (point + side * (half + skirt), skirt_y, 1.0),
+            (point - side * (half + skirt), 0.0, false),
+            (point - side * half, BANK_U_EXTENT, true),
+            (point + side * half, 1.0 - BANK_U_EXTENT, true),
+            (point + side * (half + skirt), 1.0, false),
         ];
-        for (offset, y, u) in cross {
+        for (offset, u, crown) in cross {
+            let y = if crown {
+                surface_y
+            } else {
+                heights.sample_world(anchor + offset) - BANK_TUCK
+            };
             positions.push([offset.x, y, offset.y]);
             normals.push([0.0, 1.0, 0.0]);
             uvs.push([u, v]);
-            colors.push([flow.x, flow.y, flow_speed, 1.0]);
+            colors.push([velocity.x, velocity.y, flow_speed, 1.0]);
         }
         if index > 0 {
             let a = (index as u32 - 1) * 4;
@@ -647,11 +745,12 @@ pub fn cascade_lip_width(fall: &Waterfall, heights: &ScalarField, fallback: f32)
         return fallback;
     }
     let side = Vec2::new(-upstream.y, upstream.x);
-    let probe = fall.lip + upstream * (spacing * 1.5);
+    let probe = fall.lip + upstream * (spacing * LIP_PROBE_AHEAD_SPACING);
     let reference = heights.sample_world(probe);
-    let margin = (fall.drop * 0.1).clamp(0.5, 2.0);
-    let step = spacing * 0.5;
-    let max_walk = spacing * 8.0;
+    let margin = (fall.drop * LIP_MARGIN_DROP_FRACTION)
+        .clamp(LIP_MARGIN_MIN_METRES, LIP_MARGIN_MAX_METRES);
+    let step = spacing * LIP_PROBE_STEP_SPACING;
+    let max_walk = spacing * LIP_MAX_WALK_SPACING;
     let mut width = 0.0;
     for sign in [1.0f32, -1.0] {
         let mut walk = 0.0;
@@ -666,7 +765,7 @@ pub fn cascade_lip_width(fall: &Waterfall, heights: &ScalarField, fallback: f32)
         }
         width += walk;
     }
-    width.clamp(spacing, spacing * 8.0)
+    width.clamp(spacing, spacing * LIP_MAX_WALK_SPACING)
 }
 
 pub fn cascade_mesh(fall: &Waterfall, heights: &ScalarField, width: f32) -> Option<Mesh> {
@@ -685,44 +784,51 @@ pub fn cascade_mesh(fall: &Waterfall, heights: &ScalarField, width: f32) -> Opti
     }
     let width = cascade_lip_width(fall, heights, width);
 
-    let top_y = lip_height + 0.15;
-    let bottom_y = plunge_height + 0.05;
-    let segments = 6usize;
+    let top_y = lip_height + CASCADE_TOP_LIFT;
+    let bottom_y = plunge_height + CASCADE_BOTTOM_LIFT;
+    let segments = CASCADE_SEGMENTS;
+    let fall_speed = fall.drop.clamp(CASCADE_SPEED_MIN, CASCADE_SPEED_MAX);
+    let fall_flow = Vec2::new(flow_dir.x, flow_dir.z).normalize_or_zero() * fall_speed;
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
 
     for step in 0..=segments {
         let t = step as f32 / segments as f32;
         let centre = Vec3::new(fall.lip.x, 0.0, fall.lip.y) + flow_dir * t;
         let y = top_y - (top_y - bottom_y) * t * t;
-        let half = width.max(heights.spacing()) * 0.5 * (1.0 + 0.5 * t);
+        let half = width.max(heights.spacing()) * 0.5 * (1.0 + CASCADE_FLARE_PER_LENGTH * t);
         positions.push([(centre + side * half).x, y, (centre + side * half).z]);
         positions.push([(centre - side * half).x, y, (centre - side * half).z]);
         normals.push([side.x, 0.0, side.z]);
         normals.push([side.x, 0.0, side.z]);
         uvs.push([0.0, t]);
         uvs.push([1.0, t]);
+        colors.push([fall_flow.x, fall_flow.y, fall_speed, 1.0]);
+        colors.push([fall_flow.x, fall_flow.y, fall_speed, 1.0]);
         if step > 0 {
             let a = (step as u32 - 1) * 2;
             indices.extend_from_slice(&[a, a + 1, a + 2, a + 1, a + 3, a + 2]);
         }
     }
 
-    let foam_y = plunge_height + 0.08;
-    let foam_radius = fall.pool_radius.max(heights.spacing()) * 0.9;
+    let foam_y = plunge_height + CASCADE_FOAM_LIFT;
+    let foam_radius = fall.pool_radius.max(heights.spacing()) * CASCADE_FOAM_RADIUS_FRACTION;
     let foam_base = positions.len() as u32;
     positions.push([fall.plunge.x, foam_y, fall.plunge.y]);
     normals.push([0.0, 1.0, 0.0]);
     uvs.push([0.5, 0.5]);
-    let ring = 16usize;
+    colors.push([0.0, 0.0, 0.0, 1.0]);
+    let ring = CASCADE_FOAM_RING_SEGMENTS;
     for k in 0..=ring {
         let angle = k as f32 * std::f32::consts::TAU / ring as f32;
         let offset = Vec2::new(angle.cos(), angle.sin()) * foam_radius;
         positions.push([fall.plunge.x + offset.x, foam_y, fall.plunge.y + offset.y]);
         normals.push([0.0, 1.0, 0.0]);
         uvs.push([0.5 + 0.5 * angle.cos(), 0.5 + 0.5 * angle.sin()]);
+        colors.push([0.0, 0.0, 0.0, 1.0]);
     }
     for k in 0..ring as u32 {
         indices.extend_from_slice(&[foam_base, foam_base + 1 + k, foam_base + 2 + k]);
@@ -732,6 +838,7 @@ pub fn cascade_mesh(fall: &Waterfall, heights: &ScalarField, width: f32) -> Opti
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
     Some(mesh)
 }
@@ -803,7 +910,7 @@ pub fn submerged_fraction(field: &ScalarField, surface: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terrain::hydrology::priority_flood;
+    use crate::terrain::hydrology::{bake_flow_vectors, priority_flood};
     use crate::terrain::topology::WorldTopology;
     use bevy::mesh::VertexAttributeValues;
 
@@ -1097,6 +1204,11 @@ mod tests {
         assert!(anchor.is_finite());
     }
 
+    fn flow_field(field: &ScalarField) -> FlowField {
+        let hydro = priority_flood(field, -1000.0);
+        bake_flow_vectors(field, &hydro)
+    }
+
     fn straight_field(accum: f32) -> (ScalarField, ScalarField, Vec<usize>) {
         let mut field = ScalarField::new(16, 160.0, WorldTopology::Finite);
         for index in 0..field.len() {
@@ -1111,15 +1223,15 @@ mod tests {
     #[test]
     fn river_ribbon_needs_at_least_two_stations() {
         let (field, accumulation, path) = straight_field(10.0);
-        assert!(river_ribbon_mesh(&[], &field, &accumulation).is_none());
-        assert!(river_ribbon_mesh(&path[..1], &field, &accumulation).is_none());
-        assert!(river_ribbon_mesh(&path, &field, &accumulation).is_some());
+        assert!(river_ribbon_mesh(&[], &field, &accumulation, &flow_field(&field)).is_none());
+        assert!(river_ribbon_mesh(&path[..1], &field, &accumulation, &flow_field(&field)).is_none());
+        assert!(river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).is_some());
     }
 
     #[test]
     fn river_ribbon_is_a_four_vertex_per_station_strip() {
         let (field, accumulation, path) = straight_field(10.0);
-        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation).expect("ribbon");
+        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
         assert_eq!(anchor, field.world_of(2, 8));
         let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions");
         assert!(positions.len() >= path.len() * 4 / 2);
@@ -1130,7 +1242,7 @@ mod tests {
     #[test]
     fn river_ribbon_hugs_the_ground_and_widens_with_accumulation() {
         let (field, accumulation, path) = straight_field(16.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation).expect("ribbon");
+        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
         let VertexAttributeValues::Float32x3(positions) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions")
         else {
@@ -1157,7 +1269,7 @@ mod tests {
     #[test]
     fn river_ribbon_encodes_flow_distance_in_uv() {
         let (field, accumulation, path) = straight_field(10.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation).expect("ribbon");
+        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
         let VertexAttributeValues::Float32x2(uvs) =
             mesh.attribute(Mesh::ATTRIBUTE_UV_0).expect("uvs")
         else {
@@ -1178,7 +1290,7 @@ mod tests {
         }
         let accumulation = ScalarField::new(16, 160.0, WorldTopology::FiniteTorus);
         let path: Vec<usize> = (13..=18).map(|x| field.index(x, 8)).collect();
-        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation).expect("seam ribbon");
+        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("seam ribbon");
         let VertexAttributeValues::Float32x3(positions) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions")
         else {
@@ -1283,7 +1395,7 @@ mod tests {
     #[test]
     fn river_ribbon_encodes_flow_in_vertex_colors() {
         let (field, accumulation, path) = straight_field(100.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation).expect("ribbon");
+        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
         let VertexAttributeValues::Float32x4(colors) =
             mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors")
         else {
@@ -1297,6 +1409,84 @@ mod tests {
         assert!(colors.iter().all(|c| c[1].abs() < 1e-4));
         assert!(colors.iter().all(|c| (c[2] - expected_speed).abs() < 1e-4));
         assert!(colors.iter().all(|c| c[3] == 1.0));
+    }
+
+    fn tilted_field(slope_x: f32, slope_z: f32) -> (ScalarField, ScalarField, Vec<usize>) {
+        let mut field = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        for z in 0..16 {
+            for x in 0..16 {
+                let w = field.world_of(x, z);
+                field.set(x, z, 10.0 + slope_x * w.x + slope_z * w.y);
+            }
+        }
+        let mut accumulation = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        accumulation.fill(100.0);
+        let path = (2..8).map(|x| field.index(x, 8)).collect();
+        (field, accumulation, path)
+    }
+
+    #[test]
+    fn river_flow_accelerates_down_a_slope() {
+        let (field, accumulation, path) = tilted_field(-0.5, 0.0);
+        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("downhill ribbon");
+        let VertexAttributeValues::Float32x4(colors) =
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors")
+        else {
+            panic!("expected float colors");
+        };
+        let flat_speed = (100.0f32.sqrt() * 0.05).clamp(0.3, 2.5);
+        assert!(
+            colors.iter().all(|c| c[2] > flat_speed + 1e-3),
+            "a downhill reach must run faster than still water"
+        );
+        assert!(colors.iter().all(|c| c[0] > 0.0), "flow still points downstream");
+    }
+
+    #[test]
+    fn river_skirt_hugs_the_bank_on_a_cross_slope() {
+        let (field, accumulation, path) = tilted_field(0.0, 0.6);
+        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
+        let VertexAttributeValues::Float32x3(positions) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions")
+        else {
+            panic!("expected float positions");
+        };
+        for station in positions.chunks(4) {
+            assert!(
+                (station[1][1] - station[2][1]).abs() < 1e-6,
+                "the crown stays level across the channel"
+            );
+            for k in [0usize, 3] {
+                let world = anchor + Vec2::new(station[k][0], station[k][2]);
+                let ground = field.sample_world(world);
+                assert!(
+                    station[k][1] <= ground + 1e-3,
+                    "the bank skirt must never float above the local ground"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cascade_bakes_world_space_flow_vectors() {
+        let (field, fall) = scarp_field();
+        let mesh = cascade_mesh(&fall, &field, 2.0).expect("cascade");
+        let VertexAttributeValues::Float32x4(colors) =
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors")
+        else {
+            panic!("expected float colors");
+        };
+        let expected_speed = fall.drop.clamp(0.5, 6.0);
+        for sheet in colors.iter().take(14) {
+            assert!(sheet[0] > 0.0, "the lip flow must point downstream (+x)");
+            assert!(sheet[1].abs() < 1e-4);
+            assert!((Vec2::new(sheet[0], sheet[1]).length() - expected_speed).abs() < 1e-4);
+            assert_eq!(sheet[2], expected_speed);
+        }
+        for foam in colors.iter().skip(14) {
+            assert_eq!(foam[0], 0.0, "the plunge pool carries no directional flow");
+            assert_eq!(foam[1], 0.0);
+        }
     }
 
     fn channel_scarp(channel_width: f32) -> (ScalarField, Waterfall) {

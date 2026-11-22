@@ -45,7 +45,6 @@ const CAUSTIC_SCALE: f32 = 0.45;
 const CAUSTIC_DETAIL: f32 = 1.9;
 const CAUSTIC_SHARP: f32 = 6.0;
 const CAUSTIC_GAIN: f32 = 0.55;
-const CAUSTIC_DEPTH: f32 = 2.6;
 
 fn hash21(p: vec2<f32>) -> f32 {
     let s = dot(p, vec2<f32>(127.1, 311.7));
@@ -162,9 +161,14 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         if (water.kind == KIND_RIVER) {
             flow = vec2<f32>(vdata.x, vdata.y);
         } else if (water.kind == KIND_WATERFALL) {
-            let down_xz = vec2<f32>(down.x, down.z);
-            if (length(down_xz) > 1e-6) {
-                flow = normalize(down_xz);
+            let baked = vec2<f32>(vdata.x, vdata.y);
+            if (water.use_vertex_data == 1u && length(baked) > 1e-4) {
+                flow = baked;
+            } else {
+                let down_xz = vec2<f32>(down.x, down.z);
+                if (length(down_xz) > 1e-6) {
+                    flow = normalize(down_xz);
+                }
             }
         }
     }
@@ -225,6 +229,9 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 
     var colour = body;
     var under_absorb = 0.0;
+    let caustic = caustic_field(world_pos.xz);
+    let shallow_light = clamp((transmit.r + transmit.g + transmit.b) / 3.0, 0.0, 1.0);
+    let caustic_light = caustic * water.sun_color.rgb * water.sun_direction.w * CAUSTIC_GAIN;
     if (is_front) {
         let R = reflect(-V, N);
         let sky = mix(water.sky_horizon.rgb, water.sky_zenith.rgb, clamp(R.y, 0.0, 1.0));
@@ -233,11 +240,13 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         let H = normalize(V + L);
         let spec = pow(max(dot(N, H), 0.0), mix(220.0, 24.0, roughness));
         colour = colour + water.sun_color.rgb * (water.sun_direction.w * spec);
+        colour = colour + caustic_light * shallow_light;
     } else {
-        under_absorb = clamp(1.0 - (transmit.r + transmit.g + transmit.b) / 3.0, 0.0, 1.0);
+        under_absorb = clamp(1.0 - shallow_light, 0.0, 1.0);
         colour = mix(water.shallow_color.rgb, water.deep_color.rgb, 0.2 + 0.6 * under_absorb);
         let shimmer = value_noise(vec2<f32>(world_pos.x * 1.3 + water.time * 0.6, world_pos.z * 1.1 - water.time * 0.4));
         colour = colour + water.sun_color.rgb * water.sun_direction.w * (0.16 + 0.24 * shimmer) * (1.0 - under_absorb);
+        colour = colour + caustic_light * (1.0 - under_absorb);
         colour = colour + vec3<f32>(0.04 * streak);
     }
 

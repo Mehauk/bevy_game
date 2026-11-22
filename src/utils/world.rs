@@ -17,3 +17,8 @@ pub struct WaterImmersion {
     pub flow: Vec2,
     pub frozen: bool,
 }
+
+#[derive(Resource, Default)]
+pub struct TeleportRequest {
+    pub target: Option<Vec3>,
+}

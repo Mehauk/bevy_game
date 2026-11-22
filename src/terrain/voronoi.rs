@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use bevy::prelude::Vec2;
 use glam27::DVec3 as VoroDVec3;
 use meshless_voronoi::{Dimensionality, Voronoi};
+use noise::{NoiseFn, Perlin};
 
 use crate::terrain::seed::{WorldSeed, STAGE_BOUNDARY_BLEND, STAGE_VORONOI};
 use crate::terrain::topology::WorldTopology;
@@ -38,6 +39,7 @@ pub struct VoronoiConfig {
     pub jitter_min: f32,
     pub jitter_max: f32,
     pub lloyd_passes: u32,
+    pub warp_amplitude: f32,
 }
 
 impl Default for VoronoiConfig {
@@ -52,6 +54,7 @@ impl Default for VoronoiConfig {
             jitter_min: 0.15,
             jitter_max: 0.85,
             lloyd_passes: 2,
+            warp_amplitude: 3.0,
         }
     }
 }
@@ -134,15 +137,15 @@ impl SpatialIndex {
                         continue;
                     };
                     for &id in &self.buckets[bz * self.per_axis + bx] {
-                        let d = self.topology.distance_xz(p, cells[id].center, self.size);
-                        if best.is_none_or(|(bd, _)| d < bd) {
-                            best = Some((d, id));
+                        let distance = self.topology.distance_xz(p, cells[id].center, self.size);
+                        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+                            best = Some((distance, id));
                         }
                     }
                 }
             }
-            if let Some((d, _)) = best {
-                if d <= ring as f32 * self.bucket_size {
+            if let Some((distance, _)) = best {
+                if distance <= ring as f32 * self.bucket_size {
                     break;
                 }
             }
@@ -183,6 +186,80 @@ impl SpatialIndex {
     }
 }
 
+const WARP_FIELD_FREQUENCY: f64 = 0.02;
+const TORUS_WARP_FIELD_FREQUENCY: f64 = 0.45;
+const TORUS_WARP_DECORRELATION: f64 = 3.7;
+const WARP_FIELD_DECORRELATION_X: f64 = 31.7;
+const WARP_FIELD_DECORRELATION_Z: f64 = 19.3;
+
+const MIN_CENTRE_DISTANCE: f32 = 1e-6;
+const HARD_BOUNDARY_WIDTH: f32 = 1e-5;
+const MIN_BLEND_WEIGHT: f32 = 1e-6;
+const WRAP_REACH_FRACTION: f32 = 0.75;
+
+#[derive(Clone, Debug)]
+struct WarpField {
+    x: Perlin,
+    z: Perlin,
+    amplitude: f32,
+    topology: WorldTopology,
+    size: f32,
+}
+
+impl WarpField {
+    fn new(seed: WorldSeed, config: &VoronoiConfig) -> Self {
+        let base = seed.stage(STAGE_VORONOI);
+        Self {
+            x: Perlin::new((base as u32) ^ 0x51f3_24ae),
+            z: Perlin::new(((base >> 32) as u32) ^ 0x3f5a_1e77),
+            amplitude: config.warp_amplitude.max(0.0),
+            topology: config.topology,
+            size: config.size,
+        }
+    }
+
+    fn offset(&self, p: Vec2) -> Vec2 {
+        if self.amplitude <= 1e-6 {
+            return Vec2::ZERO;
+        }
+        let (wx, wz) = if self.topology.wraps() && self.size > 0.0 {
+            let tau = std::f64::consts::TAU;
+            let u = (p.x / self.size) as f64 * tau;
+            let v = (p.y / self.size) as f64 * tau;
+            let q = [
+                u.cos() * TORUS_WARP_FIELD_FREQUENCY,
+                u.sin() * TORUS_WARP_FIELD_FREQUENCY,
+                v.cos() * TORUS_WARP_FIELD_FREQUENCY,
+                v.sin() * TORUS_WARP_FIELD_FREQUENCY,
+            ];
+            (
+                self.x.get(q),
+                self.z.get([
+                    q[0] + TORUS_WARP_DECORRELATION,
+                    q[1] - TORUS_WARP_DECORRELATION * 0.7,
+                    q[2] + TORUS_WARP_DECORRELATION * 0.5,
+                    q[3] + TORUS_WARP_DECORRELATION * 1.3,
+                ]),
+            )
+        } else {
+            let q = [
+                p.x as f64 * WARP_FIELD_FREQUENCY,
+                p.y as f64 * WARP_FIELD_FREQUENCY,
+            ];
+            (
+                self.x.get([q[0], q[1], 0.0, 0.0]),
+                self.z.get([
+                    q[0] + WARP_FIELD_DECORRELATION_X,
+                    q[1] - WARP_FIELD_DECORRELATION_Z,
+                    0.0,
+                    0.0,
+                ]),
+            )
+        };
+        Vec2::new(wx as f32 * self.amplitude, wz as f32 * self.amplitude)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VertexBlendCache {
     cell_ids: Vec<Option<usize>>,
@@ -212,8 +289,11 @@ pub struct VoronoiLayout {
     cells: Vec<VoronoiCellData>,
     boundaries: Vec<BoundaryEdge>,
     blends: HashMap<(usize, usize), f32>,
+    cell_weights: Vec<f32>,
+    seed: WorldSeed,
     config: VoronoiConfig,
     index: SpatialIndex,
+    warp: WarpField,
     vertex_caches: Arc<Mutex<HashMap<(usize, u32, u8), Arc<VertexBlendCache>>>>,
 }
 
@@ -298,13 +378,13 @@ fn clip_half_plane(polygon: &[Vec2], m: Vec2, normal: Vec2) -> Vec<Vec2> {
     for index in 0..polygon.len() {
         let a = polygon[index];
         let b = polygon[(index + 1) % polygon.len()];
-        let sa = signed(a);
-        let sb = signed(b);
-        if sa <= 0.0 {
+        let side_a = signed(a);
+        let side_b = signed(b);
+        if side_a <= 0.0 {
             out.push(a);
         }
-        if (sa < 0.0 && sb > 0.0) || (sa > 0.0 && sb < 0.0) {
-            out.push(a.lerp(b, sa / (sa - sb)));
+        if (side_a < 0.0 && side_b > 0.0) || (side_a > 0.0 && side_b < 0.0) {
+            out.push(a.lerp(b, side_a / (side_a - side_b)));
         }
     }
     out
@@ -312,6 +392,14 @@ fn clip_half_plane(polygon: &[Vec2], m: Vec2, normal: Vec2) -> Vec<Vec2> {
 
 impl VoronoiLayout {
     pub fn generate(seed: WorldSeed, config: VoronoiConfig) -> Self {
+        Self::generate_with_weights(seed, config, &[])
+    }
+
+    pub fn generate_with_weights(
+        seed: WorldSeed,
+        config: VoronoiConfig,
+        weights: &[f32],
+    ) -> Self {
         let dim = config.grid_dim.max(1);
         let half = config.size * 0.5;
         let span = config.size / dim as f32;
@@ -320,35 +408,68 @@ impl VoronoiLayout {
         for gz in 0..dim {
             for gx in 0..dim {
                 let index = (gz * dim + gx) as u64;
-                let jx = config.jitter_min
+                let jitter_x = config.jitter_min
                     + (config.jitter_max - config.jitter_min)
                         * seed.unit(STAGE_VORONOI, index, 0);
-                let jz = config.jitter_min
+                let jitter_z = config.jitter_min
                     + (config.jitter_max - config.jitter_min)
                         * seed.unit(STAGE_VORONOI, index, 1);
                 generators.push(VoroDVec3::new(
-                    (-half + (gx as f32 + jx) * span) as f64,
-                    (-half + (gz as f32 + jz) * span) as f64,
+                    (-half + (gx as f32 + jitter_x) * span) as f64,
+                    (-half + (gz as f32 + jitter_z) * span) as f64,
                     0.0,
                 ));
             }
         }
 
         for _ in 0..config.lloyd_passes {
-            let pass = Self::build_voronoi(&generators, &config);
-            generators = Self::relax_generators(&pass, &config);
+            let diagram = Self::build_voronoi(&generators, &config);
+            generators = Self::relax_generators(&diagram, &config);
         }
+
+        let centers: Vec<Vec2> = generators
+            .iter()
+            .map(|generator| Vec2::new(generator.x as f32, generator.y as f32))
+            .collect();
+        Self::assemble(seed, config, &centers, weights)
+    }
+
+    pub fn with_cell_weights(&self, weights: &[f32]) -> Self {
+        let centers: Vec<Vec2> = self.cells.iter().map(|cell| cell.center).collect();
+        Self::assemble(self.seed, self.config, &centers, weights)
+    }
+
+    fn assemble(
+        seed: WorldSeed,
+        config: VoronoiConfig,
+        centers: &[Vec2],
+        weights: &[f32],
+    ) -> Self {
+        let generators: Vec<VoroDVec3> = centers
+            .iter()
+            .map(|center| VoroDVec3::new(center.x as f64, center.y as f64, 0.0))
+            .collect();
         let voronoi = Self::build_voronoi(&generators, &config);
 
-        let mut cells: Vec<VoronoiCellData> = voronoi
-            .cells()
+        let mut cells: Vec<VoronoiCellData> = centers
             .iter()
             .enumerate()
-            .map(|(index, cell)| VoronoiCellData {
+            .map(|(index, center)| VoronoiCellData {
                 id: index,
-                center: Vec2::new(cell.loc().x as f32, cell.loc().y as f32),
+                center: *center,
                 neighbours: Vec::new(),
                 polygon: Vec::new(),
+            })
+            .collect();
+
+        let cell_weights: Vec<f32> = (0..cells.len())
+            .map(|index| {
+                weights
+                    .get(index)
+                    .copied()
+                    .filter(|weight| weight.is_finite())
+                    .unwrap_or(0.0)
+                    .max(0.0)
             })
             .collect();
 
@@ -382,15 +503,13 @@ impl VoronoiLayout {
 
         let polygons: Vec<Vec<Vec2>> = cells
             .iter()
-            .map(|cell| Self::cell_polygon(&cells, cell, &config))
+            .map(|cell| Self::cell_polygon(&cells, &cell_weights, cell, &config))
             .collect();
         for (cell, polygon) in cells.iter_mut().zip(polygons) {
             cell.polygon = polygon;
         }
 
-        let mut boundaries: Vec<BoundaryEdge> = Vec::new();
         let mut blends: HashMap<(usize, usize), f32> = HashMap::new();
-
         for (a, b) in pairs {
             let key = (a, b);
             if blends.contains_key(&key) {
@@ -408,46 +527,28 @@ impl VoronoiLayout {
                 0.0
             };
             blends.insert(key, blend_width);
-
-            let delta = config
-                .topology
-                .delta_xz(cells[a].center, cells[b].center, config.size);
-            let length = delta.length();
-            let normal = if length > 1e-6 {
-                delta / length
-            } else {
-                Vec2::ZERO
-            };
-            let (p0, p1) = Self::shared_edge(&cells[a], cells[a].center + delta * 0.5, normal)
-                .unwrap_or((
-                    cells[a].center + delta * 0.5,
-                    cells[a].center + delta * 0.5,
-                ));
-            let wraps = config.topology.wraps()
-                && [p0, p1]
-                    .iter()
-                    .any(|p| p.x.abs() > half + 1e-3 || p.y.abs() > half + 1e-3);
-            boundaries.push(BoundaryEdge {
-                cell_a: a,
-                cell_b: b,
-                p0,
-                p1,
-                midpoint: (p0 + p1) * 0.5,
-                blend_width,
-                wraps,
-            });
         }
 
+        let mut boundaries = Self::boundary_edges(&cells, &cell_weights, &config);
+        for boundary in boundaries.iter_mut() {
+            boundary.blend_width = *blends
+                .get(&pair_key(boundary.cell_a, boundary.cell_b))
+                .unwrap_or(&config.default_blend_width);
+        }
         boundaries.sort_by_key(|b| (b.cell_a, b.cell_b));
 
         let index = SpatialIndex::build(&cells, &config);
+        let warp = WarpField::new(seed, &config);
 
         Self {
             cells,
             boundaries,
             blends,
+            cell_weights,
+            seed,
             config,
             index,
+            warp,
             vertex_caches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -489,14 +590,33 @@ impl VoronoiLayout {
             .collect()
     }
 
+    fn radical_axis(
+        weights: &[f32],
+        cell: &VoronoiCellData,
+        other: &VoronoiCellData,
+        config: &VoronoiConfig,
+    ) -> Option<(Vec2, Vec2)> {
+        let delta = config
+            .topology
+            .delta_xz(cell.center, other.center, config.size);
+        let length = delta.length();
+        if length <= MIN_CENTRE_DISTANCE {
+            return None;
+        }
+        let shift =
+            (weights[cell.id] - weights[other.id]) / (2.0 * length * length);
+        Some((cell.center + delta * (0.5 + shift), delta / length))
+    }
+
     fn cell_polygon(
         cells: &[VoronoiCellData],
+        weights: &[f32],
         cell: &VoronoiCellData,
         config: &VoronoiConfig,
     ) -> Vec<Vec2> {
         let half = config.size * 0.5;
         let mut polygon = if config.topology.wraps() {
-            let reach = config.size * 0.75;
+            let reach = config.size * WRAP_REACH_FRACTION;
             vec![
                 cell.center + Vec2::new(-reach, -reach),
                 cell.center + Vec2::new(reach, -reach),
@@ -511,18 +631,16 @@ impl VoronoiLayout {
                 Vec2::new(-half, half),
             ]
         };
-        for &neighbour in &cell.neighbours {
-            let Some(other) = cells.get(neighbour) else {
-                continue;
-            };
-            let delta = config
-                .topology
-                .delta_xz(cell.center, other.center, config.size);
-            let length = delta.length();
-            if length <= 1e-6 {
+        for other in cells {
+            if other.id == cell.id {
                 continue;
             }
-            polygon = clip_half_plane(&polygon, cell.center + delta * 0.5, delta / length);
+            let Some((bisector, normal)) =
+                Self::radical_axis(weights, cell, other, config)
+            else {
+                continue;
+            };
+            polygon = clip_half_plane(&polygon, bisector, normal);
             if polygon.is_empty() {
                 break;
             }
@@ -530,25 +648,67 @@ impl VoronoiLayout {
         polygon
     }
 
-    fn shared_edge(
-        cell: &VoronoiCellData,
-        bisector: Vec2,
-        normal: Vec2,
-    ) -> Option<(Vec2, Vec2)> {
-        let polygon = &cell.polygon;
-        if polygon.len() < 2 || normal == Vec2::ZERO {
-            return None;
-        }
-        let eps = 1e-2;
-        let on_bisector = |p: Vec2| (p - bisector).dot(normal).abs() <= eps;
-        for index in 0..polygon.len() {
-            let a = polygon[index];
-            let b = polygon[(index + 1) % polygon.len()];
-            if a != b && on_bisector(a) && on_bisector(b) {
-                return Some((a, b));
+    fn boundary_edges(
+        cells: &[VoronoiCellData],
+        weights: &[f32],
+        config: &VoronoiConfig,
+    ) -> Vec<BoundaryEdge> {
+        let half = config.size * 0.5;
+        let bisector_tolerance = 1e-2;
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        let mut boundaries: Vec<BoundaryEdge> = Vec::new();
+        for cell in cells {
+            let polygon = &cell.polygon;
+            if polygon.len() < 2 {
+                continue;
+            }
+            for index in 0..polygon.len() {
+                let p0 = polygon[index];
+                let p1 = polygon[(index + 1) % polygon.len()];
+                if p0 == p1 {
+                    continue;
+                }
+                let mut best: Option<(f32, usize)> = None;
+                for other in cells {
+                    if other.id == cell.id {
+                        continue;
+                    }
+                    let Some((bisector, normal)) =
+                        Self::radical_axis(weights, cell, other, config)
+                    else {
+                        continue;
+                    };
+                    let p0_offset = (p0 - bisector).dot(normal).abs();
+                    let p1_offset = (p1 - bisector).dot(normal).abs();
+                    if p0_offset <= bisector_tolerance && p1_offset <= bisector_tolerance {
+                        let total_offset = p0_offset + p1_offset;
+                        if best.is_none_or(|(best_offset, _)| total_offset < best_offset) {
+                            best = Some((total_offset, other.id));
+                        }
+                    }
+                }
+                let Some((_, owner)) = best else {
+                    continue;
+                };
+                if !seen.insert(pair_key(cell.id, owner)) {
+                    continue;
+                }
+                let wraps = config.topology.wraps()
+                    && [p0, p1]
+                        .iter()
+                        .any(|p| p.x.abs() > half + 1e-3 || p.y.abs() > half + 1e-3);
+                boundaries.push(BoundaryEdge {
+                    cell_a: cell.id,
+                    cell_b: owner,
+                    p0,
+                    p1,
+                    midpoint: (p0 + p1) * 0.5,
+                    blend_width: 0.0,
+                    wraps,
+                });
             }
         }
-        None
+        boundaries
     }
 
     pub fn cells(&self) -> &[VoronoiCellData] {
@@ -580,8 +740,67 @@ impl VoronoiLayout {
             .unwrap_or(self.config.default_blend_width)
     }
 
+    pub fn warped_point(&self, p: Vec2) -> Vec2 {
+        p + self.warp.offset(p)
+    }
+
+    pub fn cell_weight(&self, id: usize) -> f32 {
+        self.cell_weights.get(id).copied().unwrap_or(0.0)
+    }
+
+    pub fn max_cell_weight(&self) -> f32 {
+        self.cell_weights
+            .iter()
+            .cloned()
+            .fold(0.0f32, f32::max)
+    }
+
+    pub fn power_distance(&self, p: Vec2, id: usize) -> f32 {
+        let distance = self.distance(p, self.cells[id].center);
+        distance * distance - self.cell_weight(id)
+    }
+
     pub fn cell_at(&self, p: Vec2) -> Option<usize> {
-        self.index.nearest(&self.cells, p).map(|(_, id)| id)
+        self.power_nearest(self.warped_point(p))
+    }
+
+    fn power_nearest(&self, q: Vec2) -> Option<usize> {
+        if self.cells.is_empty() {
+            return None;
+        }
+        let index = &self.index;
+        let wraps = index.topology.wraps();
+        let raw_x =
+            SpatialIndex::raw_axis(q.x, index.bucket_size, index.half, index.per_axis, wraps);
+        let raw_z =
+            SpatialIndex::raw_axis(q.y, index.bucket_size, index.half, index.per_axis, wraps);
+        let weight_ceiling = self.max_cell_weight();
+        let mut best: Option<(f32, usize)> = None;
+        let max_ring = index.per_axis as i64 + 1;
+        for ring in 1..=max_ring {
+            for dz in -ring..=ring {
+                for dx in -ring..=ring {
+                    let bx = SpatialIndex::wrapped_axis(raw_x + dx, index.per_axis, wraps);
+                    let bz = SpatialIndex::wrapped_axis(raw_z + dz, index.per_axis, wraps);
+                    let (Some(bx), Some(bz)) = (bx, bz) else {
+                        continue;
+                    };
+                    for &id in &index.buckets[bz * index.per_axis + bx] {
+                        let power = self.power_distance(q, id);
+                        if best.is_none_or(|(best_power, _)| power < best_power) {
+                            best = Some((power, id));
+                        }
+                    }
+                }
+            }
+            if let Some((power, _)) = best {
+                let reach = ring as f32 * index.bucket_size;
+                if power <= reach * reach - weight_ceiling {
+                    break;
+                }
+            }
+        }
+        best.map(|(_, id)| id)
     }
 
     fn nearest_cell(&self, p: Vec2) -> Option<(f32, usize)> {
@@ -604,15 +823,18 @@ impl VoronoiLayout {
 
     fn cell_weights_into(&self, p: Vec2, out: &mut Vec<(usize, f32)>) {
         out.clear();
-        let Some((nearest_distance, nearest_id)) = self.nearest_cell(p) else {
+        let q = self.warped_point(p);
+        let Some((nearest_distance, nearest_id)) = self.nearest_cell(q) else {
             return;
         };
         let width = self.max_blend_width().max(0.0);
-        let core_cutoff = nearest_distance + 2.0 * width;
-        let cutoff = nearest_distance + 4.0 * width;
+        let weight_ceiling = self.max_cell_weight();
+        let nearest_weight = self.cell_weight(nearest_id);
+        let zero_span = width + (width * width + weight_ceiling).sqrt();
+        let cutoff = nearest_distance + 2.0 * zero_span;
         let mut candidates = CandidateSet::new();
         self.index
-            .candidates_within(&self.cells, p, cutoff, &mut candidates);
+            .candidates_within(&self.cells, q, cutoff, &mut candidates);
         let count = candidates.len();
         if count == 0 {
             out.push((nearest_id, 1.0));
@@ -622,7 +844,9 @@ impl VoronoiLayout {
 
         for slot_i in 0..count {
             let i = candidates.get(slot_i).0;
-            if self.distance(p, self.cells[i].center) > core_cutoff {
+            let core_span =
+                width + (width * width + (self.cell_weight(i) - nearest_weight).max(0.0)).sqrt();
+            if self.distance(q, self.cells[i].center) > nearest_distance + core_span {
                 candidates.set_weight(slot_i, 0.0);
                 continue;
             }
@@ -631,16 +855,18 @@ impl VoronoiLayout {
                     continue;
                 }
                 let j = candidates.get(slot_j).0;
-                let width = self.blend_width(i, j);
+                let pair_width = self.blend_width(i, j);
                 let delta = self.delta(self.cells[i].center, self.cells[j].center);
                 let length = delta.length();
-                if length <= 1e-6 {
+                if length <= MIN_CENTRE_DISTANCE {
                     continue;
                 }
                 let normal = delta / length;
-                let bisector = self.cells[i].center + delta * 0.5;
-                let side = self.delta(bisector, p).dot(normal);
-                let response = if width <= 1e-5 {
+                let shift =
+                    (self.cell_weight(i) - self.cell_weight(j)) / (2.0 * length * length);
+                let bisector = self.cells[i].center + delta * (0.5 + shift);
+                let side = self.delta(bisector, q).dot(normal);
+                let response = if pair_width <= HARD_BOUNDARY_WIDTH {
                     if side < 0.0 {
                         1.0
                     } else if side > 0.0 {
@@ -649,7 +875,7 @@ impl VoronoiLayout {
                         0.5
                     }
                 } else {
-                    smooth_response(-side / width)
+                    smooth_response(-side / pair_width)
                 };
                 candidates.multiply_weight(slot_i, response);
             }
@@ -664,9 +890,9 @@ impl VoronoiLayout {
             let mut best_distance = f32::INFINITY;
             for slot in 0..count {
                 let id = candidates.get(slot).0;
-                let d = self.distance(p, self.cells[id].center);
-                if d < best_distance {
-                    best_distance = d;
+                let distance = self.distance(q, self.cells[id].center);
+                if distance < best_distance {
+                    best_distance = distance;
                     best_slot = slot;
                 }
             }
@@ -675,9 +901,9 @@ impl VoronoiLayout {
         }
 
         for slot in 0..count {
-            let (id, w) = candidates.get(slot);
-            if w > 1e-6 {
-                out.push((id, w / total));
+            let (id, weight) = candidates.get(slot);
+            if weight > MIN_BLEND_WEIGHT {
+                out.push((id, weight / total));
             }
         }
     }
@@ -751,6 +977,7 @@ mod tests {
             jitter_min: 0.15,
             jitter_max: 0.85,
             lloyd_passes: 2,
+            warp_amplitude: 3.0,
         }
     }
 
@@ -778,11 +1005,12 @@ mod tests {
     }
 
     fn brute_cell_at(layout: &VoronoiLayout, p: Vec2) -> Option<usize> {
+        let q = layout.warped_point(p);
         let mut best: Option<(f32, usize)> = None;
         for cell in layout.cells() {
-            let d = layout.distance(p, cell.center);
-            if best.is_none_or(|(bd, _)| d < bd) {
-                best = Some((d, cell.id));
+            let power = layout.power_distance(q, cell.id);
+            if best.is_none_or(|(bp, _)| power < bp) {
+                best = Some((power, cell.id));
             }
         }
         best.map(|(_, id)| id)
@@ -793,6 +1021,7 @@ mod tests {
         if cells.is_empty() {
             return Vec::new();
         }
+        let q = layout.warped_point(p);
         let mut weights = vec![1.0f32; cells.len()];
         for i in 0..cells.len() {
             for j in 0..cells.len() {
@@ -806,8 +1035,10 @@ mod tests {
                     continue;
                 }
                 let normal = delta / length;
-                let bisector = cells[i].center + delta * 0.5;
-                let side = layout.delta(bisector, p).dot(normal);
+                let shift =
+                    (layout.cell_weight(i) - layout.cell_weight(j)) / (2.0 * length * length);
+                let bisector = cells[i].center + delta * (0.5 + shift);
+                let side = layout.delta(bisector, q).dot(normal);
                 let response = if width <= 1e-5 {
                     if side < 0.0 {
                         1.0
@@ -826,7 +1057,7 @@ mod tests {
         if total <= f32::EPSILON {
             let mut best = (0usize, f32::INFINITY);
             for cell in cells {
-                let d = layout.distance(p, cell.center);
+                let d = layout.distance(q, cell.center);
                 if d < best.1 {
                     best = (cell.id, d);
                 }
@@ -1462,14 +1693,16 @@ mod tests {
     }
 
     fn candidate_count_at(layout: &VoronoiLayout, p: Vec2) -> usize {
-        let Some((nearest, _)) = layout.nearest_cell(p) else {
+        let q = layout.warped_point(p);
+        let Some((nearest, _)) = layout.nearest_cell(q) else {
             return 0;
         };
         let width = layout.max_blend_width().max(0.0);
+        let zero_span = width + (width * width + layout.max_cell_weight()).sqrt();
         let mut set = CandidateSet::new();
         layout
             .index
-            .candidates_within(layout.cells(), p, nearest + 4.0 * width, &mut set);
+            .candidates_within(layout.cells(), q, nearest + 2.0 * zero_span, &mut set);
         set.len()
     }
 
@@ -1514,6 +1747,31 @@ mod tests {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            for (size, dim, blend_max) in [(200.0f32, 6u32, 12.0f32), (400.0, 10, 16.0)] {
+                let cfg = VoronoiConfig {
+                    size,
+                    grid_dim: dim,
+                    topology,
+                    blend_max,
+                    ..config(topology, dim)
+                };
+                let base = VoronoiLayout::generate(WorldSeed::new(173), cfg);
+                let spacing = size / dim as f32;
+                let weights: Vec<f32> = (0..base.cells().len())
+                    .map(|index| {
+                        let t = ((index as f64 + 1.0) * 0.6180339887).fract();
+                        (t * 0.5) as f32 * spacing * spacing
+                    })
+                    .collect();
+                let layout = base.with_cell_weights(&weights);
+                for p in sample_grid(size, 48) {
+                    let count = candidate_count_at(&layout, p);
+                    if count > worst {
+                        worst = count;
+                        worst_at = (topology, dim, size, p);
                     }
                 }
             }
@@ -1582,5 +1840,120 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &a_again), "key a must stay cached after other keys");
         assert!(Arc::ptr_eq(&b, &b_again), "key b must stay cached after other keys");
         assert!(Arc::ptr_eq(&c, &c_again), "key c must stay cached after other keys");
+    }
+
+    #[test]
+    fn uniform_weights_reproduce_the_unweighted_partition() {
+        let plain = VoronoiLayout::generate(WorldSeed::new(211), config(WorldTopology::Finite, 6));
+        let uniform = plain.with_cell_weights(&vec![37.0; plain.cells().len()]);
+        assert_eq!(uniform.max_cell_weight(), 37.0);
+        for cell in plain.cells() {
+            let before = &cell.polygon;
+            let after = &uniform.cells()[cell.id].polygon;
+            assert_eq!(before.len(), after.len(), "cell {} shape drifted", cell.id);
+            for (x, y) in before.iter().zip(after) {
+                assert!((x - y).length() < 1e-3, "cell {} vertex drifted", cell.id);
+            }
+        }
+        for p in sample_grid(200.0, 24) {
+            assert_eq!(plain.cell_at(p), uniform.cell_at(p));
+        }
+    }
+
+    #[test]
+    fn heavy_cells_grow_their_power_cells() {
+        let plain = VoronoiLayout::generate(WorldSeed::new(223), config(WorldTopology::Finite, 6));
+        let mut weights = vec![0.0f32; plain.cells().len()];
+        weights[0] = 900.0;
+        let weighted = plain.with_cell_weights(&weights);
+        let before = signed_area(&plain.cells()[0].polygon).abs();
+        let after = signed_area(&weighted.cells()[0].polygon).abs();
+        assert!(
+            after > before * 1.15,
+            "a heavy cell must claim more area: {before} -> {after}"
+        );
+        let mut flipped = 0;
+        for p in sample_grid(200.0, 40) {
+            if plain.cell_at(p) != weighted.cell_at(p) {
+                flipped += 1;
+            }
+        }
+        assert!(flipped > 0, "weighting must move the partition");
+    }
+
+    #[test]
+    fn weighted_dense_sweep_matches_brute_force_within_shipped_tolerance() {
+        for topology in [WorldTopology::Finite, WorldTopology::FiniteTorus] {
+            let base = VoronoiLayout::generate(WorldSeed::new(227), config(topology, 6));
+            let weights: Vec<f32> = (0..base.cells().len())
+                .map(|index| {
+                    let t = ((index as f64 + 1.0) * 0.6180339887).fract();
+                    (t * 400.0) as f32
+                })
+                .collect();
+            let layout = base.with_cell_weights(&weights);
+            for p in sample_grid(200.0, 40) {
+                let fast = sorted_weights(&layout.cell_weights_at(p));
+                let slow = brute_cell_weights(&layout, p);
+                let mut ids: Vec<usize> = fast.iter().map(|(id, _)| *id).collect();
+                ids.extend(slow.iter().map(|(id, _)| *id));
+                ids.sort_unstable();
+                ids.dedup();
+                for id in ids {
+                    let a = fast
+                        .iter()
+                        .find(|(fid, _)| *fid == id)
+                        .map(|(_, w)| *w)
+                        .unwrap_or(0.0);
+                    let b = slow
+                        .iter()
+                        .find(|(sid, _)| *sid == id)
+                        .map(|(_, w)| *w)
+                        .unwrap_or(0.0);
+                    assert!(
+                        (a - b).abs() < 1.2e-7,
+                        "{topology:?} weighted dense sweep mismatch at {p:?}: cell {id} {a} vs {b}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn warp_offset_is_periodic_on_the_torus() {
+        let layout =
+            VoronoiLayout::generate(WorldSeed::new(229), config(WorldTopology::FiniteTorus, 6));
+        let shift = Vec2::new(200.0, -200.0);
+        for i in 0..16 {
+            let p = Vec2::new(i as f32 * 11.0 - 80.0, i as f32 * 7.0 - 50.0);
+            let here = layout.warped_point(p);
+            let shifted = layout.warped_point(p + shift);
+            assert!(
+                (shifted - here - shift).length() < 1e-4,
+                "the warp field must be periodic: {here:?} vs {shifted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn warp_curves_the_partition_and_keeps_a_partition_of_unity() {
+        let mut straight = config(WorldTopology::Finite, 6);
+        straight.warp_amplitude = 0.0;
+        let straight = VoronoiLayout::generate(WorldSeed::new(233), straight);
+        let curved = VoronoiLayout::generate(WorldSeed::new(233), config(WorldTopology::Finite, 6));
+        let mut different = 0;
+        for p in sample_grid(200.0, 40) {
+            if straight.cell_at(p) != curved.cell_at(p) {
+                different += 1;
+            }
+        }
+        assert!(different > 0, "the warp must bend cell borders");
+        for p in sample_grid(200.0, 24) {
+            let total: f32 = curved.cell_weights_at(p).iter().map(|(_, w)| w).sum();
+            assert!(
+                (total - 1.0).abs() < 1e-4,
+                "warped weights must sum to 1 at {p:?}, got {total}"
+            );
+        }
     }
 }

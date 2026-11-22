@@ -4,7 +4,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 
-use crate::terrain::chunk::{CHUNK_MESH_STEPS, DEFAULT_CHUNK_SIZE};
+use crate::terrain::chunk::{DEFAULT_CHUNK_SIZE, chunk_mesh_steps};
 use crate::terrain::gpu::{self, WaterRenderMaterial};
 use crate::terrain::job::poll_task;
 use crate::terrain::map::TerrainMap;
@@ -95,7 +95,7 @@ pub fn rebuild_water_surfaces(
                 sea_top,
                 low,
                 high,
-                CHUNK_MESH_STEPS,
+                chunk_mesh_steps(&map, chunk, chunk_size),
                 false,
             )?;
             let ice = frozen
@@ -108,7 +108,7 @@ pub fn rebuild_water_surfaces(
                         sea_top,
                         low,
                         high,
-                        CHUNK_MESH_STEPS,
+                        chunk_mesh_steps(&map, chunk, chunk_size),
                         true,
                     )
                     .and_then(|sheet| Collider::trimesh_from_mesh(&sheet))
@@ -153,8 +153,12 @@ pub fn rebuild_water_surfaces(
         let map = shared.clone();
         let path = path.clone();
         queue.jobs.push(AsyncComputeTaskPool::get().spawn(async move {
-            let (anchor, mesh) =
-                water::river_ribbon_mesh(&path, map.heights(), map.accumulation_field())?;
+            let (anchor, mesh) = water::river_ribbon_mesh(
+                &path,
+                map.heights(),
+                map.accumulation_field(),
+                map.flow_field(),
+            )?;
             Some(WaterBuild::River { anchor, mesh })
         }));
     }
@@ -280,7 +284,7 @@ pub fn drain_water_builds(
                             water::cascade_material(),
                             water::WaterKind::Waterfall,
                             false,
-                            false,
+                            true,
                         ));
                         let handle = meshes.add(mesh);
                         for copy in &copies {

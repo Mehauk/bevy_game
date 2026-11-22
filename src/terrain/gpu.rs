@@ -12,9 +12,9 @@ use bevy::shader::ShaderRef;
 use image::RgbaImage;
 
 use crate::terrain::atmosphere::{self, RegionAtmosphereProfile};
+use crate::terrain::chunk::clamped_chunk_bounds;
 use crate::terrain::map::TerrainMap;
 use crate::terrain::material::{RegionMaterialProfile, SurfaceLayer};
-use crate::terrain::params::Temperature;
 use crate::terrain::season::{self, Season, SeasonClock};
 use crate::terrain::splat::{self, ControlHandles, SurfaceTiles, TileSlot};
 use crate::terrain::water::{WaterKind, FOAM_DEPTH};
@@ -39,10 +39,12 @@ pub const DEBUG_MODE_VERTEX_COLOUR: u32 = 3;
 pub const NEAR_TILE_METRES: f32 = 14.0;
 pub const FAR_TILE_METRES: f32 = 52.0;
 pub const MACRO_TINT_METRES: f32 = 96.0;
-pub const SNOWLINE_METRES: f32 = 60.0;
+pub const SNOWLINE_METRES: f32 = season::DEFAULT_SNOWLINE_METRES;
 pub const SNOW_SLOPE_LIMIT: f32 = 0.25;
 pub const WATER_ABSORPTION_RGB: Vec3 = Vec3::new(0.28, 0.14, 0.12);
 pub const WATER_MURKINESS: f32 = 1.0;
+pub const CAUSTIC_STRENGTH_STILL: f32 = 1.0;
+pub const CAUSTIC_STRENGTH_FLOWING: f32 = 0.4;
 pub const DEFAULT_PREVAILING_WIND: Vec2 = Vec2::new(0.7, 0.4);
 pub const WIND_SCROLL_MIN: f32 = 0.15;
 pub const WIND_SCROLL_MAX: f32 = 2.0;
@@ -117,6 +119,7 @@ pub struct WaterSurfaceUniform {
     pub fresnel_strength: f32,
     pub kind: u32,
     pub use_vertex_data: u32,
+    pub caustics: f32,
 }
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
@@ -220,6 +223,14 @@ pub fn kind_index(kind: WaterKind) -> u32 {
     }
 }
 
+pub fn caustic_strength(kind: WaterKind) -> f32 {
+    match kind {
+        WaterKind::Sea | WaterKind::Lake => CAUSTIC_STRENGTH_STILL,
+        WaterKind::River => CAUSTIC_STRENGTH_FLOWING,
+        WaterKind::Waterfall => 0.0,
+    }
+}
+
 #[derive(Resource, Default, Clone, Debug)]
 pub struct TileArrays {
     pub albedo: Handle<Image>,
@@ -249,7 +260,7 @@ pub fn array_image(layers: &[RgbaImage], format: TextureFormat) -> Image {
     let width = layers[0].width();
     let height = layers[0].height();
     let levels = width.min(height).ilog2() + 1;
-    let mut data: Vec<u8> = Vec::new();
+    let mut texel_bytes: Vec<u8> = Vec::new();
     for mip in 0..levels {
         let mip_width = (width >> mip).max(1);
         let mip_height = (height >> mip).max(1);
@@ -266,7 +277,7 @@ pub fn array_image(layers: &[RgbaImage], format: TextureFormat) -> Image {
                 );
                 &resized
             };
-            data.extend_from_slice(texels.as_raw());
+            texel_bytes.extend_from_slice(texels.as_raw());
         }
     }
     let mut image = Image::new_uninit(
@@ -286,7 +297,7 @@ pub fn array_image(layers: &[RgbaImage], format: TextureFormat) -> Image {
     });
     image.data_order = TextureDataOrder::MipMajor;
     image.sampler = ImageSampler::Descriptor(tile_sampler_descriptor());
-    image.data = Some(data);
+    image.data = Some(texel_bytes);
     image
 }
 
@@ -444,14 +455,10 @@ pub fn terrain_uniform(
     profile: &RegionMaterialProfile,
     clock: &SeasonClock,
 ) -> TerrainSurfaceUniform {
-    let (low, high) = map.chunk_bounds(chunk, chunk_size);
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
     let span = (high - low).max(Vec2::splat(1.0));
-    let snow_amount = season::snow_coverage_blend(
-        clock,
-        Temperature::Temperate,
-        0.0,
-        SNOWLINE_METRES,
-    );
+    let centre = (low + high) * 0.5;
+    let snow_amount = map.snow_coverage_at(centre.x, centre.y);
     TerrainSurfaceUniform {
         tint: Vec4::from(
             season::ground_tint(profile.tint, snow_amount)
@@ -581,6 +588,7 @@ pub fn water_render_material(
                 fresnel_strength: FRESNEL_BASE,
                 kind: kind_index(kind),
                 use_vertex_data: u32::from(use_vertex_data),
+                caustics: caustic_strength(kind),
             },
         },
     }
@@ -746,6 +754,8 @@ mod tests {
             "flow_envelope",
             "standing_gradient",
             "running_gradient",
+            "caustic_field",
+            "caustic_layer",
         ] {
             assert!(
                 water_text.contains(token),
@@ -855,15 +865,22 @@ mod tests {
 
     #[test]
     fn terrain_uniform_tracks_map_and_season() {
-        let map = TerrainMap::new(TerrainConfig::compact());
+        let mut map = TerrainMap::new(TerrainConfig::compact());
         let profile = crate::terrain::material::material_profile(Region::TemperateGrassland);
-        let summer = terrain_uniform(&map, IVec2::ZERO, 120.0, profile, &clock_for(Season::Summer));
-        let winter = terrain_uniform(&map, IVec2::ZERO, 120.0, profile, &clock_for(Season::Winter));
+        let summer_clock = clock_for(Season::Summer);
+        let winter_clock = clock_for(Season::Winter);
+        map.sync_season_state(&summer_clock);
+        let summer = terrain_uniform(&map, IVec2::ZERO, 120.0, profile, &summer_clock);
+        let summer_sea = map.sea_level();
+        let summer_flood_high = map.flood_zone().high;
+        map.sync_season_state(&winter_clock);
+        let winter = terrain_uniform(&map, IVec2::ZERO, 120.0, profile, &winter_clock);
         let (low, high) = map.chunk_bounds(IVec2::ZERO, 120.0);
         assert_eq!(summer.chunk_low, low);
         assert!((summer.chunk_size - (high - low).x).abs() < 1e-5);
-        assert!((summer.sea_level - map.sea_level()).abs() < 1e-5);
-        assert!((summer.flood_high - map.flood_zone().high).abs() < 1e-5);
+        assert!((summer.sea_level - summer_sea).abs() < 1e-5);
+        assert!((summer.flood_high - summer_flood_high).abs() < 1e-5);
+        assert!((winter.sea_level - map.sea_level()).abs() < 1e-5);
         assert!(summer.snow_amount < winter.snow_amount, "winter must carry more snow");
         assert!(summer.season_tint != winter.season_tint);
         assert_eq!(summer.layer_count, SurfaceLayer::ALL.len() as u32);
@@ -953,6 +970,24 @@ mod tests {
         let fall = water_render_material(base, WaterKind::Waterfall, false, false);
         assert_eq!(fall.extension.params.kind, 3);
         assert_eq!(fall.extension.params.use_vertex_data, 0);
+        assert!(
+            sea.extension.params.caustics > 0.0,
+            "still water must carry caustics"
+        );
+        assert_eq!(frozen.extension.params.caustics, CAUSTIC_STRENGTH_STILL);
+        assert_eq!(
+            fall.extension.params.caustics, 0.0,
+            "aeration on a waterfall must not bake caustics"
+        );
+    }
+
+    #[test]
+    fn caustic_strength_follows_water_kind() {
+        assert_eq!(caustic_strength(WaterKind::Sea), CAUSTIC_STRENGTH_STILL);
+        assert_eq!(caustic_strength(WaterKind::Lake), CAUSTIC_STRENGTH_STILL);
+        assert_eq!(caustic_strength(WaterKind::River), CAUSTIC_STRENGTH_FLOWING);
+        assert_eq!(caustic_strength(WaterKind::Waterfall), 0.0);
+        assert!(CAUSTIC_STRENGTH_FLOWING < CAUSTIC_STRENGTH_STILL);
     }
 
     #[test]
@@ -1039,6 +1074,7 @@ mod tests {
             ("fresnel_strength", offset_of!(WaterSurfaceUniform, fresnel_strength), 4),
             ("kind", offset_of!(WaterSurfaceUniform, kind), 4),
             ("use_vertex_data", offset_of!(WaterSurfaceUniform, use_vertex_data), 4),
+            ("caustics", offset_of!(WaterSurfaceUniform, caustics), 4),
         ];
         let (placed, total) = wgsl_layout(&fields);
         assert_eq!(fields.len(), rust.len(), "water struct field count drifted");
@@ -1118,8 +1154,7 @@ mod tests {
     fn control_tint_texture_uploads_linear_and_clamped() {
         let map = TerrainMap::new(TerrainConfig::compact());
         let chunk_size = 120.0f32.min(map.size());
-        let controls =
-            splat::bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = splat::bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         let mut app = image_app();
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
         let handles = splat::upload_control(&controls, &mut images);

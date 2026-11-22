@@ -39,6 +39,64 @@ impl WorldShape {
 
 pub const SEA_LEVEL: f32 = 0.0;
 
+const ABYSSAL_MAX_METRES: f32 = -34.0;
+const DEEP_OCEAN_MAX_METRES: f32 = -14.0;
+const COASTAL_SHELF_MAX_METRES: f32 = -1.5;
+const SEA_LEVEL_BAND_MAX_METRES: f32 = 2.5;
+const LOWLAND_MAX_METRES: f32 = 18.0;
+const HIGHLAND_MAX_METRES: f32 = 45.0;
+const ALPINE_MAX_METRES: f32 = 75.0;
+
+const ANCHORED_PLATE_SPREAD_FRACTION: f32 = 0.25;
+const PLATE_SPEED_BASE: f32 = 0.35;
+const PLATE_SPEED_VARIATION: f32 = 0.65;
+const CONTINENTAL_CREST_BASE: f32 = 0.33;
+const CONTINENTAL_CREST_VARIATION: f32 = 0.14;
+const OCEANIC_CREST_BASE: f32 = 0.34;
+const OCEANIC_CREST_VARIATION: f32 = 0.18;
+
+const MIN_CONVERGENCE_FOR_MARGIN_HOTSPOT: f32 = 0.25;
+const MIN_DIVERGENCE_FOR_RIDGE: f32 = -0.2;
+const COLLISION_UPLIFT: f32 = 0.55;
+const TRENCH_DEPTH: f32 = 0.45;
+const RIDGE_UPLIFT: f32 = 0.20;
+const BOUNDARY_WIDTH_FRACTION: f32 = 0.05;
+const TRENCH_INSET_FRACTION: f32 = 0.4;
+const ARC_INSET_FRACTION: f32 = 0.9;
+const UPLIFT_FADE_ONSET: f32 = 0.75;
+const UPLIFT_FADE_WIDTH: f32 = 0.5;
+const MARGIN_HOTSPOT_INSET_FRACTION: f32 = 0.18;
+
+const CRUST_INFLUENCE_SIZE_FRACTION: f32 = 0.10;
+const COAST_MARGIN_SHARE_HIGH: f32 = 0.62;
+const COAST_MARGIN_HIGH_WIDTH: f32 = 0.30;
+const COAST_MARGIN_SHARE_LOW: f32 = 0.06;
+const COAST_MARGIN_LOW_WIDTH: f32 = 0.12;
+const COAST_TARGET_CREST: f32 = -0.115;
+const COAST_PULL_STRENGTH: f32 = 0.85;
+
+const BASIN_RADIUS_FRACTION: f32 = 0.36;
+const BASIN_DEPTH: f32 = 1.05;
+const BASIN_RIM_HEIGHT: f32 = 0.20;
+const BASIN_RIM_WIDTH_FRACTION: f32 = 0.55;
+
+const TECTONIC_DETAIL_CELL_DIVISOR: f32 = 9.0;
+const TECTONIC_DETAIL_OCTAVES: usize = 3;
+const GEOTHERMAL_CELL_DIVISOR: f32 = 5.0;
+const GEOTHERMAL_OCTAVES: usize = 2;
+const GEOTHERMAL_BACKGROUND_GAIN: f32 = 0.30;
+const SLOPE_SAMPLE_STEP_FRACTION: f32 = 0.02;
+const POWER_SPREAD_FRACTION: f32 = 0.5;
+
+const RAIN_RASTER_SAMPLES_PER_CELL_EDGE: usize = 6;
+const RAIN_MARCH_MIN_RASTER_SIDE: usize = 24;
+const RAIN_MARCH_MAX_RASTER_SIDE: usize = 72;
+const RAIN_MARCH_STEPS: usize = 40;
+const RAIN_LOSS_PER_SLOPE_UNIT: f32 = 2.2;
+const RAIN_REGAIN_OVER_SEA: f32 = 0.05;
+const RAIN_REGAIN_OVER_LAND: f32 = 0.008;
+const MIN_ATMOSPHERIC_MOISTURE: f32 = 0.04;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Hotspot {
     pub center: Vec2,
@@ -176,6 +234,16 @@ fn bump(x: f32, width: f32) -> f32 {
     (1.0 - t * t).powi(2)
 }
 
+const SHELF_HALF_WIDTH: f32 = 22.0;
+const SHELF_COMPRESSION: f32 = 0.35;
+
+fn shelf_curve(elevation: f32, sea_level: f32) -> f32 {
+    let h = elevation - sea_level;
+    let k = SHELF_COMPRESSION
+        + (1.0 - SHELF_COMPRESSION) * smoothstep(h.abs() / SHELF_HALF_WIDTH);
+    sea_level + h * k
+}
+
 fn lattice(seed: WorldSeed, x: f32, y: f32, cell: f32, period: i64) -> f32 {
     let fx = x / cell;
     let fy = y / cell;
@@ -256,7 +324,7 @@ fn plates_for(seed: WorldSeed, shape: WorldShape, config: &MacroConfig) -> Vec<P
         .map(|index| {
             let id = index as u64;
             let spread = if index == 0 && anchored {
-                half * 0.25
+                half * ANCHORED_PLATE_SPREAD_FRACTION
             } else {
                 half
             };
@@ -314,12 +382,13 @@ fn plates_for(seed: WorldSeed, shape: WorldShape, config: &MacroConfig) -> Vec<P
         let id = index as u64;
         let center = centers[index];
         let angle = seed.unit(STAGE_MACRO, id, 2) * std::f32::consts::TAU;
-        let speed = model.convergence * (0.35 + 0.65 * seed.unit(STAGE_MACRO, id, 3));
+        let speed =
+            model.convergence * (PLATE_SPEED_BASE + PLATE_SPEED_VARIATION * seed.unit(STAGE_MACRO, id, 3));
         let velocity = Vec2::new(angle.cos(), angle.sin()) * speed;
         let crest = if continental[index] {
-            0.33 + 0.14 * seed.unit(STAGE_MACRO, id, 5)
+            CONTINENTAL_CREST_BASE + CONTINENTAL_CREST_VARIATION * seed.unit(STAGE_MACRO, id, 5)
         } else {
-            -(0.34 + 0.18 * seed.unit(STAGE_MACRO, id, 5))
+            -(OCEANIC_CREST_BASE + OCEANIC_CREST_VARIATION * seed.unit(STAGE_MACRO, id, 5))
         };
         let axis_angle = seed.unit(STAGE_MACRO, id, 6) * std::f32::consts::TAU;
         let spreading_axis = Vec2::new(axis_angle.cos(), axis_angle.sin());
@@ -391,16 +460,17 @@ fn hotspots_for(
             }
             let normal = delta / len;
             let convergence = (a.velocity - b.velocity).dot(normal);
-            if convergence <= 0.25 {
+            if convergence <= MIN_CONVERGENCE_FOR_MARGIN_HOTSPOT {
                 continue;
             }
             let overriding = if b.continental { -1.0 } else { 1.0 };
             hotspots.push(Hotspot {
                 center: config.topology.wrap_xz(
-                    a.center + delta * 0.5 + normal * overriding * len * 0.18,
+                    a.center + delta * 0.5
+                        + normal * overriding * len * MARGIN_HOTSPOT_INSET_FRACTION,
                     config.size,
                 ),
-                radius: config.size * 0.05,
+                radius: config.size * BOUNDARY_WIDTH_FRACTION,
                 strength: 0.70,
                 bulge: 0.12,
             });
@@ -427,7 +497,7 @@ fn crustal_elevation(
     config: &MacroConfig,
     model: &ShapeModel,
 ) -> f32 {
-    let scale = config.size * 0.10;
+    let scale = config.size * CRUST_INFLUENCE_SIZE_FRACTION;
     let mut sum = 0.0;
     let mut weight_sum = 0.0;
     let mut continental_weight = 0.0;
@@ -442,9 +512,9 @@ fn crustal_elevation(
     }
     let crust = sum / weight_sum.max(1e-6);
     let share = continental_weight / weight_sum.max(1e-6);
-    let margin =
-        smoothstep((0.62 - share) / 0.30) * smoothstep((share - 0.06) / 0.12);
-    crust + (-0.115 - crust) * margin * 0.85
+    let margin = smoothstep((COAST_MARGIN_SHARE_HIGH - share) / COAST_MARGIN_HIGH_WIDTH)
+        * smoothstep((share - COAST_MARGIN_SHARE_LOW) / COAST_MARGIN_LOW_WIDTH);
+    crust + (COAST_TARGET_CREST - crust) * margin * COAST_PULL_STRENGTH
 }
 
 fn boundary_uplift(
@@ -465,32 +535,35 @@ fn boundary_uplift(
     let offset = config.topology.delta_xz(midpoint, point, config.size);
     let across = offset.dot(normal);
     let along = offset.dot(tangent);
-    let fade = 1.0 - smoothstep((along.abs() / (len * 0.5) - 0.75) / 0.5);
+    let fade = 1.0 - smoothstep((along.abs() / (len * 0.5) - UPLIFT_FADE_ONSET) / UPLIFT_FADE_WIDTH);
     if fade <= 0.0 {
         return 0.0;
     }
     let convergence = (a.velocity - b.velocity).dot(normal);
-    let width = config.size * 0.05;
+    let width = config.size * BOUNDARY_WIDTH_FRACTION;
     let mut uplift = 0.0;
     if convergence > model.arc_threshold {
         if a.continental && b.continental {
-            uplift += 0.55 * bump(across, width * 1.6);
+            uplift += COLLISION_UPLIFT * bump(across, width * 1.6);
         } else {
             let trench_side = if b.continental { -1.0 } else { 1.0 };
             let arc_width = config.size * model.arc_width;
-            uplift -= 0.45 * bump(across - trench_side * width * 0.4, width * 0.8);
-            uplift += model.arc_crest * bump(across + trench_side * arc_width * 0.9, arc_width);
+            uplift -= TRENCH_DEPTH
+                * bump(across - trench_side * width * TRENCH_INSET_FRACTION, width * 0.8);
+            uplift += model.arc_crest
+                * bump(across + trench_side * arc_width * ARC_INSET_FRACTION, arc_width);
         }
-    } else if convergence < -0.2 {
-        uplift += 0.20 * bump(across, width);
+    } else if convergence < MIN_DIVERGENCE_FOR_RIDGE {
+        uplift += RIDGE_UPLIFT * bump(across, width);
     }
     uplift * fade
 }
 
 fn basin_term(point: Vec2, config: &MacroConfig) -> f32 {
-    let radius = config.size * 0.36;
+    let radius = config.size * BASIN_RADIUS_FRACTION;
     let d = point.length();
-    -1.05 * bump(d, radius) + 0.20 * bump(d - radius, radius * 0.55)
+    -BASIN_DEPTH * bump(d, radius)
+        + BASIN_RIM_HEIGHT * bump(d - radius, radius * BASIN_RIM_WIDTH_FRACTION)
 }
 
 fn hotspot_bulge(hotspots: &[Hotspot], point: Vec2, config: &MacroConfig) -> f32 {
@@ -562,12 +635,13 @@ fn tectonic_elevation(
         seed,
         wrapped.x,
         wrapped.y,
-        config.size / 9.0,
-        3,
+        config.size / TECTONIC_DETAIL_CELL_DIVISOR,
+        TECTONIC_DETAIL_OCTAVES,
         config.topology,
         config.size,
     ) * model.detail;
-    crust + boundary + hot + basin + detail + model.sea_offset
+    let metres = (crust + boundary + hot + basin + detail + model.sea_offset) * config.relief;
+    shelf_curve(config.sea_level + metres, config.sea_level)
 }
 
 pub fn macro_elevation_at(
@@ -578,8 +652,7 @@ pub fn macro_elevation_at(
 ) -> f32 {
     let plates = plates_for(seed, shape, config);
     let hotspots = hotspots_for(seed, shape, config, &plates);
-    config.sea_level
-        + tectonic_elevation(seed, shape, config, &plates, &hotspots, point) * config.relief
+    tectonic_elevation(seed, shape, config, &plates, &hotspots, point)
 }
 
 fn geothermal_at(
@@ -593,13 +666,13 @@ fn geothermal_at(
         seed,
         wrapped.x,
         wrapped.y,
-        config.size / 5.0,
-        2,
+        config.size / GEOTHERMAL_CELL_DIVISOR,
+        GEOTHERMAL_OCTAVES,
         config.topology,
         config.size,
     ) + 1.0)
         * 0.5;
-    let intensity = background * background * 0.30;
+    let intensity = background * background * GEOTHERMAL_BACKGROUND_GAIN;
     intensity
         .max(hotspot_intensity(hotspots, wrapped, config))
         .clamp(0.0, 1.0)
@@ -644,7 +717,8 @@ fn wind_march(
     config: &MacroConfig,
     wind: Vec2,
 ) -> Vec<f32> {
-    let side = ((centres.len() as f32).sqrt() as usize * 6).clamp(24, 72);
+    let side = ((centres.len() as f32).sqrt() as usize * RAIN_RASTER_SAMPLES_PER_CELL_EDGE)
+        .clamp(RAIN_MARCH_MIN_RASTER_SIDE, RAIN_MARCH_MAX_RASTER_SIDE);
     let spacing = config.size / side as f32;
     let mut raster = vec![0.0f32; side * side];
     for iz in 0..side {
@@ -656,7 +730,7 @@ fn wind_march(
             raster[iz * side + ix] = elev(p);
         }
     }
-    let steps = 40usize;
+    let steps = RAIN_MARCH_STEPS;
     let step_len = config.size / steps as f32;
     centres
         .iter()
@@ -669,13 +743,13 @@ fn wind_march(
                 let height = sample_raster(&raster, side, config, position);
                 let rise = (height - previous) / step_len;
                 if rise > 0.0 {
-                    moisture -= rise * 2.2;
+                    moisture -= rise * RAIN_LOSS_PER_SLOPE_UNIT;
                 } else if height < config.sea_level {
-                    moisture += 0.05;
+                    moisture += RAIN_REGAIN_OVER_SEA;
                 } else {
-                    moisture += 0.008;
+                    moisture += RAIN_REGAIN_OVER_LAND;
                 }
-                moisture = moisture.clamp(0.04, 1.0);
+                moisture = moisture.clamp(MIN_ATMOSPHERIC_MOISTURE, 1.0);
                 previous = height;
             }
             (1.0 - moisture).clamp(0.0, 1.0)
@@ -694,11 +768,7 @@ pub fn generate_macro_field(
     let hotspots = hotspots_for(seed, shape, config, &plates);
     let elevation: Vec<f32> = centres
         .iter()
-        .map(|&centre| {
-            config.sea_level
-                + tectonic_elevation(seed, shape, config, &plates, &hotspots, centre)
-                    * config.relief
-        })
+        .map(|&centre| tectonic_elevation(seed, shape, config, &plates, &hotspots, centre))
         .collect();
     let bands: Vec<BaseHeightBand> = elevation.iter().map(|&e| band_for_elevation(e)).collect();
     let sea_proximity = sea_proximity_field(layout, &bands, config);
@@ -707,14 +777,12 @@ pub fn generate_macro_field(
         .map(|&centre| latitude_at(centre, config.size))
         .collect();
     let prevailing_wind = prevailing_wind_for(seed);
-    let step = (config.size * 0.02).max(1e-3);
+    let step = (config.size * SLOPE_SAMPLE_STEP_FRACTION).max(1e-3);
     let mut downslope = Vec::with_capacity(centres.len());
     let mut slope_magnitude = Vec::with_capacity(centres.len());
     for &centre in &centres {
-        let height = |p: Vec2| {
-            config.sea_level
-                + tectonic_elevation(seed, shape, config, &plates, &hotspots, p) * config.relief
-        };
+        let height =
+            |p: Vec2| tectonic_elevation(seed, shape, config, &plates, &hotspots, p);
         let gx = (height(centre + Vec2::X * step) - height(centre - Vec2::X * step)) / (2.0 * step);
         let gz = (height(centre + Vec2::Y * step) - height(centre - Vec2::Y * step)) / (2.0 * step);
         let gradient = Vec2::new(gx, gz);
@@ -727,10 +795,7 @@ pub fn generate_macro_field(
         slope_magnitude.push(length * config.size / config.relief.max(1.0));
     }
     let rain_shadow = wind_march(
-        &|p| {
-            config.sea_level
-                + tectonic_elevation(seed, shape, config, &plates, &hotspots, p) * config.relief
-        },
+        &|p| tectonic_elevation(seed, shape, config, &plates, &hotspots, p),
         &centres,
         config,
         prevailing_wind,
@@ -754,19 +819,19 @@ pub fn generate_macro_field(
 }
 
 pub fn band_for_elevation(elevation: f32) -> BaseHeightBand {
-    if elevation < -34.0 {
+    if elevation < ABYSSAL_MAX_METRES {
         BaseHeightBand::Abyssal
-    } else if elevation < -14.0 {
+    } else if elevation < DEEP_OCEAN_MAX_METRES {
         BaseHeightBand::DeepOcean
-    } else if elevation < -1.5 {
+    } else if elevation < COASTAL_SHELF_MAX_METRES {
         BaseHeightBand::CoastalShelf
-    } else if elevation < 2.5 {
+    } else if elevation < SEA_LEVEL_BAND_MAX_METRES {
         BaseHeightBand::SeaLevel
-    } else if elevation < 18.0 {
+    } else if elevation < LOWLAND_MAX_METRES {
         BaseHeightBand::Lowland
-    } else if elevation < 45.0 {
+    } else if elevation < HIGHLAND_MAX_METRES {
         BaseHeightBand::Highland
-    } else if elevation < 75.0 {
+    } else if elevation < ALPINE_MAX_METRES {
         BaseHeightBand::Alpine
     } else {
         BaseHeightBand::Peak
@@ -833,6 +898,30 @@ fn sea_proximity_field(
             } else {
                 0.0
             }
+        })
+        .collect()
+}
+
+pub fn cell_power_weights(
+    field: &MacroField,
+    layout: &VoronoiLayout,
+    config: &MacroConfig,
+) -> Vec<f32> {
+    let count = layout.cells().len().max(1) as f32;
+    let spacing = config.size / count.sqrt();
+    layout
+        .cells()
+        .iter()
+        .map(|cell| {
+            let elevation = field
+                .elevation
+                .get(cell.id)
+                .copied()
+                .unwrap_or(config.sea_level);
+            let rise =
+                ((elevation - config.sea_level) / config.relief.max(1e-3)).clamp(0.0, 1.0);
+            let spread = rise * spacing * POWER_SPREAD_FRACTION;
+            spread * spread
         })
         .collect()
 }
@@ -1136,6 +1225,79 @@ mod tests {
         let continent = fractions[0].1;
         let archipelago = fractions[1].1;
         assert!((continent - archipelago).abs() > 0.01);
+    }
+
+    #[test]
+    fn shelf_curve_is_monotone_and_gentle_near_sea_level() {
+        let step = 0.05f32;
+        let mut previous = f32::NEG_INFINITY;
+        let mut near_slope = 0.0f32;
+        let mut far_slope = f32::INFINITY;
+        let mut h = -60.0f32;
+        while h <= 60.0 {
+            let value = shelf_curve(h, 0.0);
+            assert!(value >= previous, "the shelf curve must never invert the profile");
+            if h > -4.0 && h < -3.0 {
+                near_slope = near_slope.max((value - shelf_curve(h - step, 0.0)).abs() / step);
+            }
+            if h > 40.0 {
+                far_slope = far_slope.min((value - shelf_curve(h - step, 0.0)).abs() / step);
+            }
+            previous = value;
+            h += step;
+        }
+        assert!(
+            near_slope < 0.6,
+            "shorelines must grade gently for water shading: slope {near_slope}"
+        );
+        assert!(
+            far_slope > 0.99,
+            "elevations far from the sea must be untouched: slope {far_slope}"
+        );
+        assert!((shelf_curve(60.0, 0.0) - 60.0).abs() < 1e-3);
+        assert!((shelf_curve(-60.0, 0.0) + 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn shelf_curve_preserves_land_and_sea() {
+        for h in [-40.0f32, -5.0, -0.1, 0.1, 5.0, 40.0] {
+            let value = shelf_curve(h, 0.0);
+            assert!(value.signum() == h.signum(), "{h} crossed the sea level");
+        }
+    }
+
+    #[test]
+    fn cell_power_weights_grow_with_elevation() {
+        let cfg = config(WorldTopology::Finite);
+        let layout = layout_for(10, 400.0, WorldTopology::Finite);
+        let field = generate_macro_field(
+            WorldSeed::new(3),
+            &layout,
+            WorldShape::Continent,
+            &cfg,
+        );
+        let weights = cell_power_weights(&field, &layout, &cfg);
+        assert_eq!(weights.len(), layout.cells().len());
+        for (cell, &w) in layout.cells().iter().zip(&weights) {
+            assert!(w.is_finite() && w >= 0.0);
+            if field.elevation[cell.id] <= cfg.sea_level {
+                assert!(w < 1e-6, "subsea cells must stay compact: {w}");
+            }
+        }
+        let highest = field
+            .elevation
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let index = field
+            .elevation
+            .iter()
+            .position(|&e| e == highest)
+            .expect("a highest cell");
+        assert!(
+            weights[index] > 0.0,
+            "the tallest cell must claim extra reach"
+        );
     }
 
     #[test]

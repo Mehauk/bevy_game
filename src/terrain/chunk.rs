@@ -7,7 +7,7 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 
-use crate::terrain::colour::debug_colour;
+use crate::terrain::colour::{debug_colour, region_colour};
 use crate::terrain::gpu::{self, TerrainRenderMaterial, TileArrays};
 use crate::terrain::job::poll_task;
 use crate::terrain::map::TerrainMap;
@@ -25,6 +25,7 @@ use crate::utils::SpawnGroundHeight;
 pub const DEFAULT_CHUNK_SIZE: f32 = 200.0;
 pub const CHUNK_MESH_STEPS: usize = 48;
 pub const CHUNK_UPLOAD_BUDGET: usize = 4;
+pub const MAX_CHUNK_MESH_STEPS: usize = 512;
 
 #[derive(Component)]
 pub struct TerrainChunk;
@@ -32,16 +33,74 @@ pub struct TerrainChunk;
 #[derive(Component)]
 pub struct ChunkKey(pub IVec2);
 
+pub fn chunk_physics() -> (Friction, Restitution) {
+    (Friction::new(1.0), Restitution::ZERO)
+}
+
+pub fn clamped_chunk_bounds(map: &TerrainMap, chunk: IVec2, chunk_size: f32) -> (Vec2, Vec2) {
+    let (low, high) = map.chunk_bounds(chunk, chunk_size);
+    let half = map.size() * 0.5;
+    let clamp = |v: f32| v.clamp(-half, half);
+    (
+        Vec2::new(clamp(low.x), clamp(low.y)),
+        Vec2::new(clamp(high.x), clamp(high.y)),
+    )
+}
+
+pub fn chunk_mesh_steps(map: &TerrainMap, chunk: IVec2, chunk_size: f32) -> usize {
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
+    let spacing = map.heights().spacing().max(f32::EPSILON);
+    (((high.x - low.x) / spacing).round() as usize).clamp(1, MAX_CHUNK_MESH_STEPS)
+}
+
+fn sample_chunk(
+    map: &TerrainMap,
+    chunk: IVec2,
+    chunk_size: f32,
+    steps: usize,
+) -> Vec<(Vec2, f32)> {
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
+    let steps = steps.max(1);
+    let step_x = (high.x - low.x) / steps as f32;
+    let step_z = (high.y - low.y) / steps as f32;
+    let mut samples = Vec::with_capacity((steps + 1) * (steps + 1));
+    for iz in 0..=steps {
+        for ix in 0..=steps {
+            let point = Vec2::new(low.x + ix as f32 * step_x, low.y + iz as f32 * step_z);
+            samples.push((point, map.height_at(point.x, point.y)));
+        }
+    }
+    samples
+}
+
+fn flip_diagonal(ha: f32, hb: f32, hc: f32, hd: f32) -> bool {
+    (ha - hd).abs() < (hb - hc).abs()
+}
+
 pub fn build_chunk_mesh(
     map: &TerrainMap,
     chunk: IVec2,
     chunk_size: f32,
     view: DebugView,
 ) -> Mesh {
-    let steps = CHUNK_MESH_STEPS;
+    build_chunk_mesh_with_mode(map, chunk, chunk_size, view, DebugMaterialMode::Textured)
+}
+
+pub fn build_chunk_mesh_with_mode(
+    map: &TerrainMap,
+    chunk: IVec2,
+    chunk_size: f32,
+    view: DebugView,
+    mode: DebugMaterialMode,
+) -> Mesh {
+    let steps = chunk_mesh_steps(map, chunk, chunk_size);
     let extent = map.max_height_extent();
-    let samples = map.height_in_chunk(chunk, chunk_size, steps);
+    let samples = sample_chunk(map, chunk, chunk_size, steps);
     let stride = steps + 1;
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
+    let step_x = (high.x - low.x) / steps as f32;
+    let step_z = (high.y - low.y) / steps as f32;
+    let flat_regions = mode == DebugMaterialMode::FlatColor && view == DebugView::None;
 
     let mut positions = Vec::with_capacity(samples.len());
     let mut colors = Vec::with_capacity(samples.len());
@@ -50,7 +109,14 @@ pub fn build_chunk_mesh(
         for ix in 0..stride {
             let (point, height) = samples[iz * stride + ix];
             positions.push([point.x, height, point.y]);
-            colors.push(debug_colour(map, view, point, height, extent).to_f32_array());
+            let colour = if flat_regions {
+                map.region_at(point.x, point.y)
+                    .map(region_colour)
+                    .unwrap_or(LinearRgba::BLACK)
+            } else {
+                debug_colour(map, view, point, height, extent)
+            };
+            colors.push(colour.to_f32_array());
             uvs.push([ix as f32 / steps as f32, 1.0 - iz as f32 / steps as f32]);
         }
     }
@@ -58,29 +124,58 @@ pub fn build_chunk_mesh(
     let mut indices: Vec<u32> = Vec::with_capacity(steps * steps * 6);
     for iz in 0..steps {
         for ix in 0..steps {
-            let a = (iz * stride + ix) as u32;
+            let a = iz * stride + ix;
             let b = a + 1;
-            let c = a + stride as u32;
+            let c = a + stride;
             let d = c + 1;
-            indices.extend_from_slice(&[a, c, b, b, c, d]);
+            let (a, b, c, d) = (a as u32, b as u32, c as u32, d as u32);
+            if flip_diagonal(
+                samples[a as usize].1,
+                samples[b as usize].1,
+                samples[c as usize].1,
+                samples[d as usize].1,
+            ) {
+                indices.extend_from_slice(&[a, d, b, a, c, d]);
+            } else {
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
         }
     }
 
-    let step = chunk_size / steps as f32;
     let mut normals = Vec::with_capacity(samples.len());
-    for (point, _) in &samples {
-        let dx = map.height_at(point.x + step, point.y) - map.height_at(point.x - step, point.y);
-        let dz = map.height_at(point.x, point.y + step) - map.height_at(point.x, point.y - step);
-        let normal = Vec3::new(-dx, 2.0 * step, -dz)
-            .try_normalize()
-            .unwrap_or(Vec3::Y);
-        normals.push([normal.x, normal.y, normal.z]);
+    let mut tangents = Vec::with_capacity(samples.len());
+    for iz in 0..stride {
+        for ix in 0..stride {
+            let index = iz * stride + ix;
+            let (point, _) = samples[index];
+            let dx = if ix > 0 && ix + 1 < stride {
+                samples[index + 1].1 - samples[index - 1].1
+            } else {
+                map.height_at(point.x + step_x, point.y) - map.height_at(point.x - step_x, point.y)
+            };
+            let dz = if iz > 0 && iz + 1 < stride {
+                samples[index + stride].1 - samples[index - stride].1
+            } else {
+                map.height_at(point.x, point.y + step_z) - map.height_at(point.x, point.y - step_z)
+            };
+            let slope_x = dx / (2.0 * step_x).max(f32::EPSILON);
+            let slope_z = dz / (2.0 * step_z).max(f32::EPSILON);
+            let normal = Vec3::new(-slope_x, 1.0, -slope_z)
+                .try_normalize()
+                .unwrap_or(Vec3::Y);
+            normals.push([normal.x, normal.y, normal.z]);
+            let tangent = Vec3::new(1.0, slope_x, 0.0)
+                .try_normalize()
+                .unwrap_or(Vec3::X);
+            tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
+        }
     }
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(indices));
     mesh
@@ -96,7 +191,7 @@ pub fn chunk_material(
     arrays: &TileArrays,
     control: Option<&ControlHandles>,
 ) -> TerrainRenderMaterial {
-    let (low, high) = map.chunk_bounds(chunk, chunk_size);
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
     let centre = (low + high) * 0.5;
     let profile = material::material_profile(
         map.region_at(centre.x, centre.y)
@@ -108,7 +203,7 @@ pub fn chunk_material(
     } else {
         match mode {
             DebugMaterialMode::UvGrid => gpu::DEBUG_MODE_UV_GRID,
-            DebugMaterialMode::FlatColor => gpu::DEBUG_MODE_FLAT,
+            DebugMaterialMode::FlatColor => gpu::DEBUG_MODE_VERTEX_COLOUR,
             DebugMaterialMode::Textured
                 if arrays.ready && control.is_some() =>
             {
@@ -124,7 +219,6 @@ pub fn bake_controls(
     map: &TerrainMap,
     mode: DebugMaterialMode,
     view: DebugView,
-    season: Season,
     wanted: &[IVec2],
     images: &mut Assets<Image>,
 ) -> HashMap<IVec2, ControlHandles> {
@@ -134,13 +228,7 @@ pub fn bake_controls(
     }
     let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
     for key in wanted {
-        let maps = splat::bake_control_chunk(
-            map,
-            *key,
-            chunk_size,
-            season,
-            splat::SPLAT_RESOLUTION,
-        );
+        let maps = splat::bake_control_chunk(map, *key, chunk_size, splat::SPLAT_RESOLUTION);
         baked.insert(*key, splat::upload_control(&maps, images));
     }
     baked
@@ -152,7 +240,6 @@ pub fn bake_splats(
     tiles: &SurfaceTiles,
     mode: DebugMaterialMode,
     view: DebugView,
-    season: Season,
     wanted: &[IVec2],
     images: &mut Assets<Image>,
 ) -> HashMap<IVec2, SplatHandles> {
@@ -167,7 +254,6 @@ pub fn bake_splats(
             tiles,
             *key,
             chunk_size,
-            season,
             splat::SPLAT_RESOLUTION,
         );
         if let Some(maps) = maps {
@@ -183,7 +269,7 @@ pub fn heightfield_grid(
     chunk_size: f32,
     steps: usize,
 ) -> Vec<Vec<f32>> {
-    let samples = map.height_in_chunk(chunk, chunk_size, steps);
+    let samples = sample_chunk(map, chunk, chunk_size, steps);
     let stride = steps + 1;
     (0..stride)
         .map(|row| {
@@ -202,10 +288,14 @@ pub fn chunk_heightfield(
 ) -> Collider {
     let stride = steps + 1;
     let grid = heightfield_grid(map, chunk, chunk_size, steps);
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
     let columns: Vec<Vec<f32>> = (0..stride)
         .map(|column| (0..stride).map(|row| grid[row][column]).collect())
         .collect();
-    Collider::heightfield(columns, Vec3::new(chunk_size, 1.0, chunk_size))
+    Collider::heightfield(
+        columns,
+        Vec3::new(high.x - low.x, 1.0, high.y - low.y),
+    )
 }
 
 pub struct ChunkBuild {
@@ -215,11 +305,18 @@ pub struct ChunkBuild {
     pub control: Option<ControlHandles>,
 }
 
-pub fn build_chunk(map: &TerrainMap, chunk: IVec2, chunk_size: f32, view: DebugView) -> ChunkBuild {
+pub fn build_chunk(
+    map: &TerrainMap,
+    chunk: IVec2,
+    chunk_size: f32,
+    view: DebugView,
+    mode: DebugMaterialMode,
+) -> ChunkBuild {
+    let steps = chunk_mesh_steps(map, chunk, chunk_size);
     ChunkBuild {
         key: chunk,
-        mesh: build_chunk_mesh(map, chunk, chunk_size, view),
-        collider: chunk_heightfield(map, chunk, chunk_size, CHUNK_MESH_STEPS),
+        mesh: build_chunk_mesh_with_mode(map, chunk, chunk_size, view, mode),
+        collider: chunk_heightfield(map, chunk, chunk_size, steps),
         control: None,
     }
 }
@@ -237,12 +334,13 @@ pub fn spawn_chunk(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<TerrainRenderMaterial>,
 ) {
-    let (low, high) = map.chunk_bounds(chunk, chunk_size);
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
     let centre = (low + high) * 0.5;
     let material =
         chunk_material(map, chunk, chunk_size, mode, view, clock, arrays, build.control.as_ref());
     let mesh = meshes.add(build.mesh);
     let material = materials.add(material);
+    let (friction, restitution) = chunk_physics();
     for offset in wrapped_copies(map.topology(), map.size()) {
         let entity = commands
             .spawn((
@@ -250,8 +348,8 @@ pub fn spawn_chunk(
                 TerrainChunk,
                 ChunkKey(chunk),
                 RigidBody::Static,
-                Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
-                Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
+                friction,
+                restitution,
                 Transform::from_xyz(offset.x, 0.0, offset.y),
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(material.clone()),
@@ -328,8 +426,9 @@ pub fn rebuild_terrain(
 
     let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
     let wanted = map.chunk_keys(chunk_size);
-    let controls = bake_controls(&map, *mode, view.0, clock.season, &wanted, &mut images);
+    let controls = bake_controls(&map, *mode, view.0, &wanted, &mut images);
     let debug_view = view.0;
+    let material_mode = *mode;
 
     if generation_changed {
         for (entity, _, _) in &existing {
@@ -343,7 +442,7 @@ pub fn rebuild_terrain(
             queue.jobs.push(ChunkJob {
                 fresh: true,
                 task: AsyncComputeTaskPool::get().spawn(async move {
-                    let mut build = build_chunk(&map, key, chunk_size, debug_view);
+                    let mut build = build_chunk(&map, key, chunk_size, debug_view, material_mode);
                     build.control = control;
                     build
                 }),
@@ -359,7 +458,7 @@ pub fn rebuild_terrain(
         }
     }
 
-    if view_changed {
+    if view_changed || material_changed {
         queue.jobs.clear();
         let shared = Arc::new(map.clone());
         for &key in &wanted {
@@ -368,7 +467,7 @@ pub fn rebuild_terrain(
             queue.jobs.push(ChunkJob {
                 fresh,
                 task: AsyncComputeTaskPool::get().spawn(async move {
-                    build_chunk(&map, key, chunk_size, debug_view)
+                    build_chunk(&map, key, chunk_size, debug_view, material_mode)
                 }),
             });
         }
@@ -456,7 +555,7 @@ mod tests {
 
     #[test]
     fn cpu_bake_path_still_produces_splat_materials() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let tiles = splat::SurfaceTiles::load(DISK_ROOT);
         let mut app = App::new();
         app.add_plugins(AssetPlugin::default()).init_asset::<Image>();
@@ -467,7 +566,6 @@ mod tests {
             &tiles,
             DebugMaterialMode::Textured,
             DebugView::None,
-            Season::Summer,
             &wanted,
             &mut images,
         );
@@ -484,7 +582,7 @@ mod tests {
 
     #[test]
     fn chunk_material_selects_debug_modes() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let arrays = TileArrays::default();
         let clock = SeasonClock {
             season: Season::Summer,
@@ -500,7 +598,11 @@ mod tests {
             &arrays,
             None,
         );
-        assert_eq!(flat.extension.params.debug_mode, gpu::DEBUG_MODE_FLAT);
+        assert_eq!(
+            flat.extension.params.debug_mode,
+            gpu::DEBUG_MODE_VERTEX_COLOUR,
+            "flat colour must blend per-vertex region colours, not one chunk-centre colour"
+        );
         let grid = chunk_material(
             &map,
             IVec2::ZERO,
@@ -558,11 +660,34 @@ mod tests {
         build_chunk_mesh(map, IVec2::ZERO, DEFAULT_CHUNK_SIZE.min(map.size()), DebugView::None)
     }
 
+    fn whole_world_steps(map: &TerrainMap) -> usize {
+        chunk_mesh_steps(map, IVec2::ZERO, DEFAULT_CHUNK_SIZE.min(map.size()))
+    }
+
+    #[test]
+    fn chunk_mesh_steps_match_the_heightfield_grid() {
+        let finite = TerrainMap::new(TerrainConfig::compact());
+        let finite_spacing = finite.heights().spacing();
+        let finite_steps = whole_world_steps(&finite);
+        assert_eq!(finite_steps, 31, "32 grid lines over a whole-world chunk");
+        let drift = (finite_steps as f32 * finite_spacing - finite.size()).abs();
+        assert!(drift < finite_spacing, "mesh steps must track the grid: {drift}");
+
+        let torus = TerrainMap::new(
+            TerrainConfig::compact().with_topology(WorldTopology::FiniteTorus),
+        );
+        let torus_spacing = torus.heights().spacing();
+        let torus_steps = whole_world_steps(&torus);
+        assert_eq!(torus_steps, 32);
+        let drift = (torus_steps as f32 * torus_spacing - torus.size()).abs();
+        assert!(drift < torus_spacing, "mesh steps must track the grid: {drift}");
+    }
+
     #[test]
     fn chunk_meshes_carry_uv_and_unit_normals() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let mesh = whole_world_chunk(&map);
-        let stride = CHUNK_MESH_STEPS + 1;
+        let stride = whole_world_steps(&map) + 1;
         assert_eq!(positions_of(&mesh).len(), stride * stride);
         assert!(mesh.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
         for normal in normals_of(&mesh) {
@@ -579,7 +704,7 @@ mod tests {
         );
         let mesh = whole_world_chunk(&map);
         let normals = normals_of(&mesh);
-        let stride = CHUNK_MESH_STEPS + 1;
+        let stride = whole_world_steps(&map) + 1;
         for row in 0..stride {
             let left = normals[row * stride];
             let right = normals[row * stride + stride - 1];
@@ -590,10 +715,10 @@ mod tests {
 
     #[test]
     fn finite_normals_do_not_wrap() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let mesh = whole_world_chunk(&map);
         let normals = normals_of(&mesh);
-        let stride = CHUNK_MESH_STEPS + 1;
+        let stride = whole_world_steps(&map) + 1;
         let mut worst = 0.0f32;
         for row in 0..stride {
             let left = normals[row * stride];
@@ -605,7 +730,7 @@ mod tests {
 
     #[test]
     fn chunk_mesh_vertices_sit_on_the_sampled_surface() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let mesh = whole_world_chunk(&map);
         for point in positions_of(&mesh) {
             let sampled = map.height_at(point[0], point[2]);
@@ -618,12 +743,13 @@ mod tests {
 
     #[test]
     fn heightfield_collider_grid_matches_the_drawn_mesh_vertices() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
-        let grid = heightfield_grid(&map, IVec2::ZERO, chunk_size, CHUNK_MESH_STEPS);
+        let steps = whole_world_steps(&map);
+        let grid = heightfield_grid(&map, IVec2::ZERO, chunk_size, steps);
         let mesh = whole_world_chunk(&map);
         let positions = positions_of(&mesh);
-        let stride = CHUNK_MESH_STEPS + 1;
+        let stride = steps + 1;
         assert_eq!(grid.len(), stride);
         for line in &grid {
             assert_eq!(line.len(), stride);
@@ -641,11 +767,12 @@ mod tests {
 
     #[test]
     fn heightfield_grid_rows_run_along_z_and_columns_along_x() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
-        let (low, _) = map.chunk_bounds(IVec2::ZERO, chunk_size);
-        let grid = heightfield_grid(&map, IVec2::ZERO, chunk_size, CHUNK_MESH_STEPS);
-        let step = chunk_size / CHUNK_MESH_STEPS as f32;
+        let (low, _) = clamped_chunk_bounds(&map, IVec2::ZERO, chunk_size);
+        let steps = whole_world_steps(&map);
+        let grid = heightfield_grid(&map, IVec2::ZERO, chunk_size, steps);
+        let step = chunk_size / steps as f32;
         for (row, line) in grid.iter().enumerate() {
             for (column, height) in line.iter().enumerate() {
                 let x = low.x + column as f32 * step;
@@ -660,9 +787,9 @@ mod tests {
 
     #[test]
     fn chunk_heightfield_builds_a_real_heightfield_shape() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig::compact());
         let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
-        let collider = chunk_heightfield(&map, IVec2::ZERO, chunk_size, CHUNK_MESH_STEPS);
+        let collider = chunk_heightfield(&map, IVec2::ZERO, chunk_size, whole_world_steps(&map));
         assert!(
             collider.shape().as_heightfield().is_some(),
             "the chunk collider must be a heightfield, not a trimesh"
@@ -671,21 +798,154 @@ mod tests {
 
     #[test]
     fn neighbouring_chunks_share_an_edge_height() {
-        let map = TerrainMap::compact();
+        let map = TerrainMap::new(TerrainConfig {
+            size: 400.0,
+            ..TerrainConfig::compact()
+        });
         let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
         let left = build_chunk_mesh(&map, IVec2::new(0, 0), chunk_size, DebugView::None);
         let right = build_chunk_mesh(&map, IVec2::new(1, 0), chunk_size, DebugView::None);
-        let stride = CHUNK_MESH_STEPS + 1;
+        let stride = chunk_mesh_steps(&map, IVec2::new(0, 0), chunk_size) + 1;
+        assert_eq!(
+            stride,
+            chunk_mesh_steps(&map, IVec2::new(1, 0), chunk_size) + 1,
+            "two full chunks must tessellate identically"
+        );
         let column = |mesh: &Mesh, index: usize| -> Vec<[f32; 3]> {
             (0..stride)
                 .map(|row| positions_of(mesh)[row * stride + index])
                 .collect()
         };
-        let shared = column(&left, CHUNK_MESH_STEPS);
+        let shared = column(&left, stride - 1);
         let incoming = column(&right, 0);
         for (row, (a, b)) in shared.iter().zip(&incoming).enumerate() {
             let gap = Vec3::from(*a).distance(Vec3::from(*b));
             assert!(gap < 1e-4, "row {row}: chunks disagree across the border by {gap}");
         }
+    }
+
+    fn colours_of(mesh: &Mesh) -> Vec<[f32; 4]> {
+        match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+            Some(VertexAttributeValues::Float32x4(values)) => values.clone(),
+            other => panic!("expected float32x4 colours, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flat_colour_mode_bakes_per_vertex_region_colours() {
+        let map = TerrainMap::new(TerrainConfig::compact());
+        let size = DEFAULT_CHUNK_SIZE.min(map.size());
+        let flat = build_chunk_mesh_with_mode(
+            &map,
+            IVec2::ZERO,
+            size,
+            DebugView::None,
+            DebugMaterialMode::FlatColor,
+        );
+        let plain = build_chunk_mesh(&map, IVec2::ZERO, size, DebugView::None);
+        let flat_colours = colours_of(&flat);
+        assert_ne!(
+            flat_colours,
+            colours_of(&plain),
+            "flat colour must not reuse the height-shaded colours"
+        );
+        let positions = positions_of(&flat);
+        for (index, position) in positions.iter().enumerate().step_by(227) {
+            let expected = map
+                .region_at(position[0], position[2])
+                .map(region_colour)
+                .expect("sampled vertices sit inside the world");
+            assert_eq!(
+                flat_colours[index],
+                expected.to_f32_array(),
+                "vertex {index} must carry its own region colour"
+            );
+        }
+    }
+
+    #[test]
+    fn mesh_carries_unit_tangents() {
+        let map = TerrainMap::new(TerrainConfig::compact());
+        let mesh = whole_world_chunk(&map);
+        let tangents = match mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+            Some(VertexAttributeValues::Float32x4(values)) => values.clone(),
+            other => panic!("expected float32x4 tangents, got {other:?}"),
+        };
+        assert_eq!(tangents.len(), positions_of(&mesh).len());
+        for tangent in &tangents {
+            let length =
+                (tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]).sqrt();
+            assert!((length - 1.0).abs() < 1e-3, "tangents must be unit length");
+            assert_eq!(tangent[3], 1.0);
+        }
+    }
+
+    #[test]
+    fn every_triangle_faces_up() {
+        let map = TerrainMap::new(TerrainConfig::compact());
+        let mesh = whole_world_chunk(&map);
+        let positions = positions_of(&mesh);
+        let indices: Vec<u32> = mesh
+            .indices()
+            .expect("indexed mesh")
+            .iter()
+            .map(|index| index as u32)
+            .collect();
+        assert_eq!(indices.len() % 3, 0);
+        for triangle in indices.chunks(3) {
+            let a = Vec3::from(positions[triangle[0] as usize]);
+            let b = Vec3::from(positions[triangle[1] as usize]);
+            let c = Vec3::from(positions[triangle[2] as usize]);
+            let normal = (b - a).cross(c - a);
+            assert!(normal.y > -1e-3, "triangle {triangle:?} faces down: {normal:?}");
+        }
+    }
+
+    #[test]
+    fn quad_diagonal_flips_toward_the_flatter_pair() {
+        assert!(flip_diagonal(0.0, 0.0, 10.0, 1.0), "|ha-hd| < |hb-hc| must flip");
+        assert!(!flip_diagonal(0.0, 0.0, 1.0, 10.0), "the flatter default diagonal must stay");
+        assert!(!flip_diagonal(1.0, 1.0, 1.0, 1.0), "ties keep the default diagonal");
+    }
+
+    #[test]
+    fn chunk_meshes_never_overhang_the_world_edge() {
+        let map = TerrainMap::new(TerrainConfig {
+            size: 300.0,
+            ..TerrainConfig::compact()
+        });
+        let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
+        assert!(
+            map.chunk_keys(chunk_size).contains(&IVec2::new(1, 1)),
+            "a 300m world with 200m chunks must have a partial edge chunk"
+        );
+        let half = map.size() * 0.5;
+        let (low, high) = clamped_chunk_bounds(&map, IVec2::new(1, 1), chunk_size);
+        assert!((high.x - half).abs() < 1e-3, "clamped bounds must stop at the edge");
+        assert!((high.y - half).abs() < 1e-3);
+        let mesh = build_chunk_mesh(&map, IVec2::new(1, 1), chunk_size, DebugView::None);
+        for point in positions_of(&mesh) {
+            assert!(
+                point[0] <= half + 1e-3 && point[2] <= half + 1e-3,
+                "vertex {point:?} hangs past the world edge"
+            );
+            assert!(point[0] >= -half - 1e-3 && point[2] >= -half - 1e-3);
+            assert!(point[0] >= low.x - 1e-3 && point[2] >= low.y - 1e-3);
+        }
+    }
+
+    #[test]
+    fn chunk_physics_keeps_grip_on_the_ground() {
+        let (friction, restitution) = chunk_physics();
+        assert!(
+            friction.static_coefficient > 0.0 && friction.dynamic_coefficient > 0.0,
+            "terrain must not be frictionless"
+        );
+        assert_ne!(
+            friction.combine_rule,
+            CoefficientCombine::Min,
+            "terrain friction must not zero out every prop resting on it"
+        );
+        assert_eq!(restitution.coefficient, 0.0);
     }
 }

@@ -1168,3 +1168,84 @@ Cost and verification notes:
   already fixed. The remaining real finding was the character-does-not-fall report, diagnosed to
   four mechanisms: swimming overrides descent, frozen water carries real colliders at the ice plane,
   the ground state is one physics step stale, and `Finite` worlds have no kill plane or auto-respawn.
+
+### Implementation batches — sections 12–17, the preamble, and the playtest bridge
+
+Seven more batches, same disjoint-file-ownership discipline. Checklist went 99 → 136 checked.
+
+| batch | items | what landed |
+| --- | --- | --- |
+| water/shader | 317, 318, 319, 357, 367, 374 | caustics, bank-hugging river skirts, slope-accelerated flow, baked cascade flow vectors |
+| chunk/preview | 400, 412, 439, 473, 495, 508, 511, 16 | mesh steps from `subdivisions`, clamped chunk bounds, per-vertex FlatColor, tangents, composite top-down `world` preview layer |
+| commands/job | 15, 385, 407, 530, 532 | ground check moved to `FixedPostUpdate`, kill plane, dry-spawn search, `TerrainJob` supersession, async initial generation |
+| voronoi/noise | 398, 574, 577 | power-diagram partitioning, domain-warped boundaries, F1 mesa plateaus, continental shelf curve |
+| hardness/erosion | 367, 392, 402, 417, 431, 444, 497, 589, 592, 596 | first-class substrate hardness, hardness-scaled erosion, metric droplet geometry, `FlowField`, `SurfaceInfo`, `TerrainSource`, disk cache, Catmull-Rom sampling |
+| commands follow-up | 415, 460, 534, 582 | `find_feature` + teleport, `world_summary`, Poisson-disc scatter kernel, speed-scaled downhill snap |
+| playtest bridge | 611 | `bevy_brp_extras` BRP bridge, `PlaytestClock` time control, `DecisionLog`, gizmos, `AgentConsole` |
+
+Four things worth keeping from the record:
+
+- **Two real bugs surfaced as failing tests, not as inspection findings.** `river_paths` started at the
+  lowest (mouth) cell and iterated upward, so every chain was chopped into two-cell stubs; it now
+  starts only at headwaters. And `-tangent_dir.dot(gradient).max(0.0)` parsed as
+  `-(dot.max(0.0))`, which clamped downhill slope to zero so river flow never accelerated — the
+  negation was binding before the `max`. Both were found because a test asserted the property, not
+  because anyone read the code and worried.
+- **A test can be the wrong side of a disagreement.** `tile_arrays_pack_every_layer_with_mips`
+  asserted 256-byte row padding for tile arrays. `wgpu::Device::create_texture_with_data` documents
+  that it expects tightly packed mipmaps, and wgpu 30's `write_texture` pads internally, so the code
+  was right and the test was wrong. Had the test won, mips 0–2 would have been fine (1024/512/256-byte
+  rows are already aligned) and mips 3–8 would have silently sampled padding bytes as texels — wrong
+  detail exactly at the distances mipmapping uses small mips, with no panic. The rule that came out of
+  it: a failing test is evidence about the code, not automatically an instruction to change the code.
+- **Parallel agents inflate benchmarks.** `droplet_erosion` was reported at 9.6 s against a 6 s budget
+  by two agents and attributed to machine load by both. It measures ~2.6 s in isolation. Wall-clock
+  inflation from concurrent cargo processes was roughly 3×. A budget violation from a parallel agent
+  does not count until it reproduces single-threaded.
+- **Two agents reported a blocker that did not exist.** Both spent significant time on a claimed
+  removal of `TerrainMap::compact()`; the function was present the whole time and nine call sites
+  depended on it. They were reading a genuinely transient mid-edit state. When several agents share a
+  tree, "the crate doesn't compile" is only actionable once it persists past another agent's edit.
+
+Golden checksums were re-recorded exactly once, from a settled tree with the full suite otherwise
+green: `GOLDEN_FINITE = 0x496B_ED77_DADE_79E1`, `GOLDEN_TORUS = 0x1B5B_C536_BAEE_65E5`. Six different
+values were offered by agents mid-flight and all were refused, because a checksum captured over a tree
+another agent is mutating is not a regression baseline.
+
+Test count went 428 → 535 (533 passing, 2 ignored: the 1024² bench world and the offscreen GPU
+render, both of which need hardware or a long run).
+
+Not verifiable in this environment, and not claimed: how anything looks. The suite proves Wesl imports
+resolve, Rust and WGSL struct layouts agree via `offset_of!`, generation output is stable, and physics
+grounds a walker across seams. It does not prove the water, sky, splat shading, or caustics are
+correct. Those remain a human check with a window open.
+
+## Pass 1 — readability (post-implementation, on the settled tree)
+
+Baseline and result both **533 passed, 0 failed, 2 ignored**, golden checksums included — behaviour
+unchanged. Zero comment lines added, verified against the diff rather than taken on trust.
+
+The pass was deliberately fenced to naming, function shape, legible conditionals, and in-file
+consistency, with module splits and dead-code removal explicitly out of scope so that Passes 2 and 3
+would stay reviewable. Roughly 100 edits across `hydrology.rs`, `map.rs`, `voronoi.rs`, `water.rs`,
+`noise.rs`, `macro_landform.rs`, `season.rs`, `gpu.rs`, `splat.rs`.
+
+The dominant pattern was unnamed numeric decisions becoming named constants, because with the
+no-comments rule a name is the only legal place to record why a number was chosen:
+
+- `apply_craters` — `u`, `ca`, `sa`, `degrade` became `distance_in_radii`, `angle_cos`, `angle_sin`,
+  `intactness`, and the rim shape reads as `CRATER_RIM_PEAK_RADII` / `CRATER_RIM_FALLOFF_RADII_SQ` /
+  `CRATER_RIM_HEIGHT_FRACTION` instead of `exp(-((u - 1.1).powi(2)) / 0.05) * 0.45`.
+- `generate_precipitation_blended` — a copy-pasted intensity/shadow lookup with shadowed bindings
+  collapsed to one call each, and a bare `clamp(-0.3, 0.4)` became
+  `clamp(-MAX_LEE_RAIN_PENALTY, MAX_WINDWARD_RAIN_BONUS)`, which records the rain-shadow decision.
+- `voronoi::cell_weights_into` — an inner `let width = self.blend_width(i, j)` was silently shadowing
+  an outer `let width = self.max_blend_width()`. Neither a reader nor a later editor could tell which
+  `width` a given line meant. Now `pair_width` vs `width`.
+- `crustal_elevation` — `crust + (-0.115 - crust) * margin * 0.85` became
+  `crust + (COAST_TARGET_CREST - crust) * margin * COAST_PULL_STRENGTH` with the share band named.
+
+Deliberately left for later passes: `hydrology.rs` (3044 lines), `map.rs` (2949), `voronoi.rs` (1947),
+`water.rs` (1605) and `noise.rs` (1507) are still monoliths; `smooth_once`/`smooth_once_masked`
+near-duplication; the partial-octave fbm loop duplicated four times in `noise.rs`; and the
+pre-existing dead-code warnings.

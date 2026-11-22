@@ -118,10 +118,11 @@ Water is handled in two distinct ways—elevation-driven base water and runoff-d
 - Meshed per terrain chunk (only for chunks containing terrain below max sea level) rather than a single global quad, allowing `FiniteTorus` wrapping, `Infinite` chunk streaming, vertex depth/wave attributes, and localized sea ice.
 
 #### Hydrological Water (Rivers, Waterfalls & Lakes)
-- Created during `Evolving Features` from the precipitation map, priority-flood depressions, and flow accumulation.
-- **Inland lakes / basins** sit at their resolved spill elevation, triangulated directly to the flooded basin footprint (plus a thin bank margin) rather than bounding boxes. Salinity is determined by drainage connectivity and aridity (freshwater when draining, brackish near coasts, hypersaline in closed arid basins).
-- **Rivers** follow smoothed paths along high flow accumulation from headwaters down to lakes or sea level. Ribbon width scales with local accumulation, cross-section edges tuck into the carved banks to avoid floating or z-fighting, and paths split/wrap cleanly across `FiniteTorus` borders.
-- **Waterfalls** form at steep drops along river paths, carving downstream plunge pools and generating cascade sheets and plunge-pool foam.
+ - Created during `Evolving Features` from the precipitation map, priority-flood depressions, and flow accumulation.
+ - **Inland lakes / basins** sit at their resolved spill elevation, triangulated directly to the flooded basin footprint (plus a thin bank margin) rather than bounding boxes. Salinity is determined by drainage connectivity and aridity (freshwater when draining, brackish near coasts, hypersaline in closed arid basins).
+-- **Rivers** follow smoothed paths along high flow accumulation from headwaters down to lakes or sea level. Ribbon width scales with local accumulation, cross-section edges tuck into the carved banks to avoid floating or z-fighting, and paths split/wrap cleanly across `FiniteTorus` borders.
++- **Rivers** trace interpolating splines along high flow accumulation from headwaters down to lakes or sea level, stitched at confluences into a single continuous mesh. Water surface elevation and left/right bank widths are solved from approximate water volume (discharge divided by slope-driven velocity) against approximate channel volume (integrated across the carved terrain cross-section), keeping narrow gorges deeper and floodplains wider while tucking bank skirts into the terrain and wrapping cleanly across `FiniteTorus` borders.
+ - **Waterfalls** form at steep drops along river paths, carving downstream plunge pools and generating cascade sheets and plunge-pool foam.
 
 #### Shared Behaviour (Shading, Freezing & Immersion)
 - Both water systems share a water material supporting animated surface ripples (wind-driven on oceans/lakes, flow-driven on rivers), Fresnel reflection, depth-based colour absorption, shoreline foam, and double-sided rendering for underwater views.

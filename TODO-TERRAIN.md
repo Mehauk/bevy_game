@@ -1,7 +1,7 @@
 Your suspicion is completely accurate. Looking closely at `src/terrain/`, `TODO-TERRAIN.md` was checked off by implementing minimal CPU stand-ins and unit-tested wrappers while bypassing several core requirements—and introducing a handful of real bugs that tests hid via tautological assertions or small `compact()` configs.
 
 ---
-- [ ] do this section too
+- [x] do this section too
 ### What to Fix First to Make These Previews Meaningful
 0. switch to weighted voronoi for base features
 1. **Fix `macro_landform` elevation offset** so `Continent` / `Archipelago` actually produce ~30–60% land above `sea_level = 0.0` (instead of an underwater world).
@@ -12,8 +12,8 @@ Your suspicion is completely accurate. Looking closely at `src/terrain/`, `TODO-
 6. **Only generate `*_tiled` previews for `FiniteTorus`**, and test `macro_landform` / `voronoi` / `noise` on `FiniteTorus` with **exact integer periods** so the seam actually disappears.
 
 
-- [ ] my character doesnt fall anymore even when the terrain beneath me is lower or if i walk off the edge of the map?
-- [ ] Add a complete prievew of what the terrain looks like from the top
+- [x] my character doesnt fall anymore even when the terrain beneath me is lower or if i walk off the edge of the map?
+- [x] Add a complete prievew of what the terrain looks like from the top
 - [x] The atmosphere shifts are too sudden and too strong, revert to the old one with minor adjusments based on humidity
 ---
 
@@ -314,9 +314,9 @@ This is the clearest bug in the set:
 ---
 
 Issues i found that you might have resolved
-- [ ] gaps between terrain and water
-- [ ] floating water meshes
-- [ ] bad river/waterwall water geometry
+- [x] gaps between terrain and water
+- [x] floating water meshes
+- [x] bad river/waterwall water geometry
 
 ---
 
@@ -354,7 +354,7 @@ Issues i found that you might have resolved
 - [x] **Fix global Winter ocean freeze (`mod.rs`, `season.rs`, `water.rs`)**
   - Remove hardcoded `season::is_frozen(clock.season, Temperature::Cold)` in `rebuild_water_surfaces` (currently `Cold >= Cold` is always `true`, spawning a `565m × 565m` solid `Collider::cuboid` across the entire map and ~82m past the edges in every season).
   - Evaluate freezing per cell / lake from local seasonal `Temperature`, `Salinity`, and `Geothermal` (volcanic/hydrothermal zones stay liquid; freshwater freezes before marine water), building `Collider::trimesh_from_mesh` **only** over frozen sea sub-meshes and frozen basin-clipped lake meshes.
-- [ ] **Create a dedicated `WaterMaterial` shader**
+- [x] **Create a dedicated `WaterMaterial` shader**
   - Dual-scrolling normal maps (wind-aligned on sea/lakes, flow-aligned on rivers), Fresnel sky reflection, Beer-Lambert depth absorption, shoreline/cascade foam (`depth < 0.8m`), and `cull_mode: None` for underwater upward views.
 - [x] **Update `sync_underwater_view` & add character swimming (`mod.rs`, `utils/`, `integration/`, `character.rs`)**
   - Query `map.water_surface_at(pos.x, pos.z)` for underwater fog and smooth the transition over a `0.0..1.5m` depth band (covering lakes and deep rivers, not just `sea_level`).
@@ -364,14 +364,14 @@ Issues i found that you might have resolved
 
 ### 11.5 Flow-Map & Depth-Absorption Techniques (recorded from the two water tutorials)
 
-- [ ] **Bake world-space flow vectors for rivers & cascades (`hydrology.rs`, `water.rs`)**
+- [x] **Bake world-space flow vectors for rivers & cascades (`hydrology.rs`, `water.rs`)**
   - Export 2D XZ flow direction + speed (`RG` = D-infinity blended flow vector x speed, `B` = slope/rapids turbulence) into river ribbon vertex attributes (or a world-space FlowMap texture), modulated across the stream width via `sin(uv.x * PI)` (faster centre, slower banks) and accelerated on steep slopes.
   - Deflect flow vectors outward around terrain banks, rocks, and waterfalls (distance-field/gradient perturbation) so running water parts around obstacles and sheds foam wakes.
 - [x] **Implement 3-phase constant-luminosity flow-map sampling for rivers in the water shader (`water_material.wesl`)**
   - Sample water normal/foam noise in **world XZ** (avoiding spline-UV stretching on bends and seams at confluences) using 3 staggered phases (`0.0`, `1/3`, `2/3`) with per-phase UV offsets and subtle time-distortion noise to break up tiling.
   - Weight phases with trapezoidal constant-luminosity envelopes (`clamp((1.0 - abs((phase - 0.5) * 2.0)) * 1.5, 0.0, 1.0)` summed and divided by `2.0`) to eliminate the mid-blend gray pulsing of 2-phase flow maps.
   - Use dual-scrolling world-space panners (angle-corrected normal blending at mismatched scales/speeds) for low-flow lakes/oceans, and drive river rapids/whitewater foam from `length(flow)` + slope steepness via height-lerp contrast masking.
-- [ ] **Add single-layer Beer-Lambert depth absorption, caustics & shore ripples (`water_material.wesl`, `gpu.rs`)**
+- [x] **Add single-layer Beer-Lambert depth absorption, caustics & shore ripples (`water_material.wesl`, `gpu.rs`)**
   - Compute a true water column depth, either from a `DepthPrepass` (which also detects rocks, docks and characters in the water) or from the existing vertex-encoded ground height, and absorb per channel so shallow shelves reveal tinted seabed while deep water absorbs toward teal/navy.
   - Pair it with distance-to-shore animated ripples (`sin(depth * freq - time)`) and shoreline foam.
 
@@ -382,39 +382,39 @@ Issues i found that you might have resolved
 ### 12.1 Bugs Found in Current Code
 - [x] **Remove panicking leftover debug test in `src/terrain/hydrology.rs`**
   - Delete `dbg_tests::dbg_path` (currently fails `cargo test` with an unconditional `panic!("path: {path:?}")`).
-- [ ] **Fix character drop-off / spawn height (`character.rs`, `mod.rs`)**
+- [x] **Fix character drop-off / spawn height (`character.rs`, `mod.rs`)**
   - Audit `CHARACTER_SPAWN_OFFSET_Y` (`100.5` in `src/character.rs`) and verify downward gravity / `character_ground_check` fall behavior after removing the oversized frozen sea `Collider::cuboid`.
   - Replace blind `map.height_at(0.0, 0.0)` for `SpawnGroundHeight` with a search for the nearest dry (`>= sea_level`), walkable (`slope <= max_slope_angle_rad`) point near `(0, 0)` so `Archipelago` / `InlandSea` seeds don't spawn underwater or on cliffs.
 - [x] **Fix `macro_landform` land-to-sea elevation offset (`macro_landform.rs`)**
   - Adjust `Continent` (`- 0.45`) and `Archipelago` (`- 0.35`) elevation baselines so seeds consistently produce ~30–60% land above `sea_level = 0.0`.
 - [x] **Normalize orographic precipitation scale (`hydrology.rs`)**
   - Scale `orographic` in `generate_precipitation` gently with local slope instead of multiplying raw gradient by `relief * 0.5` (`45.0`), which clips values to `0.005` / `1.5`.
-- [ ] **Interpolate `slope_at` and add smooth field sampling (`map.rs`, `field.rs`)**
+- [x] **Interpolate `slope_at` and add smooth field sampling (`map.rs`, `field.rs`)**
   - Bilinearly interpolate `TerrainMap::slope_at(x, z)` instead of snapping to `grid_of`, and add bicubic / Catmull-Rom sampling for smooth hillshading without bilinear grid creases.
 - [x] **Fix grazing `DirectionalLight` sun angle (`mod.rs::setup_sky`)**
   - Raise sun elevation above the current ~9.7° (`looking_at(Vec3::new(-0.15, -0.05, 0.25), Vec3::Y)`) and tune `GlobalAmbientLight` so steep slopes and valleys aren't pitch-black.
 
 ### 12.2 World Structure, Scaling & Atmosphere
-- [ ] **Switch base Voronoi partitioning to weighted Voronoi (`voronoi.rs`, `map.rs`)**
+- [x] **Switch base Voronoi partitioning to weighted Voronoi (`voronoi.rs`, `map.rs`)**
   - Add per-cell power / multiplicative weights driven by macro landforms/regions so continents, basins, and mountain ranges span larger cells while coastal deltas and calderas stay compact.
-- [ ] **Align `CHUNK_MESH_STEPS` with `TerrainConfig::subdivisions` (`chunk.rs`, `map.rs`)**
+- [x] **Align `CHUNK_MESH_STEPS` with `TerrainConfig::subdivisions` (`chunk.rs`, `map.rs`)**
   - Derive chunk mesh steps from `subdivisions` (currently `200` over `400m` = `2.0m`, while `CHUNK_MESH_STEPS = 48` over `200m` = `4.17m`, discarding half the heightfield/erosion detail and desyncing colliders).
-- [ ] **Scale droplet erosion & couple fluvial carving (`hydrology.rs`, `map.rs`)**
+- [x] **Scale droplet erosion & couple fluvial carving (`hydrology.rs`, `map.rs`)**
   - Scale `ErosionConfig::droplet_count` with `dim * dim` (currently `8_000 × 2` on `200×200`) and couple `carve_rivers` across erosion iterations.
 - [x] **Tone down and smooth atmosphere transitions (`atmosphere.rs`, `mod.rs`)**
   - Revert extreme per-region fog/ambient shifts (`visibility: 40..200`, `ambient_boost: 0.55..1.14`, harsh `fog_colour` jumps) to a stable baseline with subtle **humidity** (and gentle altitude/temperature) adjustments.
   - Add temporal smoothing (exponential lerp over ~1–2s) to `TerrainAtmosphere`, `TerrainFog`, `ClearColor`, and `DirectionalLight` in `sync_terrain_atmosphere`.
-- [ ] **Add `Finite` world edge policy & `TerrainJob` cancellation (`chunk.rs`, `mod.rs`, `map.rs`)**
+- [x] **Add `Finite` world edge policy & `TerrainJob` cancellation (`chunk.rs`, `mod.rs`, `map.rs`)**
   - Define finite map edge behavior (oceanic drop-off + perimeter colliders, or out-of-bounds respawn) so players can't walk off into infinite void.
   - Add request-ID cancellation on `TerrainJob` (`Task<TerrainMap>`) and avoid re-running full droplet/wind erosion synchronously when only `set_cell_base_height` or `SeasonClock` changes.
 
 ### 12.3 Previews, Debugging & Future Extensibility
-- [ ] **Add a complete top-down composite preview & clean up exports (`preview.rs`)**
+- [x] **Add a complete top-down composite preview & clean up exports (`preview.rs`)**
   - Add a `world` / `composite` preview layer combining region/surface colors, cliffs, seasonal snow/shore overrides, hillshade, bathymetric sea, clipped lakes, connected river lines, and waterfalls.
   - Add bathymetry to `height` / `season`, render connected rivers and filled lakes in `hydrology_layer` (instead of `3×3` dots), and export `*_tiled` previews **only** for `WorldTopology::FiniteTorus`.
-- [ ] **Add feature inspection / teleport debug command (`mod.rs` + `integration/`)**
+- [x] **Add feature inspection / teleport debug command (`mod.rs` + `integration/`)**
   - Add `terrain>find_feature` / teleport hook (via `utils`) to jump directly to specific regions, lakes, waterfalls, or river mouths during testing.
-- [ ] **Expose surface/scatter query API & static heightmap loading (`map.rs`, `utils/`, `docs/terrain.md` §1)**
+- [x] **Expose surface/scatter query API & static heightmap loading (`map.rs`, `utils/`, `docs/terrain.md` §1)**
   - Provide `surface_info_at(x, z)` (region, substrate, slope, moisture, snow depth, water depth, coast/river proximity) + deterministic per-chunk scatter seeds for future foliage/props.
   - Add `TerrainSource::StaticAsset` (R16/PNG heightmap + optional biome mask import) feeding into the chunk/water/collider pipeline.
 
@@ -428,7 +428,7 @@ Issues i found that you might have resolved
   - Also skip `bake_splats` whenever `view.0 != DebugView::None` or `*mode != DebugMaterialMode::Textured`.
 - [x] **Give `uv_grid_material` an actual procedural checkerboard/UV texture (`material.rs`)**
   - Currently `uv_grid_material()` returns a flat sky-blue `StandardMaterial` (`Color::srgb(0.55, 0.85, 1.0)`), so `terrain>debug_material uv_grid` cannot inspect UV layout or tiling distortion.
-- [ ] **Wire `SeasonDelta` & `snow_coverage` into live terrain surface shading (`season.rs`, `splat.rs`, `map.rs`)**
+- [x] **Wire `SeasonDelta` & `snow_coverage` into live terrain surface shading (`season.rs`, `splat.rs`, `map.rs`)**
   - `SeasonDelta` / `seasonal_params` are currently `#[cfg(test)]`-only, and `splat::plan_texel` only applies `SurfaceLayer::Snow` inside the coastal `flood_zone`. Apply seasonal temperature deltas and `season::snow_coverage` (shedding off sheer cliffs) across high peaks, tundras, and winter landscapes.
   - Stop re-running `coastal_erosion` and rebuilding all terrain trimesh `Collider`s on every discrete `SeasonClock` tick in `TerrainMap::set_season`, since `flood_zone` is computed once across all 4 seasons and the terrain geometry hasn't changed.
 
@@ -436,12 +436,12 @@ Issues i found that you might have resolved
 - [x] **Fix `ScalarField` finite-edge gradient & snapping artifacts (`field.rs`)**
   - In `ScalarField::gradient(x, z)` on `WorldTopology::Finite`, use one-sided differences divided by `spacing` at `x == 0 | dim - 1` and `z == 0 | dim - 1` instead of clamping `wrap(-1)` onto `0` and dividing by `2.0 * spacing` (which halves slopes along all map borders).
   - Remove or tighten `lattice_axis`'s `1e-4` snap threshold, which introduces tiny flat micro-ledges along every grid line in `sample_world`.
-- [ ] **Fix chunk grid overhang when `size` is not divisible by `chunk_size` (`map.rs`, `chunk.rs`)**
+- [x] **Fix chunk grid overhang when `size` is not divisible by `chunk_size` (`map.rs`, `chunk.rs`)**
   - Clamp `chunk_bounds` / `height_in_chunk` to `[-size/2, +size/2]` so chunks on non-divisible world sizes (e.g. `size = 300.0`, `DEFAULT_CHUNK_SIZE = 200.0`) don't hang past the map edge with stretched clamped terrain.
 - [x] **Fix 4D torus domain warping scale in `NoiseEngine::warped` (`noise.rs`)**
   - On `FiniteTorus`, warp the angular `(u, v)` torus coordinates scaled by `size` before projecting to 4D `(cos u, sin u, cos v, sin v)` rather than adding raw world-meter warp offsets in 4D Euclidean space with a tiny fixed `WARP_FREQUENCY = 0.004` (which barely warps compact/medium worlds and distorts the torus radius).
   - Smoothly attenuate octave amplitudes instead of `.round()`ing blended octave counts in `blend_shapes` so octave count doesn't pop across cell boundaries.
-- [ ] **Mask `apply_wind_erosion` by climate/substrate & fix `droplet_erosion` / plunge pool ordering (`hydrology.rs`, `map.rs`)**
+- [x] **Mask `apply_wind_erosion` by climate/substrate & fix `droplet_erosion` / plunge pool ordering (`hydrology.rs`, `map.rs`)**
   - Gate `apply_wind_erosion` by cell `Substrate` (`Sand` / dry regolith), `Wind` strength, aridity, and `height > sea_level` instead of eroding submerged seabed and tropical rainforests at full strength.
   - Make `droplet_erosion` step distance and `erode_radius` / `deposit_radius` scale-invariant in world meters (currently hardcoded in grid cells, so doubling `subdivisions` halves physical gully width and droplet reach).
   - Run `carve_plunge_pools` before final lake/pool extraction (or emit explicit `WaterBody` plunge pools) so carved waterfall basins hold water rather than sitting as dry pits below cascades.
@@ -457,7 +457,7 @@ Issues i found that you might have resolved
   - Add a benchmark profile for `TerrainConfig::default()` (`size: 400.0`, `subdivisions: 200`) and `bake_splats` alongside `compact()`, tracking total chunk upload cost and memory footprint.
 - [x] **Exclude water `Sensor` colliders from `CameraRig` occlusion (`camera.rs`, `integration/`)**
   - Assign dedicated `avian3d` `CollisionLayers` to terrain vs water sensors/volumes and filter `CameraRig`'s `ShapeCast` so swimming/diving never snaps the third-person camera onto the water surface.
-- [ ] **Add `terrain>world_summary` console command (`mod.rs`)**
+- [x] **Add `terrain>world_summary` console command (`mod.rs`)**
   - Output a copy-friendly summary via `CommandOutput` (seed, topology, shape, size, subdivisions, sea level, land %, biome distribution, lake/river/waterfall counts) for quick world inspection and bug reporting.
   
 ---
@@ -470,7 +470,7 @@ Issues i found that you might have resolved
 - [x] **Apply `RegionMaterialProfile` tint, roughness & reflectance in splat baking (`splat.rs`, `material.rs`)**
   - `bake_chunk` and `splat_material` ignore `profile.tint`, `profile.roughness`, and `profile.reflectance` (`splat_material` hardcodes `base_color: Color::WHITE, perceptual_roughness: 1.0, reflectance: 0.2`), discarding colour/roughness distinction across regions that share the same base `SurfaceLayer` (e.g. `Savanna` vs `TemperateGrassland` vs `TropicalRainforest`).
   - Re-normalize normal vectors after `imageops::resize` in `splat::read_tile`, and generate mipmaps on uploaded `SplatMaps` images to prevent distant aliasing.
-- [ ] **Fix `FlatColor` debug mode & quad triangulation in `chunk.rs`**
+- [x] **Fix `FlatColor` debug mode & quad triangulation in `chunk.rs`**
   - `chunk_material` currently picks a single `RegionMaterialProfile` from the chunk's geometric center for the entire `200×200m` chunk in `FlatColor` mode instead of blending per-vertex region colours.
   - Flip quad diagonals adaptively in `build_chunk_mesh` (splitting along the shorter height diagonal `|h[a] - h[d]| < |h[b] - h[c]|`) to avoid sawtooth diagonal creasing on steep slopes.
   - Move `Friction::ZERO` / `Restitution::ZERO` handling out of `TerrainChunk` (or avoid `CoefficientCombine::Min` zeroing friction for all future physics props/boulders resting on terrain).
@@ -492,9 +492,9 @@ Issues i found that you might have resolved
 ### 14.3 Tooling, Console UX & Robustness
 - [x] **Wire `CommandOutput` into all `terrain>*` console commands (`mod.rs`)**
   - Commands like `cell_info`, `inspect_point`, `inspect_hydrology`, `benchmark_terrain`, `set_cell_height`, and `export_preview` currently log only via `info!`/`warn!` without calling `CommandOutput::set(...)`, so running them in the `~` command palette shows no output or copy button.
-- [ ] **Fix non-tiled `FiniteTorus` edge rendering in `preview.rs`**
+- [x] **Fix non-tiled `FiniteTorus` edge rendering in `preview.rs`**
   - In `cells_layer`, draw wrapped boundary edges on both sides of the canonical seam even when `tiled == false` so torus boundary lines don't clip off one side of the preview.
-- [ ] **Validate `TerrainConfig` invariants & support optional disk caching (`map.rs`)**
+- [x] **Validate `TerrainConfig` invariants & support optional disk caching (`map.rs`)**
   - Clamp/validate `size > 0.0`, `subdivisions >= 2`, `cell_grid_dim >= 1`, and finite erosion parameters in `TerrainConfig` / `TerrainMap::new` to prevent panics or division-by-zero from invalid configs.
   - Add optional binary/cache serialization (keyed by config + seed hash) so expensive high-resolution (`512×512`+) eroded maps can load near-instantly across restarts.
 
@@ -505,10 +505,10 @@ Issues i found that you might have resolved
 ### 15.1 Mesh, Splat Sampling & Visual Quality
 - [x] **Fix chunk-border seam bleeding in `splat.rs::wrapped`**
   - `splat::wrapped` sets `ImageAddressMode::Repeat` on per-chunk splat maps (`albedo`, `normal`, `orm`, `cell_data`), causing linear filtering along chunk edges to wrap and bleed pixels from the opposite side of the same `200m` chunk. Switch chunk splat samplers to `ImageAddressMode::ClampToEdge`.
-- [ ] **Generate mesh tangents & remove redundant height lookups in `chunk.rs::build_chunk_mesh`**
+- [x] **Generate mesh tangents & remove redundant height lookups in `chunk.rs::build_chunk_mesh`**
   - Generate `Mesh::ATTRIBUTE_TANGENT` (or compute analytic UV-aligned tangents) so Bevy's `StandardMaterial` normal maps don't fall back to lower-quality screen-space derivative tangents.
   - Reuse the already-sampled `(steps + 1)²` height grid for interior finite-difference normals instead of calling `map.height_at` four extra times per vertex.
-- [ ] **Use log-scale normalization for `DebugView::Flow` & `preview::hydrology_layer` (`colour.rs`, `preview.rs`)**
+- [x] **Use log-scale normalization for `DebugView::Flow` & `preview::hydrology_layer` (`colour.rs`, `preview.rs`)**
   - Flow `accumulation` spans orders of magnitude (`1..5` in headwaters vs `5,000+` at river mouths); dividing linearly by `accumulation_field().max()` makes 99% of tributaries invisible. Normalize with `(1.0 + acc).ln() / (1.0 + peak).ln()`.
 - [x] **Fix `ambient_boost` targeting `DirectionalLight` instead of `GlobalAmbientLight` (`mod.rs`, `atmosphere.rs`)**
   - `sync_terrain_atmosphere` multiplies `DirectionalLight.illuminance` by `blended.ambient_boost` while leaving `GlobalAmbientLight` untouched, exaggerating lit-vs-shadowed contrast instead of raising ambient fill.
@@ -527,11 +527,11 @@ Issues i found that you might have resolved
   - Re-verify/re-couple `Salinity` and `Hydrology` invariants after `relax_parameters` shifts cell temperature, humidity, or precipitation.
 
 ### 15.3 Lifecycle, Startup & Physics Edge Cases
-- [ ] **Sync `TerrainMap` season when `TerrainJob` finishes (`mod.rs::run_terrain_job`)**
+- [x] **Sync `TerrainMap` season when `TerrainJob` finishes (`mod.rs::run_terrain_job`)**
   - `TerrainMap::new` initializes `season: Season::Summer`. When `run_terrain_job` delivers a regenerated map while `SeasonClock` is set to another season (e.g. `Winter`), `clock.is_changed()` is `false`, leaving `TerrainMap` on `Summer` sea level until the next season tick. Call `map.sync_season_clock(&clock)` on job delivery.
-- [ ] **Move initial terrain generation off synchronous `TerrainPlugin::build` (`mod.rs`)**
+- [x] **Move initial terrain generation off synchronous `TerrainPlugin::build` (`mod.rs`)**
   - `app.init_resource::<TerrainMap>()` currently blocks main-thread startup before the window appears. Queue initial generation (or build a lightweight placeholder/loading pass) via `TerrainJob` as generation resolution and droplet counts grow.
-- [ ] **Harden `character` downhill snapping & torus-wrap interpolation (`character.rs`, `integration/`)**
+- [x] **Harden `character` downhill snapping & torus-wrap interpolation (`character.rs`, `integration/`)**
   - Scale `SLOPE_SNAP_MAX_SPEED` (currently capped at `4.0 m/s`) relative to horizontal speed so sprinting downhill (`12.0 m/s` over steep slopes) keeps ground contact instead of launching off convex crests.
   - When implementing `FiniteTorus` entity wrapping in `integration`, reset or bypass `TransformInterpolation` on the wrap frame so Avian doesn't visually smear the character across the entire world when crossing `±size/2`.
 
@@ -571,29 +571,29 @@ The best part is you already have the underlying hydrology data needed for this:
 
 ## 16. Organic Boundaries, Stochastic Tiling & Scatter Improvements
 
-- [ ] **Domain-warp `VoronoiLayout` boundaries (`voronoi.rs`)**
+- [x] **Domain-warp `VoronoiLayout` boundaries (`voronoi.rs`)**
   - Perturb query coordinates (`p + periodic_warp_fbm(p)`) inside `cell_at` and `cell_weights_at` (wrap-aware on `FiniteTorus`) so biome/cell borders curve organically instead of forming straight polygon edges.
   - Pad `SpatialIndex` search cutoff by `max_warp_amplitude` so warped queries never clip neighbouring bucket candidates.
-- [ ] **Add perturbed `F1` Worley cliff plateaus & continental shelf curve (`noise.rs`, `macro_landform.rs`)**
+- [x] **Add perturbed `F1` Worley cliff plateaus & continental shelf curve (`noise.rs`, `macro_landform.rs`)**
   - Add a domain-warped `F1` hashed-cell plateau pass (or cliff/escarpment noise mode) for rugged jagged cliffs alongside existing `F2 - F1` `Cellular` cracks.
   - Shape `macro_landform` near `sea_level` with a coastal beach + shallow continental-shelf curve so shorelines grade gently for Beer-Lambert water shading.
 - [x] **Implement triangle-grid Stochastic Texturing in WGSL (`terrain.wgsl`, `water.wgsl`)**
   - Use simplex/triangle-grid 3-sample tiling (`uv_i = uv + hash22(vertex_i)`) with `textureSampleGrad(..., dpdx(uv), dpdy(uv))` to eliminate `24m` tile repetition on terrain plains and ocean water while preserving hardware mipmaps and normal-map contrast.
-- [ ] **Use variable-radius Poisson Disc + Perlin clumping for prop/foliage scatter (`scatter` / `utils/`)**
+- [x] **Use variable-radius Poisson Disc + Perlin clumping for prop/foliage scatter (`scatter` / `utils/`)**
   - Implement deterministic per-chunk **multi-radius Poisson Disc Sampling** (grid cell size = `min_radius`) for trees and rocks, plus Perlin-clumped random scatter for grass/shrubs, gated by `surface_info_at` (slope, elevation, region, moisture, and water depth).
 
 ---
 
 ## 17. Terrain Hardness & Material-Driven Erosion / Season Resistance
 
-- [ ] **Define ground `hardness` & erodibility properties on `Substrate` (`params.rs`, `map.rs`)**
+- [x] **Define ground `hardness` & erodibility properties on `Substrate` (`params.rs`, `map.rs`)**
   - Add `hardness(substrate) -> f32` (`[0..1]`, e.g. `Sand: 0.10`, `SiltClay: 0.25`, `LimestoneKarst: 0.60`, `Volcanic: 0.72`, `RockCrystalline: 0.90`) alongside `repose_tan`.
   - Precompute a blended `hardness: ScalarField` across Voronoi cell weights (optionally modulated by strata/elevation noise so caprock over softer rock forms natural ledges), and track deposited unconsolidated sediment separately from bedrock where eroded material settles.
-- [ ] **Scale hydraulic, fluvial & wind erosion by terrain hardness (`hydrology.rs`, `map.rs`)**
+- [x] **Scale hydraulic, fluvial & wind erosion by terrain hardness (`hydrology.rs`, `map.rs`)**
   - In `droplet_erosion`, scale `erode_rate` by `(1.0 - hardness)` at each droplet sample (while letting freshly deposited sediment erode more easily than underlying bedrock).
   - In `carve_rivers`, scale channel incision by `(1.0 - hardness)` so rivers carve wide shallow plains in `Sand`/`SiltClay`, cut steep gorges through `LimestoneKarst`, and naturally form waterfall steps/lips where rivers cross from hard bedrock onto softer rock.
   - In `apply_wind_erosion`, gate material transport by both aridity and low hardness so wind mobilizes dry `Sand` / regolith without smoothing away solid `RockCrystalline` or `Volcanic` peaks.
-- [ ] **Gate seasonal `coastal_erosion` & shore material overrides by hardness (`season.rs`, `splat.rs`, `map.rs`)**
+- [x] **Gate seasonal `coastal_erosion` & shore material overrides by hardness (`season.rs`, `splat.rs`, `map.rs`)**
   - Pass the `hardness` field into `coastal_erosion(&mut heights, &flood_zone, &hardness, strength)` and scale beach flattening by `(1.0 - hardness)` (e.g. strong flattening on `Sand`/`SiltClay` into smooth beaches and tidal flats, near-zero flattening on `RockCrystalline`/`Volcanic` so `RockyCoast` sea cliffs stay steep).
   - Update `ShoreSurface` / `shore_override` and `splat::plan_texel` so hard stony substrates inside `flood_zone` stay wet darkened rock, shingle/gravel, or winter ice rather than blindly turning into `WetSand` / `Mudflat`.
   - Add unit tests verifying that under identical wave/hydraulic passes, `Sand` flattens into a gentle beach while `RockCrystalline` preserves steep cliff slopes and bedrock material.
@@ -604,4 +604,146 @@ The best part is you already have the underlying hydrology data needed for this:
 
 ---
 
-- [ ] end by ensuring cargo run
+- [ ] end by ensuring cargo run doesnt error out and there are not errores even when it doesnt
+
+---
+
+- [x] finally setup the following
+
+To let your AI coding agent (Claude Code, Cursor, etc.) actually **play** your Bevy game, **see** what its decisions look like, and **fix mistakes** in a closed loop, you need to give it three things:
+
+1. **Hands & Eyes** (an MCP server connected to Bevy Remote Protocol)
+2. **X-Ray Vision** (debug gizmos + reflected state so screenshots/queries show *why* decisions happened)
+3. **Time Control** (so the game doesn't run away while the LLM spends 3 seconds thinking)
+
+---
+
+### 1. Give the AI "Hands & Eyes" via MCP + Bevy Remote Protocol (BRP)
+
+Bevy has a built-in JSON-RPC interface called the **Bevy Remote Protocol (BRP)**. Two community MCP toolkits wrap BRP so your coding AI can launch your game, inject inputs, inspect ECS state, and take screenshots:
+
+#### Option A: `bevy_fairy` (Best if you want background playtesting without stealing window focus)
+`bevy_fairy` captures frames directly from an offscreen render target and injects keyboard/mouse input straight into Bevy's input messages (so you can keep working on your desktop without the game window hijacking focus). It also supports guided step-by-step walkthroughs.
+
+* **In your game (`Cargo.toml`):** Make sure Bevy has the `"png"` feature enabled for screenshots, and add `bevy_fairy` with the `plugin` feature.
+* **In `main.rs`:**
+  ```rust
+  use bevy::prelude::*;
+  use bevy::remote::http::RemoteHttpPlugin;
+  use bevy_fairy::DebuggerPlugin;
+
+  fn main() {
+      App::new()
+          .add_plugins(DefaultPlugins)
+          .add_plugins(DebuggerPlugin::default()) // Adds RemotePlugin + fairy methods
+          .add_plugins(RemoteHttpPlugin::default()) // Listens on 127.0.0.1:15702
+          .run();
+  }
+  ```
+  *(Note: `DebuggerPlugin` adds Bevy's `RemotePlugin` internally—don't add a second `RemotePlugin` or it will panic.)*
+* **Install the MCP server for your AI:**
+  ```bash
+  cargo install bevy_fairy --no-default-features --features server
+  # Example for Claude Code:
+  claude mcp add bevy-fairy -- bevy-fairy --stdio
+  ```
+ 
+
+#### Option B: `bevy_brp_mcp` + `bevy_brp_extras` (Best for full app lifecycle + log management)
+`bevy_brp_mcp` lets the AI discover apps in your workspace, launch/shut them down, read stdout logs from a temp file, query/mutate ECS components, send keyboard/mouse actions (`send_keys`, `click_mouse`, `drag_mouse`), and take screenshots (`screenshot`).
+
+* **In your game (`Cargo.toml`):** Add `bevy_brp_extras` (match its version to your Bevy version—e.g. `0.23.0` for Bevy `0.20`, `0.19.0` for Bevy `0.18`, etc.) and ensure Bevy's `"png"` feature is enabled.
+* **In `main.rs`:**
+  ```rust
+  use bevy::prelude::*;
+  use bevy_brp_extras::BrpExtrasPlugin;
+
+  fn main() {
+      App::new()
+          .add_plugins(DefaultPlugins)
+          .add_plugins(BrpExtrasPlugin) // Configures BRP on port 15702 + extras
+          .run();
+  }
+  ```
+ 
+* **Install `bevy_brp_mcp`** via `cargo install bevy_brp_mcp` and register it in your agent's MCP config.
+
+---
+
+### 2. Make Decisions *Visible* in Screenshots & Queries
+
+If the AI only sees a pretty game screenshot, it might notice *"I died"* without knowing *why* (e.g., bad hitbox, pathfinding loop, wrong state transition). Have your AI build a **Debug Telemetry Layer** into the game:
+
+1. **Draw decisions with `Gizmos`:**
+   Behind a `DebugVisuals(bool)` resource, draw:
+   * Velocity / intended movement vectors (green arrow = desired direction, red arrow = actual velocity)
+   * Pathfinding waypoints and line-of-sight rays
+   * Collider/hitbox outlines
+   * Current AI/bot decision state (or a small HUD overlay in the top-left showing `State`, `HP`, `Target`, `LastAction`)
+   
+   Now, when the AI takes a screenshot, it literally **sees what its decisions look like**.
+
+2. **Register components with `Reflect`:**
+   BRP can only inspect or modify components and resources that are registered with Bevy's reflection system. Put `#[derive(Reflect)]` (with `#[reflect(Component)]` or `#[reflect(Resource)]`) on your player, enemy, and AI state types and call `app.register_type::<MyState>()` in setup.
+
+3. **Emit structured decision logs:**
+   Log decisions in a clean, grep-friendly format:
+   ```rust
+   info!("[AI_DECISION] entity={:?} state={:?} target={:?} reason={}", entity, state, target, reason);
+   ```
+
+---
+
+### 3. Solve the "LLM Latency" Problem (Crucial for Real-Time Games)
+
+Because an LLM takes 1–5 seconds per tool call, a real-time 60fps game will run hundreds of frames while the AI is "thinking" about its next button press.
+
+Add a tiny **Step / Slow-Mo** resource that the AI can control over BRP:
+
+```rust
+#[derive(Resource, Reflect, Default)]
+#[reflect(Resource)]
+pub struct PlaytestClock {
+    pub step_frames: u32,
+    pub auto_pause: bool,
+}
+
+fn manage_playtest_clock(
+    mut clock: ResMut<PlaytestClock>,
+    mut virtual_time: ResMut<Time<Virtual>>,
+) {
+    if !clock.auto_pause {
+        return;
+    }
+    if clock.step_frames > 0 {
+        virtual_time.unpause();
+        clock.step_frames -= 1;
+    } else {
+        virtual_time.pause();
+    }
+}
+```
+*(Note: `Time<Fixed>` follows `Time<Virtual>`, so pausing `Time<Virtual>` freezes your `FixedUpdate` physics and game timers cleanly too.)*
+
+With this in place, the AI can set `auto_pause = true` via BRP, send an input (`KeyW`), set `step_frames = 20`, wait a beat, and take a screenshot. It plays your game like a turn-based simulation without altering your real gameplay code!
+
+*(If instead you have an **in-game Rust bot/AI** playing in real-time and you want the coding AI to critique it, you can run at `virtual_time.set_relative_speed(4.0)` to fast-forward a scenario, pause on failure/death, and have the coding AI inspect the screenshot + decision logs.)*
+
+---
+
+### 4. Put This Loop in Your `CLAUDE.md` / `AGENTS.md`
+
+Give your coding agent explicit instructions to actually use the loop instead of guessing from code alone:
+
+```markdown
+## Self-Playtest & Debug Loop
+When implementing or fixing gameplay mechanics, AI behavior, or UI:
+1. Build and launch the game with the debug/BRP plugin active.
+2. Enable `DebugVisuals` and (for frame-accurate testing) `PlaytestClock.auto_pause = true`.
+3. Use MCP input tools (`send_keys` / `click_mouse`) + `PlaytestClock.step_frames` to play through the mechanic you just changed.
+4. Take screenshots AND query the reflected ECS components/logs to verify what actually happened.
+5. Explicitly check the screenshot for:
+   - Visual glitches (clipping, wrong Z-order, broken UI layout)
+   - Decision mistakes (gizmo arrows pointing the wrong way, stuck pathfinding, wrong state transitions)
+6. If anything looks wrong, diagnose why from the state + screenshot, fix the Rust code, relaunch, and re-verify with a fresh screenshot before telling the user you're done.
+```

@@ -24,3 +24,22 @@ changelogs.
 - Feature modules (`input`, `menus`, `camera`, `terrain`, `state`, `character`) never import one
   another. Cross-feature wiring lives in `src/integration/`, wired by a single `IntegrationPlugin`.
 - `src/utils/` is a strict kernel: no feature imports and no plugins live there.
+
+## Self-playtest and debug loop
+
+The game exposes the Bevy Remote Protocol on `127.0.0.1:15702` via `BrpExtrasPlugin`, so an agent can
+drive a running build instead of guessing at behaviour. Install the bridge separately with
+`cargo install bevy_brp_mcp` and register it in the MCP config; it is not a dependency of the game.
+
+- **Time control.** Set `PlaytestClock { auto_pause, step_frames, speed }` with `remote_set_resource`
+  to advance exactly N frames per step. The game does not run ahead while a slow client thinks. It
+  never un-pauses a simulation the game itself paused.
+- **Visibility.** Set `DebugVisuals.enabled = true` to draw state markers, velocity and grounded
+  arrows, collider outlines, and the clock-paused indicator. `DecisionLog` records why state
+  transitions happened and also emits `[AI_DECISION]` lines to stdout.
+- **Console commands.** Set `AgentConsole.request` to any registered command (for example
+  `world_summary`) and read the result back from `AgentConsole.last_output`. This feeds the same
+  `RunCommand` pipeline the in-game console uses, so there is only one command path.
+- Take a screenshot and check the reflected state before declaring a change verified. Rendering and
+  shading cannot be checked headlessly; the test suite covers layout, import resolution and
+  generation output, not appearance.

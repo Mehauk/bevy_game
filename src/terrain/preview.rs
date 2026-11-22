@@ -5,10 +5,14 @@ use bevy::prelude::*;
 use image::{ImageBuffer, Rgb};
 
 use crate::terrain::chunk::DEFAULT_CHUNK_SIZE;
+use crate::terrain::colour::{
+    bathymetric_colour, flow_intensity, height_colour, normalized_height, region_colour,
+};
+use crate::terrain::gpu::SNOWLINE_METRES;
 use crate::terrain::map::TerrainMap;
 use crate::terrain::material::DISK_ROOT;
 use crate::terrain::params::BaseGradient;
-use crate::terrain::season::{Season, SeasonClock};
+use crate::terrain::season::{self, Season, SeasonClock};
 use crate::terrain::splat::{self, SurfaceTiles, cliff_share};
 use crate::terrain::DebugView;
 
@@ -16,7 +20,8 @@ pub const PREVIEW_ROOT: &str = "docs/.compiled/terrain-previews";
 pub const PREVIEW_DIM: usize = 320;
 pub const TILED_TILE_DIM: usize = PREVIEW_DIM / 2;
 
-pub const LAYERS: [&str; 12] = [
+pub const LAYERS: [&str; 13] = [
+    "world",
     "height",
     "slope",
     "cells",
@@ -47,9 +52,10 @@ pub fn export(map: &TerrainMap, clock: &SeasonClock, layer: &str) -> Result<Vec<
 
     fs::create_dir_all(PREVIEW_ROOT).map_err(|error| error.to_string())?;
     let mut files = Vec::new();
+    let tiled_variants = map.topology().wraps();
     for name in wanted {
         write(&mut files, map, clock, name, false)?;
-        if name != "tiling" && name != "splat" {
+        if tiled_variants && name != "tiling" && name != "splat" {
             write(&mut files, map, clock, name, true)?;
         }
     }
@@ -137,6 +143,7 @@ struct Grid {
     size: f32,
     step: f32,
     tiled: bool,
+    wraps: bool,
 }
 
 impl Grid {
@@ -147,6 +154,7 @@ impl Grid {
             size: map.size(),
             step: map.size() / PREVIEW_DIM.max(dim) as f32,
             tiled,
+            wraps: map.topology().wraps(),
         }
     }
 
@@ -170,7 +178,7 @@ impl Grid {
     }
 
     fn copies(&self, point: Vec2) -> Vec<Vec2> {
-        if !self.tiled {
+        if !self.tiled && !self.wraps {
             return vec![point];
         }
         let mut copies = Vec::new();
@@ -184,7 +192,7 @@ impl Grid {
                     && shifted.x < self.span * 0.5
                     && shifted.y >= -self.span * 0.5
                     && shifted.y < self.span * 0.5;
-                if inside {
+                if inside || !self.tiled {
                     copies.push(shifted);
                 }
             }
@@ -195,6 +203,7 @@ impl Grid {
 
 fn paint_layer(map: &TerrainMap, clock: &SeasonClock, name: &str, grid: &Grid) -> Image {
     match name {
+        "world" => composite_layer(map, clock, grid),
         "slope" => styled_layer(map, DebugView::Slope, grid),
         "cells" => cells_layer(map, grid),
         "region" => styled_layer(map, DebugView::Region, grid),
@@ -204,7 +213,7 @@ fn paint_layer(map: &TerrainMap, clock: &SeasonClock, name: &str, grid: &Grid) -
         "precipitation" => precipitation_layer(map, grid),
         "hydrology" => hydrology_layer(map, grid),
         "season" => season_strip(map, clock, PREVIEW_DIM, false),
-        "splat" => splat_pair(map, clock).expect("the splat preview needs the full tile set"),
+        "splat" => splat_pair(map).expect("the splat preview needs the full tile set"),
         _ => height_layer(map, grid),
     }
 }
@@ -235,7 +244,7 @@ fn cliff_stretch_layer(map: &TerrainMap, grid: &Grid) -> Image {
     })
 }
 
-fn splat_pair(map: &TerrainMap, clock: &SeasonClock) -> Result<Image, String> {
+fn splat_pair(map: &TerrainMap) -> Result<Image, String> {
     let tiles = SurfaceTiles::load(DISK_ROOT);
     if !tiles.is_complete() {
         return Err(format!(
@@ -244,24 +253,10 @@ fn splat_pair(map: &TerrainMap, clock: &SeasonClock) -> Result<Image, String> {
         ));
     }
     let chunk_size = DEFAULT_CHUNK_SIZE.min(map.size());
-    let coarse = splat::bake_chunk(
-        map,
-        &tiles,
-        IVec2::ZERO,
-        chunk_size,
-        clock.season,
-        splat::SPLAT_RESOLUTION,
-    )
-    .ok_or("the control-scale splat bake failed")?;
-    let fine = splat::bake_chunk(
-        map,
-        &tiles,
-        IVec2::ZERO,
-        chunk_size,
-        clock.season,
-        PREVIEW_DIM,
-    )
-    .ok_or("the detail-scale splat bake failed")?;
+    let coarse = splat::bake_chunk(map, &tiles, IVec2::ZERO, chunk_size, splat::SPLAT_RESOLUTION)
+        .ok_or("the control-scale splat bake failed")?;
+    let fine = splat::bake_chunk(map, &tiles, IVec2::ZERO, chunk_size, PREVIEW_DIM)
+        .ok_or("the detail-scale splat bake failed")?;
     let mut image = ImageBuffer::from_pixel(
         (PREVIEW_DIM * 2) as u32,
         PREVIEW_DIM as u32,
@@ -381,36 +376,128 @@ fn precipitation_layer(map: &TerrainMap, grid: &Grid) -> Image {
     })
 }
 
+pub fn flow_ramp(accumulation: f32, peak: f32) -> LinearRgba {
+    ramp(
+        flow_intensity(accumulation, peak),
+        Color::srgb(0.06, 0.10, 0.13),
+        Color::srgb(0.15, 0.55, 0.95),
+    )
+}
+
+const LAKE_COLOUR: LinearRgba = LinearRgba::new(0.10, 0.45, 0.85, 1.0);
+const RIVER_COLOUR: LinearRgba = LinearRgba::new(0.35, 0.85, 1.0, 1.0);
+const WATERFALL_COLOUR: LinearRgba = LinearRgba::new(1.0, 0.9, 0.2, 1.0);
+
+fn lake_radius(map: &TerrainMap, grid: &Grid) -> i32 {
+    let pixel = grid.span / grid.edge as f32;
+    ((map.heights().spacing() / pixel * 0.5).round() as i32).max(1)
+}
+
 fn hydrology_layer(map: &TerrainMap, grid: &Grid) -> Image {
     let peak = map.accumulation_field().max().max(1.0);
-    let mut image = grid.paint(|point| {
-        ramp(
-            map.accumulation_at(point.x, point.y) / peak,
-            Color::srgb(0.06, 0.10, 0.13),
-            Color::srgb(0.15, 0.55, 0.95),
-        )
-    });
+    let mut image = grid.paint(|point| flow_ramp(map.accumulation_at(point.x, point.y), peak));
+    let fill = lake_radius(map, grid);
     for lake in map.lakes() {
-        paint_cells(&mut image, map, grid, &lake.cells, LinearRgba::new(0.10, 0.45, 0.85, 1.0));
+        paint_cells(&mut image, map, grid, &lake.cells, LAKE_COLOUR, fill);
     }
     for path in map.river_paths() {
-        paint_cells(&mut image, map, grid, path, LinearRgba::new(0.35, 0.85, 1.0, 1.0));
+        paint_path(&mut image, map, grid, path, RIVER_COLOUR);
     }
     for fall in map.waterfalls() {
-        paint_cells(&mut image, map, grid, &[fall.index], LinearRgba::new(1.0, 0.9, 0.2, 1.0));
+        paint_cells(&mut image, map, grid, &[fall.index], WATERFALL_COLOUR, 1);
     }
     image
 }
 
-fn paint_cells(image: &mut Image, map: &TerrainMap, grid: &Grid, cells: &[usize], colour: LinearRgba) {
+fn paint_cells(
+    image: &mut Image,
+    map: &TerrainMap,
+    grid: &Grid,
+    cells: &[usize],
+    colour: LinearRgba,
+    radius: i32,
+) {
     let field = map.heights();
     for &cell in cells {
         let (gx, gz) = field.coords(cell);
         let world = field.world_of(gx, gz);
         for copy in grid.copies(world) {
-            dot(image, grid, copy, colour, 1);
+            dot(image, grid, copy, colour, radius);
         }
     }
+}
+
+fn paint_path(
+    image: &mut Image,
+    map: &TerrainMap,
+    grid: &Grid,
+    path: &[usize],
+    colour: LinearRgba,
+) {
+    let field = map.heights();
+    let size = map.size();
+    let half = size * 0.5;
+    let fold = |delta: f32| (delta + half).rem_euclid(size) - half;
+    for window in path.windows(2) {
+        let (ax, az) = field.coords(window[0]);
+        let a = field.world_of(ax, az);
+        let (bx, bz) = field.coords(window[1]);
+        let raw = field.world_of(bx, bz);
+        let b = Vec2::new(a.x + fold(raw.x - a.x), a.y + fold(raw.y - a.y));
+        for copy in grid.copies(a) {
+            let shift = copy - a;
+            line(image, grid, a + shift, b + shift, colour);
+        }
+    }
+}
+
+fn composite_layer(map: &TerrainMap, clock: &SeasonClock, grid: &Grid) -> Image {
+    let extent = map.max_height_extent();
+    let sea = map.sea_levels().level_at(clock.season);
+    let snowline = season::snowline_for(clock, SNOWLINE_METRES);
+    let flood = map.flood_zone();
+    let mut image = grid.paint(|point| {
+        let height = map.height_at(point.x, point.y);
+        if height < sea {
+            return bathymetric_colour(sea - height, extent);
+        }
+        let base = map
+            .region_at(point.x, point.y)
+            .map(region_colour)
+            .unwrap_or_else(|| height_colour(normalized_height(height, extent)));
+        let mut colour = apply_hillshade(base, hillshade(map, point, grid.step));
+        let share = cliff_share(map.slope_at(point.x, point.y));
+        if share > 0.0 {
+            let cliff = ramp(
+                share,
+                Color::srgb(0.10, 0.12, 0.10),
+                Color::srgb(0.98, 0.55, 0.10),
+            );
+            colour = colour.mix(&cliff, share);
+        }
+        if flood.contains(height) {
+            colour = colour.mix(&Color::srgb(0.76, 0.68, 0.50).to_linear(), 0.4);
+        }
+        if let Some(parameters) = map.parameters_at(point.x, point.y) {
+            let snow =
+                season::snow_coverage_blend(clock, parameters.temperature, height, snowline);
+            if snow > 0.0 {
+                colour = colour.mix(&Color::srgb(0.92, 0.95, 1.0).to_linear(), snow * 0.75);
+            }
+        }
+        colour
+    });
+    let fill = lake_radius(map, grid);
+    for lake in map.lakes() {
+        paint_cells(&mut image, map, grid, &lake.cells, LAKE_COLOUR, fill);
+    }
+    for path in map.river_paths() {
+        paint_path(&mut image, map, grid, path, RIVER_COLOUR);
+    }
+    for fall in map.waterfalls() {
+        paint_cells(&mut image, map, grid, &[fall.index], WATERFALL_COLOUR, 1);
+    }
+    image
 }
 
 fn cells_layer(map: &TerrainMap, grid: &Grid) -> Image {
@@ -595,13 +682,180 @@ mod tests {
         let map = build(WorldTopology::Finite);
         let clock = SeasonClock::default();
         let files = export(&map, &clock, "all").expect("export must succeed");
-        let plain = LAYERS.len();
-        let tiled = LAYERS.len() - 2;
-        assert_eq!(files.len(), plain + tiled);
+        assert_eq!(
+            files.len(),
+            LAYERS.len(),
+            "a finite world must export exactly one image per layer"
+        );
         for file in &files {
             assert!(file.exists(), "{} missing", file.display());
             assert!(image::open(file).is_ok(), "{} unreadable", file.display());
         }
+    }
+
+    #[test]
+    fn export_writes_tiled_variants_only_for_torus() {
+        let clock = SeasonClock::default();
+        let torus = build(WorldTopology::FiniteTorus);
+        let files = export(&torus, &clock, "all").expect("torus export must succeed");
+        assert_eq!(
+            files.len(),
+            LAYERS.len() * 2 - 2,
+            "a torus world adds one tiled image per layer except tiling and splat"
+        );
+        assert!(files.iter().any(|f| f.display().to_string().contains("world_tiled")));
+        let finite = build(WorldTopology::Finite);
+        let finite_files = export(&finite, &clock, "all").expect("finite export must succeed");
+        assert!(
+            !finite_files
+                .iter()
+                .any(|f| f.display().to_string().contains("_tiled")),
+            "a finite world must not export tiled variants"
+        );
+    }
+
+    #[test]
+    fn hydrology_flow_ramp_is_log_scaled() {
+        let head = flow_ramp(5.0, 5000.0);
+        let linear = ramp(
+            5.0 / 5000.0,
+            Color::srgb(0.06, 0.10, 0.13),
+            Color::srgb(0.15, 0.55, 0.95),
+        );
+        let brightness = |c: LinearRgba| c.red + c.green + c.blue;
+        assert!(
+            brightness(head) > brightness(linear) * 2.0,
+            "headwaters must stay visible under log normalisation"
+        );
+        assert!((flow_ramp(5000.0, 5000.0).blue - linear_ramp_top().blue).abs() < 1e-5);
+    }
+
+    fn linear_ramp_top() -> LinearRgba {
+        ramp(
+            1.0,
+            Color::srgb(0.06, 0.10, 0.13),
+            Color::srgb(0.15, 0.55, 0.95),
+        )
+    }
+
+    #[test]
+    fn hydrology_rivers_draw_connected_lines() {
+        let map = build(WorldTopology::Finite);
+        let image = render_layer(&map, &SeasonClock::default(), "hydrology");
+        let grid = Grid::new(&map, PREVIEW_DIM, false);
+        let field = map.heights();
+        let path = map
+            .river_paths()
+            .iter()
+            .max_by_key(|path| path.len())
+            .expect("the compact world must have rivers");
+        assert!(path.len() > 4, "the longest river must span several cells");
+        let wanted = to_pixel(RIVER_COLOUR);
+        let mid = path.len() / 2;
+        let (ax, az) = field.coords(path[mid]);
+        let (bx, bz) = field.coords(path[mid + 1]);
+        let a = field.world_of(ax, az);
+        let b = field.world_of(bx, bz);
+        let (x, y) = grid.pixel((a + b) * 0.5);
+        let mut found = false;
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                let px = x + dx;
+                let py = y + dy;
+                if px < 0 || py < 0 || px >= image.width() as i32 || py >= image.height() as i32 {
+                    continue;
+                }
+                if *image.get_pixel(px as u32, py as u32) == wanted {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "the midpoint of a river segment must be painted with the river colour");
+    }
+
+    #[test]
+    fn hydrology_lakes_are_filled_not_dotted() {
+        let map = build(WorldTopology::Finite);
+        let grid = Grid::new(&map, PREVIEW_DIM, false);
+        assert!(
+            lake_radius(&map, &grid) >= 2,
+            "lake cells must be painted as filled discs, not 3x3 dots"
+        );
+        let Some(lake) = map.lakes().iter().max_by_key(|lake| lake.cells.len()) else {
+            return;
+        };
+        let image = render_layer(&map, &SeasonClock::default(), "hydrology");
+        let field = map.heights();
+        let centroid = lake
+            .cells
+            .iter()
+            .map(|&cell| {
+                let (gx, gz) = field.coords(cell);
+                field.world_of(gx, gz)
+            })
+            .fold(Vec2::ZERO, |acc, point| acc + point)
+            / lake.cells.len() as f32;
+        let wanted = to_pixel(LAKE_COLOUR);
+        let (x, y) = grid.pixel(centroid);
+        let mut found = false;
+        for dy in -4..=4 {
+            for dx in -4..=4 {
+                let px = x + dx;
+                let py = y + dy;
+                if px < 0 || py < 0 || px >= image.width() as i32 || py >= image.height() as i32 {
+                    continue;
+                }
+                if *image.get_pixel(px as u32, py as u32) == wanted {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "the interior of the largest lake must be filled");
+    }
+
+    #[test]
+    fn non_tiled_torus_copies_reach_across_the_seam() {
+        let map = build(WorldTopology::FiniteTorus);
+        let grid = Grid::new(&map, 64, false);
+        let copies = grid.copies(Vec2::new(map.size() * 0.5 - 1.0, 0.0));
+        assert!(
+            copies.len() >= 2,
+            "a torus mark must be drawn on both sides of the seam"
+        );
+        assert!(copies.iter().any(|copy| copy.x < -map.size() * 0.5 + 1.0));
+        let finite = Grid::new(&build(WorldTopology::Finite), 64, false);
+        assert_eq!(finite.copies(Vec2::ZERO).len(), 1);
+    }
+
+    #[test]
+    fn world_layer_paints_sea_with_the_bathymetric_ramp() {
+        let map = build(WorldTopology::Finite);
+        let clock = SeasonClock::default();
+        let image = render_layer(&map, &clock, "world");
+        assert!(pixel_variance(&image) > 1.0, "the composite preview rendered flat");
+        let sea = map.sea_levels().level_at(clock.season);
+        let extent = map.max_height_extent();
+        let grid = Grid::new(&map, PREVIEW_DIM, false);
+        let mut checked = 0usize;
+        'rows: for z in 0..grid.edge {
+            for x in 0..grid.edge {
+                let point = grid.point(x, z);
+                let height = map.height_at(point.x, point.y);
+                if sea - height < 3.0 {
+                    continue;
+                }
+                let expected = to_pixel(bathymetric_colour(sea - height, extent));
+                let pixel = *image.get_pixel(x as u32, (grid.edge - 1 - z) as u32);
+                let close = (0..3)
+                    .all(|channel| (pixel.0[channel] as i32 - expected.0[channel] as i32).abs() <= 1);
+                assert!(close, "deep sea at {point:?} must use the bathymetric ramp");
+                checked += 1;
+                if checked >= 5 {
+                    break 'rows;
+                }
+            }
+        }
+        assert!(checked > 0, "the compact world must contain open sea");
     }
 
     #[test]
@@ -839,12 +1093,18 @@ mod tests {
     }
 
     #[test]
-    fn grid_copies_find_four_tiles_only_when_tiled() {
+    fn grid_copies_ghost_the_seam_for_a_torus() {
         let map = build(WorldTopology::FiniteTorus);
-        let flat = Grid::new(&map, 64, false);
-        assert_eq!(flat.copies(Vec2::ZERO).len(), 1);
+        let torus = Grid::new(&map, 64, false);
+        assert_eq!(
+            torus.copies(Vec2::ZERO).len(),
+            9,
+            "a non-tiled torus must ghost every neighbouring copy so marks cross the seam"
+        );
         let tiled = Grid::new(&map, 64, true);
         assert!(tiled.copies(Vec2::ZERO).len() >= 4);
+        let finite = Grid::new(&build(WorldTopology::Finite), 64, false);
+        assert_eq!(finite.copies(Vec2::ZERO).len(), 1);
     }
 
     #[test]

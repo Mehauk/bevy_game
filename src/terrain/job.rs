@@ -6,6 +6,9 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, poll_once};
 
 use crate::terrain::map::TerrainMap;
+use crate::terrain::pick_spawn_height;
+use crate::terrain::season::SeasonClock;
+use crate::utils::SpawnGroundHeight;
 
 struct NoopWake;
 
@@ -27,28 +30,43 @@ pub(crate) fn poll_task<T>(task: &mut Task<T>) -> Option<T> {
 #[derive(Default, Resource)]
 pub struct TerrainJob {
     queued: bool,
-    task: Option<Task<TerrainMap>>,
+    task: Option<(u64, Task<TerrainMap>)>,
+    requested: u64,
 }
 
-pub fn run_terrain_job(mut job: ResMut<TerrainJob>, mut map: ResMut<TerrainMap>) {
-    if job.queued && job.task.is_none() {
-        job.queued = false;
-        let config = map.config().clone();
-        job.task = Some(AsyncComputeTaskPool::get().spawn(async move {
-            TerrainMap::new(config)
-        }));
-        return;
+pub fn run_terrain_job(
+    mut job: ResMut<TerrainJob>,
+    mut map: ResMut<TerrainMap>,
+    clock: Res<SeasonClock>,
+    mut spawn: ResMut<SpawnGroundHeight>,
+) {
+    if job.queued {
+        let superseded = job.task.as_ref().is_some_and(|(id, _)| *id != job.requested);
+        if job.task.is_none() || superseded {
+            job.queued = false;
+            let config = map.config().clone();
+            let id = job.requested;
+            job.task = Some((
+                id,
+                AsyncComputeTaskPool::get().spawn(async move { TerrainMap::new(config) }),
+            ));
+            return;
+        }
     }
-    let Some(task) = job.task.as_mut() else {
-        return;
+    let delivered = match job.task.as_mut() {
+        Some((_, task)) => poll_task(task),
+        None => None,
     };
-    if let Some(generated) = poll_task(task) {
+    if let Some(generated) = delivered {
         *map = generated;
+        map.sync_season_state(&clock);
+        spawn.0 = pick_spawn_height(&map);
         job.task = None;
     }
 }
 
 pub fn queue_regeneration(job: &mut TerrainJob) {
+    job.requested += 1;
     job.queued = true;
 }
 
@@ -56,6 +74,7 @@ pub fn queue_regeneration(job: &mut TerrainJob) {
 mod tests {
     use super::*;
     use crate::terrain::map::TerrainConfig;
+    use crate::terrain::season::Season;
     use crate::terrain::seed::WorldSeed;
 
     fn job_app() -> App {
@@ -63,6 +82,8 @@ mod tests {
         app.add_plugins(bevy::app::TaskPoolPlugin::default())
             .insert_resource(TerrainMap::new(TerrainConfig::compact()))
             .init_resource::<TerrainJob>()
+            .init_resource::<SeasonClock>()
+            .init_resource::<SpawnGroundHeight>()
             .add_systems(Update, run_terrain_job);
         app
     }
@@ -92,18 +113,46 @@ mod tests {
     }
 
     #[test]
-    fn a_request_during_a_running_task_waits_its_turn() {
+    fn a_request_during_a_running_task_supersedes_it() {
         let mut app = job_app();
+        app.world_mut()
+            .resource_mut::<TerrainMap>()
+            .config_mut()
+            .seed = WorldSeed::new(111);
         queue_regeneration(&mut app.world_mut().resource_mut::<TerrainJob>());
         app.update();
         assert!(app.world().resource::<TerrainJob>().task.is_some());
+        app.world_mut()
+            .resource_mut::<TerrainMap>()
+            .config_mut()
+            .seed = WorldSeed::new(222);
         queue_regeneration(&mut app.world_mut().resource_mut::<TerrainJob>());
         wait_for_idle(&mut app);
-        app.update();
-        assert!(
-            app.world().resource::<TerrainJob>().task.is_some(),
-            "the deferred request must spawn once the first task lands"
+        assert_eq!(
+            app.world().resource::<TerrainMap>().seed().0,
+            222,
+            "the latest request must win over the in-flight task"
         );
+        assert!(app.world().resource::<TerrainJob>().task.is_none());
+    }
+
+    #[test]
+    fn a_delivered_map_adopts_the_current_season() {
+        let mut app = job_app();
+        {
+            let mut clock = app.world_mut().resource_mut::<SeasonClock>();
+            clock.set_season(Season::Winter);
+        }
+        queue_regeneration(&mut app.world_mut().resource_mut::<TerrainJob>());
         wait_for_idle(&mut app);
+        let map = app.world().resource::<TerrainMap>();
+        let expected = map.sea_levels().continuous_level(
+            app.world().resource::<SeasonClock>().cycle_progress(),
+        );
+        assert!(
+            (map.sea_level() - expected).abs() < 1e-4,
+            "the delivered map must adopt the winter sea level, got {} want {expected}",
+            map.sea_level()
+        );
     }
 }

@@ -18,7 +18,6 @@ const GROUND_PROBE_MAX_DISTANCE: f32 = 0.5;
 const GROUND_LAND_TOLERANCE: f32 = 0.04;
 const GROUND_SNAP_DISTANCE: f32 = 0.35;
 const SLOPE_SNAP_MIN_DISTANCE: f32 = 0.005;
-const SLOPE_SNAP_SPEED: f32 = 10.0;
 const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
 const MIN_GROUND_NORMAL_Y: f32 = 0.01;
 const HORIZ_VEL_EPSILON: f32 = 0.001;
@@ -44,9 +43,13 @@ impl Plugin for CharacterPlugin {
         app.add_systems(Startup, setup_character)
             .add_systems(
                 FixedUpdate,
-                (character_ground_check, character_physics_move)
-                    .chain()
-                    .in_set(CharacterSystems::Playing),
+                character_physics_move.in_set(CharacterSystems::Playing),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                character_ground_check
+                    .in_set(CharacterSystems::Playing)
+                    .after(SpatialQuerySystems),
             )
             .add_systems(Update, character_rotate_body.in_set(CharacterSystems::Playing))
             .add_systems(
@@ -208,12 +211,16 @@ fn slope_tangent_y(vx: f32, vz: f32, normal: Vec3) -> f32 {
     -(vx * normal.x + vz * normal.z) / normal.y
 }
 
-fn slope_snap_speed(gap: f32) -> f32 {
-    if gap > SLOPE_SNAP_MIN_DISTANCE {
-        ((gap - SLOPE_SNAP_MIN_DISTANCE) * SLOPE_SNAP_SPEED).min(SLOPE_SNAP_MAX_SPEED)
-    } else {
-        0.0
+fn slope_snap_cap(horiz_speed: f32) -> f32 {
+    SLOPE_SNAP_MAX_SPEED.max(horiz_speed)
+}
+
+fn slope_snap_speed(gap: f32, horiz_speed: f32) -> f32 {
+    if gap <= SLOPE_SNAP_MIN_DISTANCE {
+        return 0.0;
     }
+    let cap = slope_snap_cap(horiz_speed);
+    (cap * (gap - SLOPE_SNAP_MIN_DISTANCE) / GROUND_SNAP_DISTANCE).min(cap)
 }
 
 fn spawn_translation(ground_height: f32) -> Vec3 {
@@ -487,8 +494,9 @@ fn character_physics_move(
         let has_horiz_vel =
             velocity.x.abs() > HORIZ_VEL_EPSILON || velocity.z.abs() > HORIZ_VEL_EPSILON;
         if has_horiz_vel && ground.ground_normal.y > MIN_GROUND_NORMAL_Y {
+            let horiz_speed = Vec3::new(velocity.x, 0.0, velocity.z).length();
             velocity.y = slope_tangent_y(velocity.x, velocity.z, ground.ground_normal)
-                - slope_snap_speed(ground.ground_distance);
+                - slope_snap_speed(ground.ground_distance, horiz_speed);
         } else {
             velocity.y = 0.0;
         }
@@ -548,6 +556,20 @@ fn sync_body_visibility(
     }
 }
 
+pub(crate) fn respawn_character_to(
+    character: &Character,
+    ground_height: f32,
+    transform: &mut Transform,
+    velocity: &mut LinearVelocity,
+    ground: &mut GroundState,
+    gravity: &mut GravityScale,
+) {
+    transform.translation = spawn_translation(ground_height);
+    velocity.0 = Vec3::ZERO;
+    *ground = GroundState::default();
+    gravity.0 = character.base_gravity;
+}
+
 fn respawn_character(
     ground_height: Res<SpawnGroundHeight>,
     query: Single<(
@@ -559,10 +581,14 @@ fn respawn_character(
     )>,
 ) {
     let (mut transform, mut velocity, mut ground, mut gravity, character) = query.into_inner();
-    transform.translation = spawn_translation(ground_height.0);
-    velocity.0 = Vec3::ZERO;
-    *ground = GroundState::default();
-    gravity.0 = character.base_gravity;
+    respawn_character_to(
+        character,
+        ground_height.0,
+        &mut transform,
+        &mut velocity,
+        &mut ground,
+        &mut gravity,
+    );
 }
 
 fn with_player_character(query: &mut Query<&mut Character>, edit: impl FnOnce(&mut Character)) -> bool {
@@ -710,11 +736,28 @@ mod tests {
 
     #[test]
     fn slope_snap_ramps_and_caps() {
-        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE), 0.0);
-        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE / 2.0), 0.0);
-        let mid = slope_snap_speed(0.1);
+        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE, 0.0), 0.0);
+        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE / 2.0, 0.0), 0.0);
+        let mid = slope_snap_speed(0.1, 0.0);
         assert!(mid > 0.0 && mid < SLOPE_SNAP_MAX_SPEED, "should ramp between the bounds");
-        assert_eq!(slope_snap_speed(100.0), SLOPE_SNAP_MAX_SPEED, "must cap, or steps slam");
+        assert_eq!(slope_snap_speed(100.0, 0.0), SLOPE_SNAP_MAX_SPEED, "must cap, or steps slam");
+    }
+
+    #[test]
+    fn downhill_snap_scales_with_horizontal_speed() {
+        assert_eq!(slope_snap_cap(0.0), SLOPE_SNAP_MAX_SPEED);
+        assert_eq!(slope_snap_cap(2.0), SLOPE_SNAP_MAX_SPEED);
+        assert_eq!(slope_snap_cap(12.0), 12.0);
+
+        let slow = slope_snap_speed(0.3, 0.0);
+        let fast = slope_snap_speed(0.3, 12.0);
+        assert!(fast > slow, "sprinting downhill must snap down harder than walking");
+        assert!(fast <= 12.0 + 1e-4, "the snap must stay under the speed-scaled cap");
+        assert!(
+            fast >= 12.0 * (0.3 - SLOPE_SNAP_MIN_DISTANCE) / GROUND_SNAP_DISTANCE - 1e-3,
+            "the snap must keep up with a 45 degree crest at sprint speed"
+        );
+        assert_eq!(slope_snap_speed(100.0, 12.0), 12.0, "the cap still binds at speed");
     }
 
     #[test]

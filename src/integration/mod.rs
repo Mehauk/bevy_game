@@ -5,6 +5,7 @@ use crate::input::InputUpdateSystems;
 use crate::menus::MenuUpdateSystems;
 use crate::state::PlayState;
 
+mod agent_bridge;
 mod bridges;
 mod menu_wiring;
 mod state_pause;
@@ -38,6 +39,7 @@ impl Plugin for IntegrationPlugin {
         );
 
         menu_wiring::register(app);
+        agent_bridge::register(app);
         bridges::register(app);
         state_pause::register(app);
         world_wrap::register(app);

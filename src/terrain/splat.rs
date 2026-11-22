@@ -8,12 +8,12 @@ use bevy::render::render_resource::{
 };
 use image::{ImageBuffer, RgbaImage};
 
+use crate::terrain::chunk::clamped_chunk_bounds;
 use crate::terrain::map::TerrainMap;
 use crate::terrain::material::{
     RegionMaterialProfile, SurfaceLayer, material_profile, tint_multiplier,
 };
 use crate::terrain::region::Region;
-use crate::terrain::season::{self, Season};
 
 pub const SPLAT_RESOLUTION: usize = 64;
 pub const TILE_RESOLUTION: u32 = 256;
@@ -320,23 +320,14 @@ struct TexelPlan {
     roughness: f32,
 }
 
-fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
+fn plan_core(map: &TerrainMap, point: Vec2) -> TexelPlan {
     let height = map.height_at(point.x, point.y);
     let slope = map.slope_at(point.x, point.y);
     let cliff = cliff_share(slope);
     let weights = map.cell_weights_at(point.x, point.y);
 
-    let parameters = map.parameters_at(point.x, point.y);
-    let shore = parameters.and_then(|parameters| {
-        season::shore_override(
-            season,
-            map.flood_zone(),
-            height,
-            parameters.salinity,
-            parameters.precipitation,
-            map.sea_level(),
-        )
-    });
+    let shore = map.shore_override_at(point.x, point.y);
+    let snow = map.snow_coverage_at(point.x, point.y);
 
     let mut mix = LayerMix::new();
     let mut highest: Option<(f32, Region)> = None;
@@ -351,7 +342,7 @@ fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
         };
         let profile = material_profile(region);
         let share = weight * (1.0 - cliff);
-        mix.add(shore.unwrap_or(profile.base), share);
+        mix.add(shore.unwrap_or(profile.base), share * (1.0 - snow));
         let multiplier = tint_multiplier(profile);
         for channel in 0..3 {
             tint_acc[channel] += multiplier[channel] * share;
@@ -365,6 +356,9 @@ fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
         if highest.is_none_or(|(best, _)| elevation > best) {
             highest = Some((elevation, region));
         }
+    }
+    if snow > 0.0 {
+        mix.add(SurfaceLayer::Snow, (1.0 - cliff) * snow);
     }
     let cliff_layer = if cliff > 0.0 {
         highest.map(|(_, region)| material_profile(region).cliff)
@@ -408,8 +402,8 @@ fn plan_core(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
     }
 }
 
-fn plan_texel(map: &TerrainMap, point: Vec2, season: Season) -> TexelPlan {
-    let mut plan = plan_core(map, point, season);
+fn plan_texel(map: &TerrainMap, point: Vec2) -> TexelPlan {
+    let mut plan = plan_core(map, point);
     if plan.cliff > 0.0 {
         if let Some(layer) = plan.cliff_layer {
             plan.mix.add(layer, plan.cliff);
@@ -424,13 +418,12 @@ pub fn bake_chunk(
     tiles: &SurfaceTiles,
     chunk: IVec2,
     chunk_size: f32,
-    season: Season,
     resolution: usize,
 ) -> Option<SplatMaps> {
     if !tiles.is_complete() || resolution == 0 {
         return None;
     }
-    let (low, high) = map.chunk_bounds(chunk, chunk_size);
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
     let span = high - low;
     let edge = resolution as u32;
 
@@ -445,7 +438,7 @@ pub fn bake_chunk(
                 low.x + (ix as f32 + 0.5) / resolution as f32 * span.x,
                 low.y + (iz as f32 + 0.5) / resolution as f32 * span.y,
             );
-            let plan = plan_texel(map, point, season);
+            let plan = plan_texel(map, point);
             if plan.mix.is_empty() {
                 continue;
             }
@@ -498,10 +491,9 @@ pub fn bake_control_chunk(
     map: &TerrainMap,
     chunk: IVec2,
     chunk_size: f32,
-    season: Season,
     resolution: usize,
 ) -> ControlMaps {
-    let (low, high) = map.chunk_bounds(chunk, chunk_size);
+    let (low, high) = clamped_chunk_bounds(map, chunk, chunk_size);
     let span = high - low;
     let edge = resolution as u32;
 
@@ -517,7 +509,7 @@ pub fn bake_control_chunk(
                 low.x + (ix as f32 + 0.5) / resolution as f32 * span.x,
                 low.y + (iz as f32 + 0.5) / resolution as f32 * span.y,
             );
-            let plan = plan_core(map, point, season);
+            let plan = plan_core(map, point);
             let mut mix = plan.mix;
             mix.normalize();
             let mut entries = mix.0;
@@ -580,10 +572,10 @@ fn mip_chain(
     let width = image.width();
     let height = image.height();
     let levels = mip_level_count(width, height);
-    let mut data: Vec<u8> = Vec::new();
+    let mut texel_bytes: Vec<u8> = Vec::new();
     let mut current = image;
     for mip in 0..levels {
-        data.extend_from_slice(current.as_raw());
+        texel_bytes.extend_from_slice(current.as_raw());
         if mip + 1 < levels {
             let mut resized = image::imageops::resize(
                 &current,
@@ -610,7 +602,7 @@ fn mip_chain(
     built.texture_descriptor.mip_level_count = levels;
     built.data_order = TextureDataOrder::MipMajor;
     built.sampler = ImageSampler::Descriptor(descriptor);
-    built.data = Some(data);
+    built.data = Some(texel_bytes);
     built
 }
 
@@ -716,6 +708,7 @@ mod tests {
     use super::*;
     use crate::terrain::map::TerrainConfig;
     use crate::terrain::material::DISK_ROOT;
+    use crate::terrain::season::Season;
     use bevy::image::ImageFilterMode;
 
     fn tiles() -> SurfaceTiles {
@@ -805,7 +798,7 @@ mod tests {
         let map = map();
         let chunk = IVec2::ZERO;
         let chunk_size = 120.0f32.min(map.size());
-        let maps = bake_chunk(&map, &tiles, chunk, chunk_size, Season::Summer, 16)
+        let maps = bake_chunk(&map, &tiles, chunk, chunk_size, 16)
             .expect("bake must succeed with complete tiles");
         assert_eq!(maps.resolution(), 16);
         assert_eq!(maps.normal.dimensions(), maps.albedo.dimensions());
@@ -816,7 +809,7 @@ mod tests {
     #[test]
     fn baking_refuses_incomplete_tile_sets() {
         let map = map();
-        assert!(bake_chunk(&map, &SurfaceTiles::default(), IVec2::ZERO, 60.0, Season::Summer, 8).is_none());
+        assert!(bake_chunk(&map, &SurfaceTiles::default(), IVec2::ZERO, 60.0, 8).is_none());
     }
 
     #[test]
@@ -824,7 +817,7 @@ mod tests {
         let tiles = tiles();
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let maps = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, Season::Summer, 16).unwrap();
+        let maps = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, 16).unwrap();
         let mut steep = false;
         let mut flooded = false;
         for pixel in maps.cell_data.pixels() {
@@ -847,7 +840,7 @@ mod tests {
         let tiles = tiles();
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let maps = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, Season::Summer, 16).unwrap();
+        let maps = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, 16).unwrap();
         let first = maps.albedo.get_pixel(0, 0).0;
         let varies = maps
             .albedo
@@ -861,7 +854,7 @@ mod tests {
         let tiles = tiles();
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let maps = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, Season::Summer, 8).unwrap();
+        let maps = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, 8).unwrap();
 
         let albedo = albedo_texture(&maps);
         assert_eq!(
@@ -887,7 +880,7 @@ mod tests {
     fn control_maps_encode_top_four_layers() {
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         assert_eq!(controls.weights.dimensions(), controls.indices.dimensions());
         assert_eq!(controls.cell_data.dimensions(), controls.indices.dimensions());
         let mut any_layer = false;
@@ -917,7 +910,7 @@ mod tests {
     fn control_weights_renormalize_to_one() {
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         let mut checked = 0;
         for pixel in controls.weights.pixels() {
             let total: u32 = pixel.0.iter().map(|value| *value as u32).sum();
@@ -969,15 +962,18 @@ mod tests {
 
     #[test]
     fn control_bake_tint_separates_regions_sharing_a_layer() {
-        let map = map();
+        let map = TerrainMap::new(TerrainConfig {
+            cell_grid_dim: 6,
+            ..TerrainConfig::compact()
+        });
         let (a, b) = shared_layer_pair(
             &map,
             |x, y| tint_multiplier(x) != tint_multiplier(y),
             |x, y| tint_drift(tint_multiplier(x), tint_multiplier(y)),
         )
         .expect("the compact world must contain two regions sharing a base layer with distinct tints");
-        let plan_a = plan_core(&map, a, Season::Summer);
-        let plan_b = plan_core(&map, b, Season::Summer);
+        let plan_a = plan_core(&map, a);
+        let plan_b = plan_core(&map, b);
         assert!(
             tint_drift(plan_a.tint, plan_b.tint) > 1.0 / 255.0,
             "regions sharing a SurfaceLayer must bake distinct tints: {:?} vs {:?}",
@@ -985,7 +981,7 @@ mod tests {
             plan_b.tint
         );
         let chunk_size = 120.0f32.min(map.size());
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         assert_eq!(controls.tint.dimensions(), controls.indices.dimensions());
         let distinct: std::collections::HashSet<[u8; 4]> =
             controls.tint.pixels().map(|pixel| pixel.0).collect();
@@ -997,15 +993,18 @@ mod tests {
 
     #[test]
     fn control_bake_roughness_separates_regions_sharing_a_layer() {
-        let map = map();
+        let map = TerrainMap::new(TerrainConfig {
+            cell_grid_dim: 6,
+            ..TerrainConfig::compact()
+        });
         let (a, b) = shared_layer_pair(
             &map,
             |x, y| x.roughness != y.roughness,
             |x, y| (x.roughness - y.roughness).abs(),
         )
         .expect("the compact world must contain two regions sharing a base layer with distinct roughness");
-        let plan_a = plan_core(&map, a, Season::Summer);
-        let plan_b = plan_core(&map, b, Season::Summer);
+        let plan_a = plan_core(&map, a);
+        let plan_b = plan_core(&map, b);
         assert!(
             (plan_a.roughness - plan_b.roughness).abs() > 0.01,
             "regions sharing a SurfaceLayer must bake distinct roughness: {} vs {}",
@@ -1013,7 +1012,7 @@ mod tests {
             plan_b.roughness
         );
         let chunk_size = 120.0f32.min(map.size());
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         let alphas: std::collections::HashSet<u8> =
             controls.tint.pixels().map(|pixel| pixel.0[3]).collect();
         assert!(
@@ -1028,8 +1027,8 @@ mod tests {
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
         let baked =
-            bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, Season::Summer, 16).unwrap();
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+            bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, 16).unwrap();
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         for iz in 0..16u32 {
             for ix in 0..16u32 {
                 let old = baked.cell_data.get_pixel(ix, 15 - iz).0;
@@ -1043,7 +1042,7 @@ mod tests {
     fn control_cliff_meta_names_a_layer_on_steep_ground() {
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         assert!(
             controls.cliff_meta.pixels().any(|pixel| pixel.0[0] > 0),
             "a compact world with cliffs must name cliff layers"
@@ -1053,10 +1052,11 @@ mod tests {
     #[test]
     fn shore_override_changes_the_bake_in_the_flood_zone() {
         let tiles = tiles();
-        let map = map();
+        let mut map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let summer = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, Season::Summer, 16).unwrap();
-        let winter = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, Season::Winter, 16).unwrap();
+        let summer = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, 16).unwrap();
+        map.set_season(Season::Winter);
+        let winter = bake_chunk(&map, &tiles, IVec2::ZERO, chunk_size, 16).unwrap();
         assert_ne!(
             summer.orm.to_vec(),
             winter.orm.to_vec(),
@@ -1070,10 +1070,19 @@ mod tests {
         let jitter = map.config().cell_base_height_range;
         let mut pair: Option<(usize, usize, f32)> = None;
         for cell in map.cells() {
+            let Some(cliff_a) = map.region_of_cell(cell.id).map(|r| material_profile(r).cliff) else {
+                continue;
+            };
             for &neighbour in map.cell_neighbours(cell.id) {
                 let Some(other) = map.cell(neighbour) else {
                     continue;
                 };
+                let Some(cliff_b) = map.region_of_cell(neighbour).map(|r| material_profile(r).cliff) else {
+                    continue;
+                };
+                if cliff_a == cliff_b {
+                    continue;
+                }
                 let delta = other.macro_elevation - cell.macro_elevation;
                 if delta > 2.0 * jitter && pair.is_none_or(|(_, _, best)| delta > best) {
                     pair = Some((cell.id, neighbour, delta));
@@ -1091,7 +1100,7 @@ mod tests {
         for step in 0..=24 {
             let t = step as f32 / 24.0;
             let point = low_center.lerp(alpine_center, t);
-            let plan = plan_core(&map, point, Season::Summer);
+            let plan = plan_core(&map, point);
             if plan.cliff <= 0.0 {
                 continue;
             }
@@ -1171,7 +1180,7 @@ mod tests {
     fn control_textures_carry_a_full_mip_chain() {
         let map = map();
         let chunk_size = 120.0f32.min(map.size());
-        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, Season::Summer, 16);
+        let controls = bake_control_chunk(&map, IVec2::ZERO, chunk_size, 16);
         let levels = mip_level_count(16, 16);
         assert_eq!(levels, 5);
         let expected_bytes: usize = (0..levels)

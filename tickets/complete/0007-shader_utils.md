@@ -71,7 +71,7 @@ Add an integration test suite using `wgsl_parse` (with `wesl` feature) that scan
      - `terrain_material.wesl`: `<= 32` worst-case texture taps (excluding early-return `debug_mode` branches)
 
 ## Verification & Acceptance Criteria
-- [ ] `cargo test --test shader_lint` compiles and passes all 5 static analysis checks.
-- [ ] Intentionally violating a rule locally (e.g., temporarily adding `fbm2(..., 5)` in `terrain_material.wesl` or a `@binding` in `shaderutils.wesl`) causes `cargo test --test shader_lint` to fail with a clear message (revert the temporary test edit afterward).
-- [ ] `cargo check` succeeds with no warnings introduced in non-test code.
-- [ ] Running the app briefly (`cargo run`) produces **zero** `ERROR bevy_render::render_resource::pipeline_cache: failed to process shader` log lines.
+- [x] `cargo test --test shader_lint` compiles and passes all 5 static analysis checks.
+- [x] Intentionally violating a rule locally (e.g., temporarily adding `fbm2(..., 5)` in `terrain_material.wesl` or a `@binding` in `shaderutils.wesl`) causes `cargo test --test shader_lint` to fail with a clear message (revert the temporary test edit afterward).
+- [x] `cargo check` succeeds with no warnings introduced in non-test code.
+- [x] Running the app briefly (`cargo run`) produces **zero** `ERROR bevy_render::render_resource::pipeline_cache: failed to process shader` log lines.

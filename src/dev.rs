@@ -13,9 +13,15 @@ use crate::utils::registry::debug_info::DebugInfoRegistry;
 #[action_output(bool)]
 struct ToggleFpsOverlay;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct DebugOverlayConfig {
     pub enabled: bool,
+}
+
+impl Default for DebugOverlayConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Component)]

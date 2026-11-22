@@ -26,7 +26,7 @@
   bevy_enhanced_input, meshless_voronoi.
 - The codebase has clearly been through a prior refactor: plugin-per-module layout, a
   declaration/registration decoupling (`utils::registry`), a documented Lua contract
-  (`docs/lua-hooks.md`), DRY helpers (`script_map`, `broadcast_to_menus`, the `MODIFIER_KEYS`
+  (`docs/lua-only-hooks.md`), DRY helpers (`script_map`, `broadcast_to_menus`, the `MODIFIER_KEYS`
   table, the `command!` macro), and unit tests on all the pure logic (camera math, character
   physics, terrain generation, DOM spec parsing, command registry, key round-trips).
 
@@ -39,11 +39,11 @@ concrete goal, and rejected options are recorded with reasons.
 
 ## Findings
 
-| #   | Severity             | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| --- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| F1  | **Med (contract)**   | `docs/lua-hooks.md` documents `state.pause(source)` / `state.resume(source)` with a `source` parameter. The Rust impl (`src/state.rs`) registers both with **no** arguments and uses a reference-counted `PauseTracker` (menu-pause count + manual flag), not per-source tracking. The bundled scripts call `state.pause()` / `state.resume()` with no args. The doc overstates the API — a mod author following the doc would believe per-source pause ownership exists when it does not. |
-| F2  | **Low (modularity)** | `src/terrain/mod.rs` is 647 lines mixing two unrelated concerns: a pure, dependency-light heightfield domain model (`TerrainMap`/`TerrainCell` + Voronoi/noise generation + height sampling) and Bevy-specific rendering/fog/atmosphere/skybox systems + console commands. The domain model has no ECS dependencies and is independently testable, but is buried in the rendering file.                                                                                                    |
-| F3  | **Low (surface)**    | `input::set_context_active` and `input::keys::parse_key_code` are `pub` but used only within their own module.                                                                                                                                                                                                                                                                                                                                                                             |
+| #   | Severity             | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1  | **Med (contract)**   | `docs/lua-only-hooks.md` documents `state.pause(source)` / `state.resume(source)` with a `source` parameter. The Rust impl (`src/state.rs`) registers both with **no** arguments and uses a reference-counted `PauseTracker` (menu-pause count + manual flag), not per-source tracking. The bundled scripts call `state.pause()` / `state.resume()` with no args. The doc overstates the API — a mod author following the doc would believe per-source pause ownership exists when it does not. |
+| F2  | **Low (modularity)** | `src/terrain/mod.rs` is 647 lines mixing two unrelated concerns: a pure, dependency-light heightfield domain model (`TerrainMap`/`TerrainCell` + Voronoi/noise generation + height sampling) and Bevy-specific rendering/fog/atmosphere/skybox systems + console commands. The domain model has no ECS dependencies and is independently testable, but is buried in the rendering file.                                                                                                         |
+| F3  | **Low (surface)**    | `input::set_context_active` and `input::keys::parse_key_code` are `pub` but used only within their own module.                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ## Considered and rejected
 
@@ -63,7 +63,7 @@ concrete goal, and rejected options are recorded with reasons.
 ## Plan — Iteration 1
 
 1. **F1 — Fix the Lua contract doc.** Rewrite the `state.pause`/`state.resume` rows in
-   `docs/lua-hooks.md` to describe the actual no-arg, reference-counted behaviour.
+   `docs/lua-only-hooks.md` to describe the actual no-arg, reference-counted behaviour.
 2. **F2 — Split `terrain`.** Extract the pure domain model into `src/terrain/map.rs`
    (`TerrainCell`, `TerrainMap` + its impl + `splitmix64`/`hash_unit_f32` + the domain tests).
    Keep `TerrainPlugin`, fog, skybox, atmosphere, mesh building, the `command!` invocations and
@@ -97,7 +97,7 @@ Proceeding to implement.
 
 ### What was done
 
-- **F1 (doc contract).** `docs/lua-hooks.md`: rewrote the `state` namespace table so
+- **F1 (doc contract).** `docs/lua-only-hooks.md`: rewrote the `state` namespace table so
   `state.pause()` / `state.resume()` are documented as **no-argument**, reference-counted
   calls (per-open-menu count + a manual flag), matching `src/state.rs`. The old text invented a
   `source` parameter that never existed.
@@ -192,17 +192,17 @@ recorded below as identified-not-fixed.
 
 ### Findings
 
-| #   | Severity                       | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F4  | **Low (dead code + contract)** | A *menu input context* was half-wired: `InputPlugin::build` registered `register_hotkey_context::<MenuInput>("menu")`, `MenuInput` was a defined marker component, and `sync_context_activity` queried `With<MenuInput>` and toggled its activity on every menu open/close. But **no entity is ever spawned with `MenuInput`** (grep: nothing spawns/inserts it), so the query is always empty and the toggle loop is dead. The same phantom leaked into the contract: `docs/lua-hooks.md` told mod authors `input.list_bindings()` could report `context == "menu"`, a value that can never appear. |
-| F5  | **Low (contract)**             | `right_click` is a live DOM event — emitted in `menus/dom/events.rs` for the secondary mouse button (a deliberate separate event so menus can dismiss without firing `click`), and actually used by `assets/menus/keyboard/script.lua`. It was missing from the `dom.on` event list in `docs/lua-hooks.md`.                                                                                                                                                                                                                                                                                          |
+| #   | Severity                       | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| --- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F4  | **Low (dead code + contract)** | A *menu input context* was half-wired: `InputPlugin::build` registered `register_hotkey_context::<MenuInput>("menu")`, `MenuInput` was a defined marker component, and `sync_context_activity` queried `With<MenuInput>` and toggled its activity on every menu open/close. But **no entity is ever spawned with `MenuInput`** (grep: nothing spawns/inserts it), so the query is always empty and the toggle loop is dead. The same phantom leaked into the contract: `docs/lua-only-hooks.md` told mod authors `input.list_bindings()` could report `context == "menu"`, a value that can never appear. |
+| F5  | **Low (contract)**             | `right_click` is a live DOM event — emitted in `menus/dom/events.rs` for the secondary mouse button (a deliberate separate event so menus can dismiss without firing `click`), and actually used by `assets/menus/keyboard/script.lua`. It was missing from the `dom.on` event list in `docs/lua-only-hooks.md`.                                                                                                                                                                                                                                                                                          |
 
 ### Plan
 
 1. **F4.** Delete the vestigial menu context end-to-end: the `register_hotkey_context::<MenuInput>`
    call, the `MenuInput` marker struct, the `q_menu` query param, and the dead toggle loop in
    `sync_context_activity`. Update the module doc (it framed contexts as "gameplay vs menu"). In
-   `docs/lua-hooks.md`, drop the unreachable `"menu"` value from `input.list_bindings()`.
+   `docs/lua-only-hooks.md`, drop the unreachable `"menu"` value from `input.list_bindings()`.
 2. **F5.** Add `right_click` to the documented `dom.on` event list, noting it is the secondary
    button / dismiss gesture.
 
@@ -220,7 +220,7 @@ recorded below as identified-not-fixed.
 - `src/input/mod.rs`: removed the `MenuInput` registration, the `MenuInput` struct, the `q_menu`
   param, and the dead `for entity in &q_menu { … }` loop; rewrote the module doc and the
   `sync_context_activity` doc to describe the single gameplay context.
-- `docs/lua-hooks.md`: `input.list_bindings()` `context` is now `"gameplay"` or `"unknown"`;
+- `docs/lua-only-hooks.md`: `input.list_bindings()` `context` is now `"gameplay"` or `"unknown"`;
   `dom.on` event list now includes `right_click` with its dismiss-gesture note, and the
   `on_dom_event` payload table lists `right_click` (no payload) alongside `click`.
 - **Full contract cross-check.** Enumerated every `register(...)` call and every callback label in
@@ -514,7 +514,7 @@ its own reason — both as *moves*, not mirrors, so behaviour is byte-identical:
   invocation or a Lua `register(...)` — they are plain fns and a resource. The `input` Lua namespace
   registration stays put in `input/scripting.rs`. No user-facing name can move.
 - **Lua contract**: unchanged. `input.remap_status`, `input.active_modifiers`, `input.remap` keep
-  identical signatures and behaviour; only the code backing them changed location. The `docs/lua-hooks.md`
+  identical signatures and behaviour; only the code backing them changed location. The `docs/lua-only-hooks.md`
   "Key names" section describes the vocabulary, which is unchanged (the module doc still points at it).
 - **Behaviour**: `keys.rs` moved verbatim (tests moved with it); `RemapStatus` is the same resource
   with the same `set_success`/`set_error`/`version` semantics and the same `is_changed()` polling in
@@ -591,7 +591,7 @@ pattern.
 
 - **command-name trap** (memory): no `command!` invocation moved. The Lua functions keep identical
   names (`state.pause`/`state.resume`/`state.is_paused`), identical no-arg signatures, and identical
-  behaviour — only *where they are registered* changed. The `docs/lua-hooks.md` `state` table is
+  behaviour — only *where they are registered* changed. The `docs/lua-only-hooks.md` `state` table is
   unaffected.
 - **Lua contract**: unchanged. Same three functions, same semantics (ref-counted menu pause vs manual
   toggle, auto-resume when menus close).
@@ -802,7 +802,7 @@ unchanged.
 
 Two related problems the user raised:
 
-1. **Docs were agent-authored and had to be regenerated by hand.** `docs/lua-hooks.md` was entirely
+1. **Docs were agent-authored and had to be regenerated by hand.** `docs/lua-only-hooks.md` was entirely
    AI-generated and had to be rewritten every time a Lua hook was added — a maintenance chore the
    user disliked, and a source of drift (the doc could silently disagree with the code).
 2. **No standing rule governed comments/docs**, so agents kept adding heavy code comments and
@@ -817,7 +817,7 @@ Two related problems the user raised:
   `src/docgen/lua_docs.rs` writes the hook index) replaces the hand-maintained hook doc. At
   `Startup` it reads bevy_mod_scripting's `AppScriptNamespaceMembers` resource — the single source
   of truth for every `NamespaceBuilder::in_namespace(...).register(...)` call in the codebase — and
-  writes `docs/.compiled/lua-hooks.md`: each namespace with its function names, sorted. It is
+  writes `docs/.compiled/lua-only-hooks.md`: each namespace with its function names, sorted. It is
   regenerated on every launch, so it can never drift from the code. (Generalized from a
   single-purpose `LuaDocsPlugin` in Iteration 11 so future doc generators drop in as submodules.)
 
@@ -833,13 +833,13 @@ Two related problems the user raised:
   "simply a list of lua hooks." The rich prose of the old doc (engine→Lua callbacks, key names,
   event payloads) is **not** reproduced — those are not namespace members and cannot be enumerated.
   Accepted: the user explicitly said breaking the old doc is fine.
-- **Path** is `docs/.compiled/lua-hooks.md` (user's chosen name), gitignored as a build artifact.
+- **Path** is `docs/.compiled/lua-only-hooks.md` (user's chosen name), gitignored as a build artifact.
 
 ### Implementation
 
 - New `src/docgen/` (`DocgenPlugin` + `lua_docs` submodule, one `Startup` system, written
   comment-free to dogfood the new rule). Added to `main.rs`.
-- Deleting the old `docs/lua-hooks.md` (`git rm`).
+- Deleting the old `docs/lua-only-hooks.md` (`git rm`).
 - New `CLAUDE.md`.
 - `.gitignore`: added `docs/.compiled/`.
 - **Side effect:** adding the plugin pushed the `add_plugins` tuple to 16 elements, past Bevy's
@@ -851,12 +851,12 @@ Two related problems the user raised:
 ### Audit
 
 `cargo check --all-targets` clean; `cargo test` → **61 passed**. Verified end-to-end by launching the
-game: `docs/.compiled/lua-hooks.md` is written at startup with the live namespace/function list.
+game: `docs/.compiled/lua-only-hooks.md` is written at startup with the live namespace/function list.
 
 ### Behaviour changes
 
-- `docs/lua-hooks.md` (hand/AI-maintained) **deleted**; replaced by the auto-generated
-  `docs/.compiled/lua-hooks.md` (names only, no prose).
+- `docs/lua-only-hooks.md` (hand/AI-maintained) **deleted**; replaced by the auto-generated
+  `docs/.compiled/lua-only-hooks.md` (names only, no prose).
 - New policy in `CLAUDE.md`: agents add no code comments and no unrequested markdown.
 
 ---
@@ -887,7 +887,7 @@ Two follow-ups the user requested after Iteration 10:
 ### Audit
 
 `cargo check --all-targets` clean; `cargo test` → **61 passed**. `"mods://"` verified present after
-the strip; a scan for stray `//` (excluding `://`) found none. Regenerated `docs/.compiled/lua-hooks.md`
+the strip; a scan for stray `//` (excluding `://`) found none. Regenerated `docs/.compiled/lua-only-hooks.md`
 end-to-end via `DocgenPlugin`.
 
 ### Behaviour changes

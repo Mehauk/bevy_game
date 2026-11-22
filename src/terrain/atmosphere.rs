@@ -1,7 +1,7 @@
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::{
-    Camera3d, ClearColor, Color, GlobalTransform, LinearRgba, Query, Res, ResMut, Resource, Vec3,
-    With,
+    Camera, Camera3d, ClearColor, Color, GlobalTransform, LinearRgba, Query, Res, ResMut,
+    Resource, Vec3, With,
 };
 
 use crate::terrain::map::TerrainMap;
@@ -351,9 +351,9 @@ pub fn sync_underwater_view(
     mut state: ResMut<UnderwaterState>,
     mut fog: ResMut<TerrainFog>,
     mut clear: ResMut<ClearColor>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
 ) {
-    let Some(transform) = cameras.iter().next() else {
+    let Some((_, transform)) = cameras.iter().find(|(camera, _)| camera.is_active) else {
         return;
     };
     let was_submerged = state.submerged;

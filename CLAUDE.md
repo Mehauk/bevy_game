@@ -43,3 +43,25 @@ drive a running build instead of guessing at behaviour. Install the bridge separ
 - Take a screenshot and check the reflected state before declaring a change verified. Rendering and
   shading cannot be checked headlessly; the test suite covers layout, import resolution and
   generation output, not appearance.
+
+## Ticket Completeness & Anti-Bailout Rules
+
+1. **External blockers must be proven, searched, and isolated.** You may only mark a sub-item `BLOCKED` if an external dependency is genuinely unavailable (e.g., offline sandbox, missing credentials). Before declaring it blocked:
+   - Search the workspace, prior tickets, docs, and repo history for cached copies, saved artifacts, or written equivalents.
+   - Show the exact failed check or command.
+   - Isolate the block to **that specific sub-item only** and complete every other requirement in the ticket.\
+
+2. **Never defer without full diagnosis.** Do not label an issue `deferred`, `not attempted`, or `beyond a safe edit` until you have:
+   - Read the relevant source files and traced the root cause, AND
+   - Verified the behavior with runtime queries/tests/screenshots.
+   If a fix is straightforward once diagnosed, apply and verify it. Only ask for user input if there is a genuine product/design ambiguity after you have already identified the exact code and options.
+
+3. **Never cite missing internal code as a blocker.** If a ticket requires a visualization, debug mode, preview pass, or test hook that does not exist yet (e.g., "export_preview lacks single-layer mode" or "shader doesn't support X yet"), **implementing it is part of the ticket**. Never list "needs new code/shader/tooling" under "Not completed."
+
+4. **Do not pad progress with your own harness bugs.** Fixing bugs in tooling/scripts you wrote during the same ticket does not count toward the ticket's issue/fix quota.
+
+5. **Systematic sweeps for N-item or visual-inspection tickets.** When asked to inspect areas or hit a numeric target (e.g., "find and fix N issues"):
+   - Break the space into a concrete checklist (chunks, regions, modules, edge cases) and work through it systematically—inspect, fix, re-verify.
+   - Do not stop early with a handful of examples. If you genuinely hit turn/context limits before finishing, report exact progress (`X/N completed`, exact regions checked, exact next region to resume from) instead of redefining the goal as unrealistic.
+
+6. **Completion gate before final response.** Before wrapping up, re-read every requirement and checkbox in the ticket. For anything still incomplete, you must be able to point to a concrete tool failure or exact line of code you inspected—never a guess.

@@ -39,11 +39,13 @@ pub(crate) fn wrap_character_to_world(
 }
 
 fn sync_chunk_focus(
-    cameras: Query<&Transform, With<MainCamera>>,
+    cameras: Query<(&Camera, &Transform, Option<&MainCamera>), With<Camera3d>>,
     characters: Query<&Transform, With<Character>>,
     mut focus: ResMut<ChunkFocus>,
 ) {
-    if let Ok(camera) = cameras.single() {
+    if let Some((_, camera, _)) = cameras.iter().find(|(c, _, _)| c.is_active) {
+        focus.0 = camera.translation;
+    } else if let Some((_, camera, _)) = cameras.iter().find(|(_, _, main)| main.is_some()) {
         focus.0 = camera.translation;
     } else if let Ok(character) = characters.single() {
         focus.0 = character.translation;

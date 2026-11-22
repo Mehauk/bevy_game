@@ -95,10 +95,6 @@ fn stochastic_offsets(uv: vec2<f32>) -> StochasticField {
     );
 }
 
-fn stochastic_shift(field: StochasticField) -> vec2<f32> {
-    return field.w.x * field.o0 + field.w.y * field.o1 + field.w.z * field.o2;
-}
-
 fn sample_albedo_st(layer: u32, uv: vec2<f32>, field: StochasticField, mip: f32) -> vec3<f32> {
     let a = sample_albedo(layer, uv + field.o0, mip);
     let b = sample_albedo(layer, uv + field.o1, mip);
@@ -185,8 +181,8 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     let uv_far = world_pos.xz / terrain.far_scale;
     let st_near = stochastic_offsets(uv_near);
     let st_far = stochastic_offsets(uv_far);
-    let mip_near = tile_mip(uv_near + stochastic_shift(st_near));
-    let mip_far = tile_mip(uv_far + stochastic_shift(st_far));
+    let mip_near = tile_mip(uv_near);
+    let mip_far = tile_mip(uv_far);
     let view_dist = length(pbr_input.V);
     let far_w = smoothstep(45.0, 140.0, view_dist);
 

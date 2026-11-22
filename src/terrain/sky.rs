@@ -120,12 +120,12 @@ pub fn sync_terrain_atmosphere(
     mut fog: ResMut<TerrainFog>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut lights: Query<(&mut DirectionalLight, &mut Transform)>,
     sky: Query<&MeshMaterial3d<SkyRenderMaterial>>,
     mut sky_materials: ResMut<Assets<SkyRenderMaterial>>,
 ) {
-    let Some(camera_transform) = cameras.iter().next() else {
+    let Some((_, camera_transform)) = cameras.iter().find(|(camera, _)| camera.is_active) else {
         return;
     };
     let position = camera_transform.translation();

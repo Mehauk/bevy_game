@@ -13,7 +13,7 @@ use crate::terrain::map::TerrainMap;
 use crate::terrain::material::{SurfaceLayer, material_profile, tint_multiplier};
 use crate::terrain::region::Region;
 
-pub const SPLAT_RESOLUTION: usize = 64;
+pub const SPLAT_RESOLUTION: usize = 128;
 pub const TILE_RESOLUTION: u32 = 256;
 pub const TEXTURE_TILE_METRES: f32 = 24.0;
 
@@ -91,7 +91,7 @@ impl SurfaceTiles {
         &self.missing
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     pub fn loaded_count(&self) -> usize {
         self.tiles.len()
     }
@@ -252,7 +252,7 @@ impl LayerMix {
         self.0.is_empty()
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     fn dominant(&self) -> Option<SurfaceLayer> {
         self.0
             .iter()
@@ -326,9 +326,39 @@ fn plan_core(map: &TerrainMap, point: Vec2) -> TexelPlan {
     let slope = map.slope_at(point.x, point.y);
     let cliff = cliff_share(slope);
     let weights = map.cell_weights_at(point.x, point.y);
+    let dominant_params = weights
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .and_then(|(id, _)| map.cell(*id))
+        .map(|cell| &cell.parameters);
 
-    let shore = map.shore_override_at(point.x, point.y);
-    let snow = map.snow_coverage_at(point.x, point.y);
+    let flooded = map.flood_zone().contains(height);
+    let shore = if flooded {
+        dominant_params.and_then(|parameters| {
+            crate::terrain::season::shore_override_with_hardness(
+                map.season_clock().season,
+                map.flood_zone(),
+                height,
+                parameters.salinity,
+                parameters.precipitation,
+                map.sea_level(),
+                map.hardness_at(point.x, point.y),
+            )
+        })
+    } else {
+        None
+    };
+    let snow = dominant_params
+        .map(|parameters| {
+            crate::terrain::season::snow_coverage_with_slope(
+                map.season_clock(),
+                parameters.temperature,
+                height,
+                map.snowline(),
+                slope,
+            )
+        })
+        .unwrap_or(0.0);
 
     let mut mix = LayerMix::new();
     let mut highest: Option<(f32, Region)> = None;
@@ -385,7 +415,7 @@ fn plan_core(map: &TerrainMap, point: Vec2) -> TexelPlan {
         steepness: (slope / 1.6).clamp(0.0, 1.0),
         dominant_weight,
         cliff,
-        flooded: map.flood_zone().contains(height),
+        flooded,
         tint: if blended {
             [
                 tint_acc[0] / tint_weight,

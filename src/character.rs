@@ -5,10 +5,10 @@ use bevy_enhanced_input::prelude::*;
 use crate::{
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
     utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
-    utils::{SpawnGroundHeight, WaterImmersion},
+    utils::SpawnGroundHeight,
 };
 
-pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 100.5;
+pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
 pub const CAPSULE_RADIUS: f32 = 0.4;
 pub const CAPSULE_HEIGHT: f32 = 1.0;
 
@@ -18,18 +18,11 @@ const GROUND_PROBE_MAX_DISTANCE: f32 = 0.5;
 const GROUND_LAND_TOLERANCE: f32 = 0.04;
 const GROUND_SNAP_DISTANCE: f32 = 0.35;
 const SLOPE_SNAP_MIN_DISTANCE: f32 = 0.005;
+const SLOPE_SNAP_SPEED: f32 = 10.0;
 const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
 const MIN_GROUND_NORMAL_Y: f32 = 0.01;
 const HORIZ_VEL_EPSILON: f32 = 0.001;
 const DEFAULT_SPEED_DELTA: f32 = 2.0;
-
-const SWIM_BUOYANCY_SPRING: f32 = 6.0;
-const SWIM_BUOYANCY_DAMP: f32 = 2.0;
-const SWIM_DRAG: f32 = 2.5;
-const SWIM_CURRENT: f32 = 0.8;
-const SWIM_UP_SPEED: f32 = 3.0;
-const SWIM_DIVE_SPEED: f32 = 2.5;
-const SWIM_TARGET_SCALE: f32 = 0.6;
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CharacterSystems {
@@ -43,13 +36,9 @@ impl Plugin for CharacterPlugin {
         app.add_systems(Startup, setup_character)
             .add_systems(
                 FixedUpdate,
-                character_physics_move.in_set(CharacterSystems::Playing),
-            )
-            .add_systems(
-                FixedPostUpdate,
-                character_ground_check
-                    .in_set(CharacterSystems::Playing)
-                    .after(SpatialQuerySystems),
+                (character_ground_check, character_physics_move)
+                    .chain()
+                    .in_set(CharacterSystems::Playing),
             )
             .add_systems(Update, character_rotate_body.in_set(CharacterSystems::Playing))
             .add_systems(
@@ -173,32 +162,6 @@ fn jump_fires(jumping: bool, held_last_frame: bool, grounded: bool, cooldown_lef
     jumping && !held_last_frame && grounded && cooldown_left <= 0.0
 }
 
-fn is_swimming(immersion: &WaterImmersion) -> bool {
-    immersion.submerged && !immersion.frozen && immersion.depth > CAPSULE_HEIGHT * 0.5
-}
-
-fn buoyancy_acceleration(surface_y: f32, y: f32, vy: f32) -> f32 {
-    SWIM_BUOYANCY_SPRING * (surface_y - y) - SWIM_BUOYANCY_DAMP * vy
-}
-
-fn swim_vertical_velocity(
-    surface_y: f32,
-    y: f32,
-    vy: f32,
-    dt: f32,
-    swim_up: bool,
-    diving: bool,
-) -> f32 {
-    let mut next = vy + buoyancy_acceleration(surface_y, y, vy) * dt;
-    if swim_up {
-        next = next.max(SWIM_UP_SPEED);
-    }
-    if diving {
-        next -= SWIM_DIVE_SPEED * dt;
-    }
-    next
-}
-
 fn air_gravity_scale(velocity_y: f32, jumping: bool, character: &Character) -> f32 {
     if velocity_y < 0.0 || !jumping {
         character.fall_gravity
@@ -211,16 +174,12 @@ fn slope_tangent_y(vx: f32, vz: f32, normal: Vec3) -> f32 {
     -(vx * normal.x + vz * normal.z) / normal.y
 }
 
-fn slope_snap_cap(horiz_speed: f32) -> f32 {
-    SLOPE_SNAP_MAX_SPEED.max(horiz_speed)
-}
-
-fn slope_snap_speed(gap: f32, horiz_speed: f32) -> f32 {
-    if gap <= SLOPE_SNAP_MIN_DISTANCE {
-        return 0.0;
+fn slope_snap_speed(gap: f32) -> f32 {
+    if gap > SLOPE_SNAP_MIN_DISTANCE {
+        ((gap - SLOPE_SNAP_MIN_DISTANCE) * SLOPE_SNAP_SPEED).min(SLOPE_SNAP_MAX_SPEED)
+    } else {
+        0.0
     }
-    let cap = slope_snap_cap(horiz_speed);
-    (cap * (gap - SLOPE_SNAP_MIN_DISTANCE) / GROUND_SNAP_DISTANCE).min(cap)
 }
 
 fn spawn_translation(ground_height: f32) -> Vec3 {
@@ -332,7 +291,6 @@ fn setup_character(world: &mut World) {
             LinearVelocity::default(),
             GravityScale(Character::default().base_gravity),
             GroundState::default(),
-            WaterImmersion::default(),
             TransformInterpolation,
             ShapeCaster::new(
                 Collider::sphere(GROUND_PROBE_RADIUS),
@@ -362,7 +320,7 @@ fn setup_character(world: &mut World) {
         });
 }
 
-pub(crate) fn character_ground_check(
+fn character_ground_check(
     time: Res<Time>,
     mut query: Query<(&Character, &ShapeHits, &LinearVelocity, &mut GroundState)>,
 ) {
@@ -408,25 +366,20 @@ fn character_physics_move(
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
     jump_action: Single<&Action<Jump>>,
-    crouch_action: Single<&Action<Crouch>>,
     facing: Single<&CameraFacing>,
     character_query: Single<(
         &Character,
-        &Transform,
-        &WaterImmersion,
         &mut GroundState,
         &mut LinearVelocity,
         &mut GravityScale,
     )>,
 ) {
-    let (character, transform, immersion, mut ground, mut velocity, mut gravity_scale) =
-        character_query.into_inner();
+    let (character, mut ground, mut velocity, mut gravity_scale) = character_query.into_inner();
     let dt = time.delta_secs();
 
     let move_vec = ***move_action;
     let sprinting = ***sprint_action;
     let jumping = ***jump_action;
-    let crouching = ***crouch_action;
     let cam_yaw = facing.yaw;
 
     let move_dir = camera_relative_direction(move_vec, cam_yaw).normalize_or_zero();
@@ -436,35 +389,6 @@ fn character_physics_move(
     } else {
         character.walk_speed
     };
-
-    if is_swimming(immersion) {
-        gravity_scale.0 = 0.0;
-        ground.is_grounded = false;
-
-        let swim_up = jumping && !ground.jump_held_last_frame;
-        let current = Vec3::new(immersion.flow.x, 0.0, immersion.flow.y);
-        let target_horiz = move_dir * target_speed * SWIM_TARGET_SCALE + current * SWIM_CURRENT;
-
-        let current_horiz = Vec3::new(velocity.x, 0.0, velocity.z);
-        let mut new_horiz =
-            accelerate_toward(current_horiz, target_horiz, character.air_acceleration, dt);
-        new_horiz *= 1.0 - (SWIM_DRAG * dt).min(1.0);
-        velocity.x = new_horiz.x;
-        velocity.z = new_horiz.z;
-
-        velocity.y = swim_vertical_velocity(
-            immersion.surface_y,
-            transform.translation.y,
-            velocity.y,
-            dt,
-            swim_up,
-            crouching,
-        );
-
-        ground.jump_held_last_frame = jumping;
-        return;
-    }
-
     let target_horiz = move_dir * target_speed;
 
     let accel = if ground.is_grounded {
@@ -494,9 +418,8 @@ fn character_physics_move(
         let has_horiz_vel =
             velocity.x.abs() > HORIZ_VEL_EPSILON || velocity.z.abs() > HORIZ_VEL_EPSILON;
         if has_horiz_vel && ground.ground_normal.y > MIN_GROUND_NORMAL_Y {
-            let horiz_speed = Vec3::new(velocity.x, 0.0, velocity.z).length();
             velocity.y = slope_tangent_y(velocity.x, velocity.z, ground.ground_normal)
-                - slope_snap_speed(ground.ground_distance, horiz_speed);
+                - slope_snap_speed(ground.ground_distance);
         } else {
             velocity.y = 0.0;
         }
@@ -556,20 +479,6 @@ fn sync_body_visibility(
     }
 }
 
-pub(crate) fn respawn_character_to(
-    character: &Character,
-    ground_height: f32,
-    transform: &mut Transform,
-    velocity: &mut LinearVelocity,
-    ground: &mut GroundState,
-    gravity: &mut GravityScale,
-) {
-    transform.translation = spawn_translation(ground_height);
-    velocity.0 = Vec3::ZERO;
-    *ground = GroundState::default();
-    gravity.0 = character.base_gravity;
-}
-
 fn respawn_character(
     ground_height: Res<SpawnGroundHeight>,
     query: Single<(
@@ -581,14 +490,10 @@ fn respawn_character(
     )>,
 ) {
     let (mut transform, mut velocity, mut ground, mut gravity, character) = query.into_inner();
-    respawn_character_to(
-        character,
-        ground_height.0,
-        &mut transform,
-        &mut velocity,
-        &mut ground,
-        &mut gravity,
-    );
+    transform.translation = spawn_translation(ground_height.0);
+    velocity.0 = Vec3::ZERO;
+    *ground = GroundState::default();
+    gravity.0 = character.base_gravity;
 }
 
 fn with_player_character(query: &mut Query<&mut Character>, edit: impl FnOnce(&mut Character)) -> bool {
@@ -736,72 +641,10 @@ mod tests {
 
     #[test]
     fn slope_snap_ramps_and_caps() {
-        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE, 0.0), 0.0);
-        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE / 2.0, 0.0), 0.0);
-        let mid = slope_snap_speed(0.1, 0.0);
+        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE), 0.0);
+        assert_eq!(slope_snap_speed(SLOPE_SNAP_MIN_DISTANCE / 2.0), 0.0);
+        let mid = slope_snap_speed(0.1);
         assert!(mid > 0.0 && mid < SLOPE_SNAP_MAX_SPEED, "should ramp between the bounds");
-        assert_eq!(slope_snap_speed(100.0, 0.0), SLOPE_SNAP_MAX_SPEED, "must cap, or steps slam");
-    }
-
-    #[test]
-    fn downhill_snap_scales_with_horizontal_speed() {
-        assert_eq!(slope_snap_cap(0.0), SLOPE_SNAP_MAX_SPEED);
-        assert_eq!(slope_snap_cap(2.0), SLOPE_SNAP_MAX_SPEED);
-        assert_eq!(slope_snap_cap(12.0), 12.0);
-
-        let slow = slope_snap_speed(0.3, 0.0);
-        let fast = slope_snap_speed(0.3, 12.0);
-        assert!(fast > slow, "sprinting downhill must snap down harder than walking");
-        assert!(fast <= 12.0 + 1e-4, "the snap must stay under the speed-scaled cap");
-        assert!(
-            fast >= 12.0 * (0.3 - SLOPE_SNAP_MIN_DISTANCE) / GROUND_SNAP_DISTANCE - 1e-3,
-            "the snap must keep up with a 45 degree crest at sprint speed"
-        );
-        assert_eq!(slope_snap_speed(100.0, 12.0), 12.0, "the cap still binds at speed");
-    }
-
-    #[test]
-    fn swimming_needs_deep_liquid_water() {
-        let deep = WaterImmersion {
-            submerged: true,
-            depth: CAPSULE_HEIGHT * 0.5 + 0.1,
-            surface_y: 0.0,
-            flow: Vec2::ZERO,
-            frozen: false,
-        };
-        assert!(is_swimming(&deep), "chest-deep liquid water means swimming");
-
-        let shallow = WaterImmersion { depth: CAPSULE_HEIGHT * 0.5, ..deep };
-        assert!(!is_swimming(&shallow), "ankle-deep water must stay walking");
-
-        let icy = WaterImmersion { frozen: true, ..deep };
-        assert!(!is_swimming(&icy), "frozen water must not swim");
-
-        let dry = WaterImmersion { submerged: false, ..deep };
-        assert!(!is_swimming(&dry), "no immersion, no swim");
-    }
-
-    #[test]
-    fn buoyancy_springs_toward_the_surface_and_damps() {
-        assert!(buoyancy_acceleration(0.0, -1.0, 0.0) > 0.0, "below the surface: pushed up");
-        assert!(buoyancy_acceleration(0.0, 1.0, 0.0) < 0.0, "above the surface: pulled down");
-        assert_eq!(buoyancy_acceleration(0.0, 0.0, 0.0), 0.0, "at the surface at rest: nothing");
-        assert!(
-            buoyancy_acceleration(0.0, 0.0, 2.0) < 0.0,
-            "rising at the surface must be damped"
-        );
-    }
-
-    #[test]
-    fn swim_vertical_velocity_respects_swim_and_dive() {
-        let coast = swim_vertical_velocity(0.0, -1.0, 0.0, 1.0 / 60.0, false, false);
-        assert!(coast > 0.0, "buoyancy alone rises toward the surface");
-
-        let up = swim_vertical_velocity(0.0, -1.0, 0.0, 1.0 / 60.0, true, false);
-        assert!(up >= SWIM_UP_SPEED, "swim-up must reach the stroke speed");
-        assert!(up > coast);
-
-        let down = swim_vertical_velocity(0.0, -1.0, 0.0, 1.0 / 60.0, false, true);
-        assert!(down < coast, "diving pushes down");
+        assert_eq!(slope_snap_speed(100.0), SLOPE_SNAP_MAX_SPEED, "must cap, or steps slam");
     }
 }

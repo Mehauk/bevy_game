@@ -3,14 +3,13 @@ use std::path::Path;
 
 use bevy::prelude::*;
 
-mod command_docs;
 mod lua_docs;
 
 pub struct DocgenPlugin;
 
 impl Plugin for DocgenPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (lua_docs::write, command_docs::write));
+        app.add_systems(Startup, lua_docs::write);
     }
 }
 

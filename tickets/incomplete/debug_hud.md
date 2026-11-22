@@ -1,3 +1,0 @@
-- [ ] create a debug hud toggled
-- [ ] it shows a hud rught under the fps
-- [ ] it shows all terrain stats in column where the character is (*ALL*)

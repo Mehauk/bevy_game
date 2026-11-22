@@ -21,5 +21,5 @@ pub(super) fn write(members: Res<AppScriptNamespaceMembers>) {
         out.push('\n');
     }
 
-    write_doc("lua-only-hooks.md", &out);
+    write_doc("lua-hooks.md", &out);
 }

@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "bevy-brp": {
-      "command": "bevy_brp_mcp"
-    }
-  }
-}

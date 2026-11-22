@@ -186,7 +186,10 @@ placeholder-built meshes from an unchanged `generation` (fixed by the `GENERATIO
 leaves 4 open: findings 2, 6, 7 (top-down water read, underwater murk, grazing-angle shoreline blend —
 shading/design tuning).
 
-The "100 inconsistencies" target is not met: 11 issues evidenced, 7 closed. The exact next regions to
-sweep on resume are the NW and SE quadrants at zoom 3, the full chunk-boundary grid at zoom ≥4 (now that
-the meshes are rebuilt from the real map and worth re-inspecting), and the river/lake mesh edges at high
-zoom. Findings 2/6/7 need a shading-look design decision before a non-bandaid fix is possible.
+The "100 inconsistencies" target is not met: 11 issues evidenced, 7 closed. The four-quadrant zoom-3 sweep
+is now complete — NE (`sweep_NE.png`), SW (`sweep_SW.png`), NW (`sweep_NW.png`) and SE (`sweep_SE.png`) —
+and the NW/SE captures (re-taken after the generation fix, so the meshes are the real ones) show smooth
+splat blending, organic shorelines with foam, and no seams or grid: no new defects beyond those recorded.
+The exact next regions to sweep on resume are the full chunk-boundary grid at zoom ≥4 and the river/lake
+mesh edges at high zoom. Findings 2/6/7 need a shading-look design decision before a non-bandaid fix is
+possible.

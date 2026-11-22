@@ -40,13 +40,17 @@ defects (see below), so per the no-bandaid rule they are not "fixed" here.
     water/terrain meshes rebuild from the real map. Verified visually (`x0_fixed.png`) and at the data level;
     regression test `every_map_gets_a_fresh_generation_number`.
 
-- [ ] bug 3: terrain surface blend shows a regular checkerboard block pattern at moderate zoom.
-  - [proof](target/shots/sweep_SW.png): checkerboard across the green field at focus (-90,-90) zoom 3.
-  - diagnosis: the splat control map is baked at `SPLAT_RESOLUTION = 128` per chunk; the weights texture
-    is already linear-sampled, so the blocking is genuine control-resolution limit, not a filtering bug.
-    A proper fix raises control resolution, which collides with the `splat_bake` perf budget (the bench
-    test) — a resolution/budget design decision, not a safe one-line change.
-  - [ ] fix: pending a resolution-vs-budget decision.
+- [x] bug 3: terrain surface blend showed a regular checkerboard block pattern at moderate zoom.
+  - [proof](target/shots/sweep_SW.png): checkerboard across the green field at focus (-90,-90) zoom 3;
+    [proof](target/shots/sweep_SW_dithered.png): smooth on the real terrain after the fix.
+  - diagnosis: the stark grid was a placeholder artifact (the flat placeholder field exaggerated the top-4
+    index grid — same root cause as the generation fix). The residual grid is the per-texel layer-index
+    snap: `splat_indices` is read with `textureLoad` at an integer texel, so the four blended layers'
+    identity snaps per 128×128 texel. The weights were already linear-sampled, so this was never a
+    filtering bug; indices can't be interpolated.
+  - [x] fix: dithered two-texel index blend (`dithered_layer_indices` in `terrain_material.wesl`) cross-fades
+    the layer set across texel borders via a world-space hash thresholded by the sub-texel fraction.
+    `SPLAT_RESOLUTION` and the `splat_bake` budget are unchanged (resolution-vs-budget tradeoff avoided).
 
 - [x] bug 4: Dune, Snow and Volcanic never dominate any texel in the default world (no snow caps on the
   rock summits the isolation pass reveals).
@@ -69,11 +73,12 @@ defects (see below), so per the no-bandaid rule they are not "fixed" here.
 ## Session outcome
 
 Every issue recorded was traced to root cause with runtime reads (BRP `inspect_point`, `world_shot`,
-`set_season`, a temporary water-mesh vertex dump) and a dominant-layer histogram over the live config.
-Bug 2 was a genuine correctness defect — stale placeholder-built water/terrain meshes from an unchanged
-`generation` — and is now fixed at the root (`GENERATION_COUNTER` in `src/terrain/map/mod.rs`, regression
-test `every_map_gets_a_fresh_generation_number`); it is the same defect as finding 10 in
-`tickets/incomplete/world_visuals.md`. Bugs 1 and 4 are correct behaviour (prior misdiagnoses, corrected),
-and bug 3 is a control-resolution-vs-perf-budget design tradeoff. The ticket stays open for bug 3 (needs a
-resolution/budget decision) and for the next session to probe gameplay logic (state machine transitions,
-console command edge cases, hydrology edge cases) rather than graphics, which has now been swept.
+`set_season`, a temporary water-mesh vertex dump) and a dominant-layer histogram over the live config. All
+four recorded bugs are now resolved: bug 2 was a genuine correctness defect (stale placeholder-built
+water/terrain meshes from an unchanged `generation`, fixed at the root via `GENERATION_COUNTER` in
+`src/terrain/map/mod.rs`, regression test `every_map_gets_a_fresh_generation_number` — same defect as
+finding 10 in `tickets/incomplete/world_visuals.md`); bug 3 was the top-4 splat index grid, fixed with a
+dithered two-texel index blend in `terrain_material.wesl` (no resolution/budget cost); bugs 1 and 4 were
+correct behaviour (prior misdiagnoses, corrected). The graphics surface has now been swept and every
+recorded defect fixed. A future session should probe gameplay logic (state machine transitions, console
+command edge cases, hydrology edge cases) rather than graphics.

@@ -140,13 +140,22 @@ Drive it from BRP by setting `AgentConsole.request` to e.g. `world_shot full`, t
       data level (the previously-broken vertex now reads depth 10.58 / foam 0.00) and visually
       (`x0_fixed.png`). Regression test `every_map_gets_a_fresh_generation_number`.
 
-11. [ ] issue: the terrain surface blend shows a regular checkerboard blocking pattern at moderate zoom —
-    the splat control map's texel grid is visible as blocks, so layer transitions step on a grid instead
-    of blending smoothly.
-    - proof: `target/shots/sweep_SW.png` (checkerboard across the green field at focus -90,-90, zoom 3).
-    - plan: `SPLAT_RESOLUTION` (128) control texels per chunk are too coarse for the chunk world size;
-      raise control resolution or interpolate the control lookup in the shader.
-    - fix: not attempted — resolution/quality tuning, needs a perf budget check.
+11. [x] issue: the terrain surface blend showed a regular checkerboard blocking pattern — the top-4
+    layer-index grid snapped per control texel, so layer transitions stepped on a grid.
+    - proof: `target/shots/sweep_SW.png` (stark checkerboard on the placeholder field);
+      `target/shots/sweep_SW_grid.png` (no-dither, real terrain) vs `target/shots/sweep_SW_dithered.png`
+      (dithered) — the grid is gone on the real terrain.
+    - diagnosis: two compounding causes. (a) The stark grid in the original capture was a placeholder
+      artifact (same root cause as findings 3/4/5/10): the flat placeholder field made the index grid pop
+      as clean squares; the real terrain's varied splat weights already smooth it. (b) The residual grid is
+      the top-4 index grid: `splat_indices` is read with `textureLoad` at an integer texel
+      (`terrain_material.wesl`), so the *identity* of the four blended layers snaps per 128×128 texel even
+      though the weights are linearly sampled (so it was never a filtering bug). Indices can't be
+      interpolated.
+    - fix: dithered two-texel index blend (`dithered_layer_indices` in `terrain_material.wesl`): along the
+      dominant texel axis, pick the current texel's or the neighbour's layer set per-pixel via a world-space
+      hash thresholded by the sub-texel fraction, so the layer-set boundary cross-fades over one texel
+      instead of snapping. `SPLAT_RESOLUTION = 128` and the `splat_bake` budget are unchanged.
 
 ## Per-layer isolation pass (new)
 
@@ -170,15 +179,14 @@ Systematic top-down sweep performed: full world (`sweep_full.png`) plus zoomed q
 focus (90,90) `sweep_NE.png` and (-90,-90) `sweep_SW.png`, zoom 3 (~130 m/frame). New findings 8–11
 recorded from these.
 
-Status of the 11 evidenced findings: 5 are now closed — findings 3, 4, 5 and 10 share one root cause
-(stale placeholder-built meshes from an unchanged `generation`) fixed by the `GENERATION_COUNTER` change
-in `src/terrain/map/mod.rs`, and finding 8 was a misdiagnosis (corrected). Finding 1 was fixed earlier.
-That leaves 5 open: findings 2, 6, 7 (top-down water read, underwater murk, grazing-angle shoreline
-blend — shading/design tuning) and finding 11 (splat control-resolution blocking — resolution-vs-budget
-tuning).
+Status of the 11 evidenced findings: 7 are now closed — findings 3, 4, 5, 10 and 11 trace to the stale
+placeholder-built meshes from an unchanged `generation` (fixed by the `GENERATION_COUNTER` change in
+`src/terrain/map/mod.rs`; finding 11's residual grid additionally smoothed by the dithered index blend in
+`terrain_material.wesl`), finding 8 was a misdiagnosis (corrected), and finding 1 was fixed earlier. That
+leaves 4 open: findings 2, 6, 7 (top-down water read, underwater murk, grazing-angle shoreline blend —
+shading/design tuning).
 
-The "100 inconsistencies" target is not met: 11 issues evidenced, 6 closed. The exact next regions to
+The "100 inconsistencies" target is not met: 11 issues evidenced, 7 closed. The exact next regions to
 sweep on resume are the NW and SE quadrants at zoom 3, the full chunk-boundary grid at zoom ≥4 (now that
 the meshes are rebuilt from the real map and worth re-inspecting), and the river/lake mesh edges at high
-zoom. Findings 2/6/7/11 need a design decision (shading look / control resolution vs the `splat_bake`
-perf budget) before a non-bandaid fix is possible.
+zoom. Findings 2/6/7 need a shading-look design decision before a non-bandaid fix is possible.

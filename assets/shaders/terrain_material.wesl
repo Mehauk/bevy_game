@@ -49,6 +49,7 @@ const MAX_MIP: f32 = 8.0;
 const SNOW_LAYER: u32 = 8u;
 const STOCH_GRID: f32 = 0.37;
 const REGION_ROUGHNESS_MIX: f32 = 0.5;
+const INDEX_DITHER_SCALE: f32 = 32.0;
 
 fn tile_mip(uv: vec2<f32>) -> f32 {
     let dx = abs(dpdx(uv.x)) + abs(dpdy(uv.x));
@@ -126,6 +127,20 @@ fn control_texel(world_xz: vec2<f32>) -> vec2<i32> {
     let cx = clamp(i32(local.x * terrain.control_resolution), 0, res - 1);
     let cy = clamp(i32(local.y * terrain.control_resolution), 0, res - 1);
     return vec2<i32>(cx, cy);
+}
+
+fn dithered_layer_indices(world_xz: vec2<f32>, c_uv: vec2<f32>, c_texel: vec2<i32>) -> vec4<f32> {
+    let res = i32(terrain.control_resolution);
+    let last = vec2<i32>(res - 1, res - 1);
+    let frac = c_uv * terrain.control_resolution - vec2<f32>(c_texel);
+    let along_x = frac.x >= frac.y;
+    let t = select(frac.y, frac.x, along_x);
+    let step = select(vec2<i32>(0, 1), vec2<i32>(1, 0), along_x);
+    let neighbour = clamp(c_texel + step, vec2<i32>(0, 0), last);
+    let here = textureLoad(splat_indices, c_texel, 0);
+    let next = textureLoad(splat_indices, neighbour, 0);
+    let d = hash22(world_xz * INDEX_DITHER_SCALE).x;
+    return select(here, next, d < t);
 }
 
 fn uv_grid_colour(uv: vec2<f32>) -> vec3<f32> {

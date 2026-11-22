@@ -27,17 +27,18 @@ defects (see below), so per the no-bandaid rule they are not "fixed" here.
 - [x] bug 2: a bright near-vertical light line appears along the sea in the NE top-down capture.
   - [proof](target/shots/bug2_ne.png): bright vertical foam band just offshore at focus (90,90) zoom 2;
     [proof](target/shots/bug2_nowater.png): the band is gone with water hidden, so it is a water-surface
-    feature, not terrain; [proof](target/shots/bug2_full.png): whole-world shot places it on the coast.
-  - diagnosis: NOT a defect. The band is shoreline foam over a locally straight coastal segment. Depth was
-    read directly: `inspect_point 30 90` → height 1.20 vs sea level 1.60 → depth 0.40 m < `FOAM_DEPTH`
-    (0.8), so the shader's `depth_foam = 1 - smoothstep(0, foam_depth, depth)` correctly returns full foam.
-    A heightfield scan of the sub-`FOAM_DEPTH` water along z=60..120 is only 1–4 cells wide per row and its
-    x-range shifts with z (41, 44, 15–18, 12–30, 6–34, 0–37, 40) — a thin irregular shoreline strip, not a
-    straight seam. The chunk grid tiles exactly at x=0 (chunk_bounds share the edge at 0.0, no overlap/gap)
-    and the water uniform is global (no per-chunk centre), so there is no chunk-seam discontinuity. The
-    apparent straightness is the coastline geometry there, and the brightness is `FOAM_DEPTH` tuning — a
-    cosmetic tuning choice, not a correctness defect. No bandaid applied.
-  - [x] fix: none required (corrected misdiagnosis; cosmetic foam-width tuning is a design decision).
+    feature, not terrain; [proof](target/shots/x0_fixed.png): band gone after the fix.
+  - diagnosis: THIS IS A DEFECT (the earlier "not a defect / shoreline foam" read was wrong). The band is a
+    straight seam through open deep water, not a shoreline. Root cause: the startup placeholder `TerrainMap`
+    (compact config) and the delivered real map both carried `generation == 1`, so the generation-keyed
+    `rebuild_water_surfaces`/`rebuild_terrain` never rebuilt after the real map arrived. The placeholder's
+    coarse heightfield sampled across 400 m chunk bounds clamped to ~sea level, baking `depth≈0 → foam≈1`
+    (white) along a chunk edge. This is the same defect as finding 10 in
+    `tickets/incomplete/world_visuals.md`.
+  - [x] fix: `TerrainMap::new` now assigns a process-wide monotonic `GENERATION_COUNTER`
+    (`src/terrain/map/mod.rs`), so the delivered map's generation differs from the placeholder's and the
+    water/terrain meshes rebuild from the real map. Verified visually (`x0_fixed.png`) and at the data level;
+    regression test `every_map_gets_a_fresh_generation_number`.
 
 - [ ] bug 3: terrain surface blend shows a regular checkerboard block pattern at moderate zoom.
   - [proof](target/shots/sweep_SW.png): checkerboard across the green field at focus (-90,-90) zoom 3.
@@ -67,11 +68,12 @@ defects (see below), so per the no-bandaid rule they are not "fixed" here.
 
 ## Session outcome
 
-Every issue recorded this session was traced to root cause with runtime reads (BRP `inspect_point`,
-`world_shot`, `set_season`) and a dominant-layer histogram over the live config. None is a clean
-correctness defect: bugs 1, 2 and 4 are correct behaviour (two were prior misdiagnoses), and bug 3 is a
-control-resolution-vs-perf-budget design tradeoff. Per the no-bandaid rule no cosmetic/aesthetic change
-was applied to "fix" non-defects. The ticket stays open because its premise (find defects to fix) did not
-yield a safely-fixable defect this session; the next session should probe gameplay logic (state machine
-transitions, console command edge cases, hydrology edge cases) rather than graphics, which has now been
-swept.
+Every issue recorded was traced to root cause with runtime reads (BRP `inspect_point`, `world_shot`,
+`set_season`, a temporary water-mesh vertex dump) and a dominant-layer histogram over the live config.
+Bug 2 was a genuine correctness defect — stale placeholder-built water/terrain meshes from an unchanged
+`generation` — and is now fixed at the root (`GENERATION_COUNTER` in `src/terrain/map/mod.rs`, regression
+test `every_map_gets_a_fresh_generation_number`); it is the same defect as finding 10 in
+`tickets/incomplete/world_visuals.md`. Bugs 1 and 4 are correct behaviour (prior misdiagnoses, corrected),
+and bug 3 is a control-resolution-vs-perf-budget design tradeoff. The ticket stays open for bug 3 (needs a
+resolution/budget decision) and for the next session to probe gameplay logic (state machine transitions,
+console command edge cases, hydrology edge cases) rather than graphics, which has now been swept.

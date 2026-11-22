@@ -53,24 +53,32 @@ Drive it from BRP by setting `AgentConsole.request` to e.g. `world_shot full`, t
     - plan: a top-down water read needs a depth/coverage tint, not the live reflection.
     - fix: deferred — add a `world_shot` depth-shading mode or a bathymetry preview.
 
-3. [ ] issue: the three `Sea Surface` meshes only cover the eastern half of the world (world x>=0 plus a
-   sliver); the western half has no sea-surface mesh, so sub-sea-level cells there have no water plane.
-    - proof: AABB rects via `world_query`/entity screenshots — Sea Surface 4294966409 = x[0,200]z[0,200],
-      4294966411 = x[0,200]z[-200,0], 4294966410 = a ~23x158 sliver.
-    - plan: confirm with `inspect_point` over west sub-sea-level cells, then check `surfaces::rebuild_water_surfaces`
-      region partitioning.
-    - fix: not attempted — needs hydrology/surface investigation beyond a safe edit.
+3. [x] issue (resolved by the finding-10 generation fix): the three `Sea Surface` meshes only covered the
+   eastern half of the world (world x>=0 plus a sliver); the western half had no sea-surface mesh.
+    - proof: pre-fix AABB rects via `world_query` — Sea Surface 4294966409 = x[0,200]z[0,200],
+      4294966411 = x[0,200]z[-200,0], 4294966410 = a ~23x158 sliver. Post-fix the sea meshes tile the whole
+      world (see finding 10).
+    - plan: (was) confirm with `inspect_point` over west sub-sea-level cells, then check
+      `surfaces::rebuild_water_surfaces` region partitioning.
+    - fix: not a partitioning bug. The meshes were built from the compact startup placeholder map and never
+      rebuilt because the delivered real map reused `generation == 1`. The finding-10 `GENERATION_COUNTER`
+      fix makes the real map's delivery bump the generation, so `rebuild_water_surfaces` rebuilds all four
+      sea chunks over the full world.
 
-4. [ ] issue: the single `River Network` mesh AABB is only ~63x44 m near the origin although the world
-   reports 74 rivers across a ~330 m continent.
-    - proof: `world_query` AABB rect (532,297,114,80) for entity 4294966407.
-    - plan: verify whether river ribbons are merged into one mesh or most rivers lack geometry.
-    - fix: not attempted.
+4. [x] issue (resolved by the finding-10 generation fix): the single `River Network` mesh AABB was only
+   ~63x44 m near the origin although the world reports 74 rivers across a ~330 m continent.
+    - proof: pre-fix `world_query` AABB rect (532,297,114,80) for entity 4294966407. Post-fix the river
+      mesh spans the world (7895 verts, full extent) — see finding 10.
+    - plan: (was) verify whether river ribbons are merged into one mesh or most rivers lack geometry.
+    - fix: same root cause as finding 10 — the river mesh was placeholder-built and stale; the generation fix
+      rebuilds it from the real hydrology.
 
-5. [ ] issue: only one `Lake Surface` entity exists (~12x18 m) although the world reports 21 lakes.
-    - proof: `world_find_entities_by_name` "Lake Surface" returns a single entity (4294966408).
-    - plan: check whether lakes are merged into one mesh or only one lake got a surface.
-    - fix: not attempted.
+5. [x] issue (resolved by the finding-10 generation fix): only one `Lake Surface` entity existed (~12x18 m)
+   although the world reports 21 lakes.
+    - proof: pre-fix `world_find_entities_by_name` "Lake Surface" returned a single entity (4294966408).
+      Post-fix 21 `Lake Surface` entities exist, matching `world_summary` — see finding 10.
+    - plan: (was) check whether lakes are merged into one mesh or only one lake got a surface.
+    - fix: same root cause as finding 10 — placeholder-built water; the generation fix rebuilds every lake.
 
 6. [ ] issue: the submerged view is a flat featureless grey-blue murk — no caustics, light shafts or
    see-through-to-bed, because `WATER_MURKINESS` is 1.0.
@@ -84,16 +92,22 @@ Drive it from BRP by setting `AgentConsole.request` to e.g. `world_shot full`, t
     - plan: shoreline foam term keyed to water/land intersection depth.
     - fix: deferred.
 
-8. [ ] issue: three of the nine `SurfaceLayer`s (Dune, Snow, Volcanic) never dominate a single texel in
-   the default world (seed 1337, finite), so no dune field, no snow cap on the rock summits, and no
-   volcanic surface appear anywhere — even though the rock isolation pass shows summits well above the
-   snowline.
-    - proof: `docs/.compiled/terrain-previews/layer_snow_seed-1337_finite.png`,
-      `layer_dune_seed-1337_finite.png`, `layer_volcanic_seed-1337_finite.png` (all fully black, identical
-      2357-byte files) vs `layer_rock_seed-1337_finite.png` (rock summits present).
-    - plan: check whether any region profile in this seed resolves to Dune/Volcanic, and whether
-      `snow_coverage_with_slope` ever reaches dominance on the high-elevation cells the rock pass reveals.
-    - fix: not attempted — needs region/temperature distribution diagnosis beyond a safe edit.
+8. [x] issue (corrected — misdiagnosis): my read that Dune, Snow and Volcanic never dominate a texel was
+   wrong. A dominant-layer histogram over the live config (seed 1337, 25600 samples) disproves it:
+    - Dune DOES dominate (166 texels, 0.65%); desert-interior texels read `Dune=1.00`. The "fully black"
+      isolation image was a sparse layer misread as empty.
+    - Snow is SEASONAL. The isolation preview was a Summer snapshot (`SeasonClock::default()` = Summer,
+      seasonal=0); the summer snowline is 68 m while the world max is 54.9 m and no cell is cold enough, so
+      summer snow is correctly absent. In Winter the runtime shader drops the snowline to ~54 m and caps the
+      highest ridges (`target/shots/winter_full.png`).
+    - Volcanic is absent because this seed has no volcanic region at all (region histogram has no
+      "volcanic caldera" entry) — a correct absence.
+    - proof: `target/shots/winter_full.png` (winter snow caps present); dominant-layer histogram over the
+      live config.
+    - plan: none — not a world-gen defect. The isolation preview's binary dominant-layer view is misleading
+      for sparse/seasonal layers (a tooling note for the preview, not a generation bug).
+    - fix: corrected the finding; no code change. Cross-referenced as bug 4 in
+      `tickets/incomplete/quality_testing_and_bug_smash.md`.
 
 9. [x] issue (corrected): my initial read that "our water has no depth gradient / reflection / foam" was
    wrong. On inspection `assets/shaders/water_material.wesl` already implements all three: depth-driven
@@ -108,13 +122,23 @@ Drive it from BRP by setting `AgentConsole.request` to e.g. `world_shot full`, t
     - fix: corrected the finding; no code change needed. Findings 2/6/7 (murk, hard shoreline) remain the
       real, separate water issues.
 
-10. [ ] issue: a straight vertical white seam line runs through open deep water in the NE quadrant — a
-    water-mesh / chunk-boundary edge, not natural foam (foam follows shorelines, not straight lines across
-    the open sea).
-    - proof: `target/shots/sweep_NE.png` (vertical white line through open water at focus 90,90).
-    - plan: confirm against the `Sea Surface` mesh partitioning from finding 3; the bright line is the
-      shared edge of two water mesh tiles.
-    - fix: not attempted — same root cause as finding 3.
+10. [x] issue: a straight vertical white seam ran through open deep water in the NE quadrant — a real
+    defect, not natural foam (foam follows shorelines, not straight lines across the open sea).
+    - proof: `target/shots/sweep_NE.png` (vertical white line through open water at focus 90,90);
+      `target/shots/x0_deepseam.png` (the band isolated); `target/shots/x0_despawn5.png` (the band vanishes
+      when the stale sea mesh is despawned); `target/shots/x0_wide.png` (the band runs the full z to the
+      world edge); `target/shots/x0_fixed.png` (band gone after the fix).
+    - root cause: the startup placeholder `TerrainMap` (compact config) and the delivered real map both
+      carried `generation == 1`, so the generation-keyed `rebuild_water_surfaces` (`surfaces.rs:62`) and
+      `rebuild_terrain` (`chunk.rs:403`) never rebuilt after the real map was delivered. The placeholder's
+      coarse 32×32 heightfield sampled across 400 m chunk bounds clamped to ~sea level, baking
+      `depth≈0 → foam≈1` (white) along a chunk edge — a permanent white band at x∈[10.4,23.2]. The same
+      staleness produced findings 3/4/5 and the blocky terrain scale.
+    - fix: `TerrainMap::new` now draws a process-wide monotonic `GENERATION_COUNTER`
+      (`src/terrain/map/mod.rs`), so every constructed map (placeholder, delivered, regenerate/reseed) has a
+      unique generation and the real map's delivery invalidates the placeholder-built meshes. Verified at the
+      data level (the previously-broken vertex now reads depth 10.58 / foam 0.00) and visually
+      (`x0_fixed.png`). Regression test `every_map_gets_a_fresh_generation_number`.
 
 11. [ ] issue: the terrain surface blend shows a regular checkerboard blocking pattern at moderate zoom —
     the splat control map's texel grid is visible as blocks, so layer transitions step on a grid instead
@@ -144,6 +168,17 @@ preview), not rendered worlds; the usable rendered-water frames are the lake/pon
 
 Systematic top-down sweep performed: full world (`sweep_full.png`) plus zoomed quadrant captures at
 focus (90,90) `sweep_NE.png` and (-90,-90) `sweep_SW.png`, zoom 3 (~130 m/frame). New findings 8–11
-recorded from these. The "100 inconsistencies" target is not met: 11 issues are evidenced so far. The
-remaining regions (NW/SE quadrants, the full chunk-boundary grid at zoom ≥4, and the river/lake mesh
-edges at high zoom) are the exact next regions to sweep on resume.
+recorded from these.
+
+Status of the 11 evidenced findings: 5 are now closed — findings 3, 4, 5 and 10 share one root cause
+(stale placeholder-built meshes from an unchanged `generation`) fixed by the `GENERATION_COUNTER` change
+in `src/terrain/map/mod.rs`, and finding 8 was a misdiagnosis (corrected). Finding 1 was fixed earlier.
+That leaves 5 open: findings 2, 6, 7 (top-down water read, underwater murk, grazing-angle shoreline
+blend — shading/design tuning) and finding 11 (splat control-resolution blocking — resolution-vs-budget
+tuning).
+
+The "100 inconsistencies" target is not met: 11 issues evidenced, 6 closed. The exact next regions to
+sweep on resume are the NW and SE quadrants at zoom 3, the full chunk-boundary grid at zoom ≥4 (now that
+the meshes are rebuilt from the real map and worth re-inspecting), and the river/lake mesh edges at high
+zoom. Findings 2/6/7/11 need a design decision (shading look / control resolution vs the `splat_bake`
+perf budget) before a non-bandaid fix is possible.

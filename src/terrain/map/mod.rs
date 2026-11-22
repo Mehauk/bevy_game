@@ -34,6 +34,8 @@ use crate::terrain::water::{self, WaterBody, WaterField};
 
 use stages::{compute_ocean_mask, mark_hydrology, precipitation_field, substrate_hardness_field};
 
+static GENERATION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Resource, Clone)]
 pub struct TerrainMap {
     config: TerrainConfig,
@@ -219,7 +221,7 @@ impl TerrainMap {
             base_cell_parameters,
             base_cell_regions,
             season: Season::Summer,
-            generation: 1,
+            generation: GENERATION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             hardness: evolving.hardness,
             season_clock: SeasonClock::default(),
             flow: evolving.flow,

@@ -855,3 +855,27 @@ use crate::terrain::topology::WorldTopology;
         refined.subdivisions += 8;
         assert_ne!(TerrainCache::key_for(&base), TerrainCache::key_for(&refined));
     }
+
+    #[test]
+    fn every_map_gets_a_fresh_generation_number() {
+        let config = TerrainConfig::compact();
+        let placeholder = TerrainMap::new(config.clone());
+        let delivered = TerrainMap::new(config.clone());
+        assert_ne!(
+            placeholder.generation(),
+            delivered.generation(),
+            "a delivered map must never reuse the placeholder's generation"
+        );
+        assert!(
+            delivered.generation() > placeholder.generation(),
+            "generations must increase so generation-keyed rebuilds invalidate stale meshes"
+        );
+        let mut regenerated = TerrainMap::new(config);
+        let before = regenerated.generation();
+        regenerated.regenerate();
+        assert_ne!(
+            regenerated.generation(),
+            before,
+            "regenerating must move the generation so meshes rebuild"
+        );
+    }

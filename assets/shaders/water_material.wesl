@@ -48,6 +48,9 @@ const CAUSTIC_SCALE: f32 = 0.45;
 const CAUSTIC_DETAIL: f32 = 1.9;
 const CAUSTIC_SHARP: f32 = 6.0;
 const CAUSTIC_GAIN: f32 = 0.55;
+const SSS_POWER: f32 = 3.0;
+const SSS_DEPTH: f32 = 0.55;
+const SSS_GAIN: f32 = 0.6;
 
 fn hash21(p: vec2<f32>) -> f32 {
     let s = dot(p, vec2<f32>(127.1, 311.7));
@@ -254,6 +257,9 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         let spec = pow(max(dot(N, H), 0.0), mix(220.0, 24.0, roughness));
         colour = colour + water.sun_color.rgb * (water.sun_direction.w * spec);
         colour = colour + caustic_light * shallow_light;
+        let sss_phase = clamp(dot(V, -L) * 0.5 + 0.5, 0.0, 1.0);
+        let sss = pow(sss_phase, SSS_POWER) * exp(-depth * SSS_DEPTH) * (1.0 - frozen);
+        colour = colour + water.sun_color.rgb * water.sun_direction.w * (SSS_GAIN * sss) * water.shallow_color.rgb;
     } else {
         under_absorb = clamp(1.0 - shallow_light, 0.0, 1.0);
         colour = mix(water.shallow_color.rgb, water.deep_color.rgb, 0.2 + 0.6 * under_absorb);

@@ -95,15 +95,18 @@ Drive it from BRP by setting `AgentConsole.request` to e.g. `world_shot full`, t
       `snow_coverage_with_slope` ever reaches dominance on the high-elevation cells the rock pass reveals.
     - fix: not attempted — needs region/temperature distribution diagnosis beyond a safe edit.
 
-9. [ ] issue: compared to the reference water shader (UE5 water tutorial, ticket 0006), our water has no
-   depth-driven colour gradient, no transparency to the bed, no reflection of nearby terrain (only the
-   sky), and no shoreline foam — it is a flat opaque sky-mirror with a hard edge.
-    - proof: reference `target/video_ref/frames/water_12.jpg` (sandy shallows → green depths, tree
-      reflections, shoreline blend) vs `target/shots/char_lake.png` and `target/shots/compare_main.png`
-      (flat grey mirror, hard bank edge, no bed).
-    - plan: the reference material graph uses PixelDepthFade + WaterGradientColor + SubsurfaceScattering;
-      our water shader lacks the depth-fade gradient and terrain reflection terms.
-    - fix: deferred — shader feature work, tracked by findings 2/6/7.
+9. [x] issue (corrected): my initial read that "our water has no depth gradient / reflection / foam" was
+   wrong. On inspection `assets/shaders/water_material.wesl` already implements all three: depth-driven
+   body colour (`transmit = exp(-depth*absorption)`, `body = mix(deep, shallow, transmit)`, lines 208-209),
+   shoreline foam (`depth_foam = 1 - smoothstep(0, foam_depth, depth)`, line 221), and fresnel sky
+   reflection (lines 236-238). The sea mesh bakes per-vertex water depth into `COLOR_0.r`
+   (`src/terrain/water.rs:458`), which the shader reads as `vdata.r`. The flat grey look in the deep-ocean
+   grazing captures is physically correct (deep water at a grazing angle reflects the sky via Fresnel);
+   the reference `water_12.jpg` is a *shallow* lake, which is why it shows the gradient and bed.
+    - proof: `assets/shaders/water_material.wesl:208-246`, `src/terrain/water.rs:450-458`.
+    - plan: none — not a defect. A shallow-lake capture (not deep ocean) is the correct comparison.
+    - fix: corrected the finding; no code change needed. Findings 2/6/7 (murk, hard shoreline) remain the
+      real, separate water issues.
 
 10. [ ] issue: a straight vertical white seam line runs through open deep water in the NE quadrant — a
     water-mesh / chunk-boundary edge, not natural foam (foam follows shorelines, not straight lines across

@@ -763,7 +763,7 @@ mod tests {
 
         assert!(app.world().get::<Camera>(main_cam).unwrap().is_active);
         assert_eq!(
-            app.world()
+            app.world_mut()
                 .query_filtered::<Entity, With<WorldShotCamera>>()
                 .iter(app.world())
                 .count(),

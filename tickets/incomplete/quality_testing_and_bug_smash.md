@@ -5,4 +5,5 @@ For this ticket you will play through the game can record any issues you find. l
 ---
 
 - [ ] bug 1:
+  - [screenshot-1](link to screenshot): issue reason
 - [ ] fix: 

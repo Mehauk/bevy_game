@@ -9,6 +9,7 @@ pub enum WorldTopology {
 }
 
 impl WorldTopology {
+    #[allow(dead_code)]
     pub fn all() -> [WorldTopology; 3] {
         [WorldTopology::Finite, WorldTopology::FiniteTorus, WorldTopology::Infinite]
     }

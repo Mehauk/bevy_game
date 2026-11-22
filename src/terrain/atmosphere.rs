@@ -1,7 +1,7 @@
-use bevy::color::Mix;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::{
-    Camera3d, ClearColor, Color, GlobalTransform, Query, Res, ResMut, Resource, Vec3, With,
+    Camera3d, ClearColor, Color, GlobalTransform, LinearRgba, Query, Res, ResMut, Resource, Vec3,
+    With,
 };
 
 use crate::terrain::map::TerrainMap;
@@ -21,12 +21,34 @@ pub struct RegionAtmosphereProfile {
     pub ambient_boost: f32,
 }
 
-const fn grey(hex: u32) -> Color {
+const fn srgb_hex(hex: u32) -> Color {
     Color::srgb(
         ((hex >> 16) & 0xff) as f32 / 255.0,
         ((hex >> 8) & 0xff) as f32 / 255.0,
         (hex & 0xff) as f32 / 255.0,
     )
+}
+
+fn mix_linear(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let a = a.to_linear();
+    let b = b.to_linear();
+    Color::from(LinearRgba::new(
+        a.red + (b.red - a.red) * t,
+        a.green + (b.green - a.green) * t,
+        a.blue + (b.blue - a.blue) * t,
+        a.alpha + (b.alpha - a.alpha) * t,
+    ))
+}
+
+fn with_alpha(colour: Color, alpha: f32) -> Color {
+    let linear = colour.to_linear();
+    Color::from(LinearRgba::new(
+        linear.red,
+        linear.green,
+        linear.blue,
+        alpha.clamp(0.0, 1.0),
+    ))
 }
 
 const BASE_FOG: u32 = 0x9db0be;
@@ -53,35 +75,56 @@ fn altitude_of(region: Region) -> f32 {
     }
 }
 
+fn coastal_of(region: Region) -> f32 {
+    match region.definition().tier {
+        RegionTier::Submerged | RegionTier::Coastal => 1.0,
+        _ => 0.0,
+    }
+}
+
 fn profile_for(definition: &RegionDefinition) -> RegionAtmosphereProfile {
     let region = definition.region;
     let wet = wetness_of(region);
     let cold = coldness_of(region);
     let alt = altitude_of(region);
+    let coast = coastal_of(region);
 
-    let fog_colour = grey(BASE_FOG)
-        .mix(&grey(0x8b98a4), wet * 0.35)
-        .mix(&grey(0xa8bccb), cold * 0.30)
-        .mix(&grey(0xbccdd8), alt * 0.25);
-    let light_colour = grey(BASE_LIGHT)
-        .mix(&grey(0xdde9f2), cold * 0.35)
-        .mix(&grey(0xe6e2d8), wet * 0.25);
-    let sky_zenith = grey(BASE_ZENITH)
-        .mix(&grey(0x5d7f9e), wet * 0.40)
-        .mix(&grey(0x33608f), alt * 0.50);
-    let sky_horizon = grey(BASE_HORIZON)
-        .mix(&grey(0xa9b4bc), wet * 0.40)
-        .mix(&grey(0xd8e4ee), cold * 0.25);
+    let warm_arid = (1.0 - cold) * (1.0 - wet);
+    let warm_humid = (1.0 - cold) * wet;
+
+    let mut fog_colour = srgb_hex(BASE_FOG);
+    fog_colour = mix_linear(fog_colour, srgb_hex(0xc1b6a4), warm_arid * 0.34);
+    fog_colour = mix_linear(fog_colour, srgb_hex(0x889fa6), warm_humid * 0.36);
+    fog_colour = mix_linear(fog_colour, srgb_hex(0x9fb5c6), cold * 0.35);
+    fog_colour = mix_linear(fog_colour, srgb_hex(0xb6c8d5), alt * 0.28);
+    fog_colour = mix_linear(fog_colour, srgb_hex(0xa8bcc8), coast * 0.22);
+
+    let mut light_colour = srgb_hex(BASE_LIGHT);
+    light_colour = mix_linear(light_colour, srgb_hex(0xffe5bd), warm_arid * 0.35);
+    light_colour = mix_linear(light_colour, srgb_hex(0xdde9f4), cold * 0.38);
+    light_colour = mix_linear(light_colour, srgb_hex(0xe4e5dc), wet * 0.24);
+
+    let mut sky_zenith = srgb_hex(BASE_ZENITH);
+    sky_zenith = mix_linear(sky_zenith, srgb_hex(0x4c7fa6), warm_arid * 0.30);
+    sky_zenith = mix_linear(sky_zenith, srgb_hex(0x557d96), warm_humid * 0.38);
+    sky_zenith = mix_linear(sky_zenith, srgb_hex(0x5c80a2), cold * 0.32);
+    sky_zenith = mix_linear(sky_zenith, srgb_hex(0x2d5888), alt * 0.55);
+
+    let mut sky_horizon = srgb_hex(BASE_HORIZON);
+    sky_horizon = mix_linear(sky_horizon, srgb_hex(0xdccbb2), warm_arid * 0.36);
+    sky_horizon = mix_linear(sky_horizon, srgb_hex(0xa6b9bd), warm_humid * 0.36);
+    sky_horizon = mix_linear(sky_horizon, srgb_hex(0xd5e2ec), cold * 0.28);
+    sky_horizon = mix_linear(sky_horizon, srgb_hex(0xc8d8e4), coast * 0.20);
 
     RegionAtmosphereProfile {
         region,
         fog_colour,
-        visibility: 140.0 - 16.0 * wet - 8.0 * cold + 6.0 * alt,
+        visibility: 140.0 - 16.0 * wet - 9.0 * cold + 5.0 * alt - 3.0 * coast,
         light_colour,
-        light_exponent: 27.0 - 2.0 * wet + 1.5 * alt,
+        light_exponent: 26.0 - 3.0 * wet - 2.0 * warm_arid + 4.0 * alt,
         sky_zenith,
         sky_horizon,
-        ambient_boost: 0.95 - 0.04 * wet - 0.02 * cold + 0.03 * alt,
+        ambient_boost: 0.95 - 0.04 * wet - 0.02 * cold + 0.03 * alt + 0.02 * warm_arid,
     }
 }
 
@@ -96,15 +139,18 @@ pub fn atmosphere_profile(region: Region) -> &'static RegionAtmosphereProfile {
 }
 
 pub fn blend_atmosphere(contributions: &[(f32, RegionAtmosphereProfile)]) -> RegionAtmosphereProfile {
-    let total: f32 = contributions.iter().map(|(weight, _)| *weight).sum();
+    let total: f32 = contributions
+        .iter()
+        .map(|(weight, _)| if weight.is_finite() { weight.max(0.0) } else { 0.0 })
+        .sum();
     if total <= f32::EPSILON || contributions.is_empty() {
         return *atmosphere_profile(Region::TemperateGrassland);
     }
 
-    let mut fog = empty_linear(contributions[0].1.fog_colour);
-    let mut light = empty_linear(contributions[0].1.light_colour);
-    let mut zenith = empty_linear(contributions[0].1.sky_zenith);
-    let mut horizon = empty_linear(contributions[0].1.sky_horizon);
+    let mut fog = LinearRgba::new(0.0, 0.0, 0.0, 0.0);
+    let mut light = LinearRgba::new(0.0, 0.0, 0.0, 0.0);
+    let mut zenith = LinearRgba::new(0.0, 0.0, 0.0, 0.0);
+    let mut horizon = LinearRgba::new(0.0, 0.0, 0.0, 0.0);
     let mut visibility = 0.0f32;
     let mut exponent = 0.0f32;
     let mut ambient = 0.0f32;
@@ -112,7 +158,10 @@ pub fn blend_atmosphere(contributions: &[(f32, RegionAtmosphereProfile)]) -> Reg
     let mut best = f32::NEG_INFINITY;
 
     for (weight, profile) in contributions {
-        let share = weight / total;
+        if !weight.is_finite() || *weight <= 0.0 {
+            continue;
+        }
+        let share = *weight / total;
         accumulate(&mut fog, profile.fog_colour, share);
         accumulate(&mut light, profile.light_colour, share);
         accumulate(&mut zenith, profile.sky_zenith, share);
@@ -138,39 +187,67 @@ pub fn blend_atmosphere(contributions: &[(f32, RegionAtmosphereProfile)]) -> Reg
     }
 }
 
-fn empty_linear(colour: Color) -> bevy::prelude::LinearRgba {
-    let mut base = colour.to_linear();
-    base.red = 0.0;
-    base.green = 0.0;
-    base.blue = 0.0;
-    base
-}
-
-fn accumulate(target: &mut bevy::prelude::LinearRgba, colour: Color, share: f32) {
+fn accumulate(target: &mut LinearRgba, colour: Color, share: f32) {
     let source = colour.to_linear();
     target.red += source.red * share;
     target.green += source.green * share;
     target.blue += source.blue * share;
+    target.alpha += source.alpha * share;
+}
+
+fn aerial_extinction_of(profile: &RegionAtmosphereProfile) -> Color {
+    mix_linear(profile.fog_colour, profile.sky_zenith, 0.28)
 }
 
 pub fn to_distance_fog(profile: &RegionAtmosphereProfile) -> DistanceFog {
+    let extinction = aerial_extinction_of(profile);
     DistanceFog {
         color: profile.fog_colour,
         directional_light_color: profile.light_colour,
         directional_light_exponent: profile.light_exponent,
         falloff: FogFalloff::from_visibility_colors(
             profile.visibility,
-            profile.fog_colour,
+            extinction,
             profile.sky_horizon,
         ),
     }
 }
 
+#[allow(dead_code)]
+pub fn to_distance_fog_at(profile: &RegionAtmosphereProfile, elevation: f32) -> DistanceFog {
+    let day = daylight_factor(elevation);
+    let warmth = twilight_warmth(elevation);
+    let (zenith, horizon) = sky_colors_at(profile, elevation);
+
+    let night_fog = srgb_hex(0x0b1524);
+    let dusk_fog = srgb_hex(0xc88a68);
+    let mut fog_colour = mix_linear(night_fog, profile.fog_colour, day);
+    fog_colour = mix_linear(fog_colour, dusk_fog, warmth * 0.28);
+
+    let extinction = mix_linear(fog_colour, zenith, 0.30);
+    let glare_alpha = 0.45 * day;
+    let directional_light_color = with_alpha(sun_colour(profile, elevation), glare_alpha);
+
+    DistanceFog {
+        color: fog_colour,
+        directional_light_color,
+        directional_light_exponent: profile.light_exponent,
+        falloff: FogFalloff::from_visibility_colors(profile.visibility, extinction, horizon),
+    }
+}
+
 pub fn underwater_tint(depth: f32) -> Color {
     let t = (depth / 24.0).clamp(0.0, 1.0);
-    let shallow = Color::srgb(0.20, 0.46, 0.52);
-    let deep = Color::srgb(0.02, 0.10, 0.20);
-    shallow.mix(&deep, t)
+    let shallow = Color::srgb(0.18, 0.50, 0.56);
+    let deep = Color::srgb(0.015, 0.09, 0.18);
+    mix_linear(shallow, deep, t)
+}
+
+pub fn underwater_extinction(depth: f32) -> Color {
+    let t = (depth / 24.0).clamp(0.0, 1.0);
+    let shallow = Color::srgb(0.08, 0.36, 0.46);
+    let deep = Color::srgb(0.008, 0.05, 0.13);
+    mix_linear(shallow, deep, t)
 }
 
 pub fn underwater_visibility(depth: f32) -> f32 {
@@ -212,8 +289,21 @@ pub fn sun_direction(cycle_progress: f32) -> Vec3 {
         .unwrap_or(Vec3::Y)
 }
 
+fn smoothstep01(x: f32) -> f32 {
+    let t = x.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn twilight_warmth(elevation: f32) -> f32 {
+    let rise = smoothstep01((elevation + 0.10) / 0.16);
+    let fade = 1.0 - smoothstep01((elevation - 0.08) / 0.42);
+    rise * fade
+}
+
 pub fn daylight_factor(elevation: f32) -> f32 {
-    (elevation.sin().max(0.0) * 0.85 + 0.15).clamp(0.0, 1.0)
+    let twilight = smoothstep01((elevation + 0.10) / 0.18);
+    let solar = elevation.max(0.0).sin();
+    (twilight * (0.12 + 0.88 * solar)).clamp(0.0, 1.0)
 }
 
 pub fn sun_illuminance(profile: &RegionAtmosphereProfile, elevation: f32) -> f32 {
@@ -221,16 +311,31 @@ pub fn sun_illuminance(profile: &RegionAtmosphereProfile, elevation: f32) -> f32
 }
 
 pub fn sun_colour(profile: &RegionAtmosphereProfile, elevation: f32) -> Color {
-    let warm = Color::srgb(1.0, 0.62, 0.35);
-    warm.mix(&profile.light_colour, daylight_factor(elevation))
+    let warm = Color::srgb(1.0, 0.56, 0.26);
+    let clarity = (1.0 - (-elevation.max(0.0) * 3.0).exp()).clamp(0.0, 1.0);
+    mix_linear(warm, profile.light_colour, clarity)
+}
+
+pub fn sky_colors_at(profile: &RegionAtmosphereProfile, elevation: f32) -> (Color, Color) {
+    let day = daylight_factor(elevation);
+    let warmth = twilight_warmth(elevation);
+    let night_zenith = srgb_hex(0x070f1c);
+    let night_horizon = srgb_hex(0x132238);
+    let dusk_horizon = srgb_hex(0xe2976b);
+
+    let zenith = mix_linear(night_zenith, profile.sky_zenith, day);
+    let mut horizon = mix_linear(night_horizon, profile.sky_horizon, day);
+    horizon = mix_linear(horizon, dusk_horizon, warmth * 0.42);
+    (zenith, horizon)
 }
 
 pub fn ambient_colour(profile: &RegionAtmosphereProfile) -> Color {
-    profile.sky_zenith
+    mix_linear(profile.sky_zenith, profile.sky_horizon, 0.30)
 }
 
 pub fn ambient_brightness(profile: &RegionAtmosphereProfile, elevation: f32) -> f32 {
-    80.0 * profile.ambient_boost * (0.35 + 0.65 * daylight_factor(elevation))
+    let night_floor = 0.14;
+    135.0 * profile.ambient_boost * (night_floor + (1.0 - night_floor) * daylight_factor(elevation))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Resource)]
@@ -251,6 +356,7 @@ pub fn sync_underwater_view(
     let Some(transform) = cameras.iter().next() else {
         return;
     };
+    let was_submerged = state.submerged;
     let position = transform.translation();
     let sample = map.water_surface_at(position.x, position.z);
     let depth = match &sample {
@@ -260,16 +366,35 @@ pub fn sync_underwater_view(
     state.depth = depth;
     state.blend = underwater_blend(depth);
     state.submerged = depth > 0.0;
+
+    let surface_fog = to_distance_fog(&atmosphere_state.profile);
+    let surface_clear = atmosphere_state.profile.sky_horizon;
+
     if state.blend <= 0.0 {
+        if was_submerged {
+            fog.0 = surface_fog;
+            clear.0 = surface_clear;
+        }
         return;
     }
-    let tint = underwater_tint(depth);
+
+    let inscatter = underwater_tint(depth);
+    let extinction = underwater_extinction(depth);
     let visibility = underwater_visibility_at(atmosphere_state.profile.visibility, depth);
     let blend = state.blend;
-    fog.0.color = fog.0.color.mix(&tint, blend);
-    fog.0.directional_light_color = fog.0.directional_light_color.mix(&tint, blend);
-    fog.0.falloff = FogFalloff::from_visibility_colors(visibility, fog.0.color, fog.0.color);
-    clear.0 = clear.0.mix(&tint, blend);
+    let depth_fade = (1.0 - depth / 32.0).clamp(0.15, 1.0);
+
+    let fog_color = mix_linear(surface_fog.color, inscatter, blend);
+    let blended_extinction = mix_linear(aerial_extinction_of(&atmosphere_state.profile), extinction, blend);
+    let blended_inscatter = mix_linear(atmosphere_state.profile.sky_horizon, inscatter, blend);
+    let light_target = with_alpha(inscatter, 0.35 * depth_fade);
+
+    fog.0.color = fog_color;
+    fog.0.directional_light_color =
+        mix_linear(surface_fog.directional_light_color, light_target, blend);
+    fog.0.falloff =
+        FogFalloff::from_visibility_colors(visibility, blended_extinction, blended_inscatter);
+    clear.0 = mix_linear(surface_clear, inscatter, blend);
 }
 
 #[cfg(test)]
@@ -284,7 +409,7 @@ mod tests {
             .map(|index| {
                 let (x, z) = map.heights().coords(index);
                 let point = map.heights().world_of(x, z);
-                map.depth_below_sea(point.x, point.y)
+                (map.sea_level() - map.height_at(point.x, point.y)).max(0.0)
             })
             .fold(0.0f32, f32::max);
         assert!(deepest > 0.0, "a compact world must have submerged ground");
@@ -395,6 +520,8 @@ mod tests {
         assert!(fallback.visibility > 0.0);
         let zeroed = blend_atmosphere(&[(0.0, *atmosphere_profile(Region::Taiga))]);
         assert!(zeroed.visibility > 0.0);
+        let negative = blend_atmosphere(&[(-1.0, *atmosphere_profile(Region::Taiga))]);
+        assert!(negative.visibility > 0.0);
     }
 
     #[test]
@@ -424,11 +551,28 @@ mod tests {
         let winter_colour = sun_colour(&profile, winter).to_linear();
         let winter_amber = winter_colour.red - winter_colour.green;
         let summer_amber = summer_colour.red - summer_colour.green;
-        assert!(
-            winter_amber > summer_amber,
-            "low winter sun must redden"
-        );
+        assert!(winter_amber > summer_amber, "low winter sun must redden");
         assert!(ambient_brightness(&profile, summer) > ambient_brightness(&profile, winter));
+    }
+
+    #[test]
+    fn night_drops_direct_sun_to_zero() {
+        let profile = *atmosphere_profile(Region::TemperateGrassland);
+        assert_eq!(daylight_factor(-0.2), 0.0);
+        assert_eq!(sun_illuminance(&profile, -0.2), 0.0);
+        assert!(ambient_brightness(&profile, -0.2) > 0.0);
+        let dusk_fog = to_distance_fog_at(&profile, 0.05);
+        assert!(dusk_fog.directional_light_color.to_linear().alpha < 0.5);
+    }
+
+    #[test]
+    fn arid_regions_stay_warmer_than_glaciers() {
+        let desert = atmosphere_profile(Region::DesertBarren).sky_horizon.to_linear();
+        let glacier = atmosphere_profile(Region::GlacierIcefield).sky_horizon.to_linear();
+        assert!(
+            desert.red - desert.blue > glacier.red - glacier.blue,
+            "arid horizon must read warmer than glacial horizon"
+        );
     }
 
     #[test]

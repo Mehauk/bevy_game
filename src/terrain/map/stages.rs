@@ -285,14 +285,8 @@ pub fn run_evolving_stage(
         .map(|index| cache.cell_at(index).unwrap_or(0))
         .collect();
 
-    let precipitation = precipitation_field(
-        &heights,
-        &cache,
-        &cell_of_vertex,
-        macro_field,
-        parameters,
-        config.relief,
-    );
+    let precipitation =
+        precipitation_field(&heights, &cache, &cell_of_vertex, macro_field, parameters);
 
     let craters = hydrology::place_craters(
         config.seed,
@@ -440,7 +434,6 @@ pub(crate) fn precipitation_field(
     cell_of_vertex: &[usize],
     macro_field: &MacroField,
     parameters: &ParameterStage,
-    relief: f32,
 ) -> ScalarField {
     let cell_precipitation: Vec<_> = parameters
         .cells
@@ -454,7 +447,6 @@ pub(crate) fn precipitation_field(
             cell_precipitation: &cell_precipitation,
             cell_rain_shadow: &macro_field.rain_shadow,
             wind: macro_field.prevailing_wind,
-            relief,
         },
         Some(cache),
     )

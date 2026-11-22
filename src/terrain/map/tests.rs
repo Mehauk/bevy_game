@@ -1,9 +1,10 @@
+use std::path::PathBuf;
+
 use super::*;
 
 use crate::terrain::macro_landform::WorldShape;
 use crate::terrain::noise::{NoiseShape, shape_for};
 use crate::terrain::topology::WorldTopology;
-use std::path::PathBuf;
 
     const GOLDEN_SEED: u64 = 20_261_120;
     const GOLDEN_FINITE: u64 = 0x496B_ED77_DADE_79E1;

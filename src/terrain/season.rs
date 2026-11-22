@@ -74,6 +74,7 @@ impl SeasonDelta {
         next
     }
 
+    #[allow(dead_code)]
     pub fn magnitude(&self) -> i32 {
         self.temperature.abs()
             + self.humidity.abs()
@@ -142,6 +143,7 @@ pub fn seasonal_delta(season: Season, tier: RegionTier) -> SeasonDelta {
         .unwrap_or(SeasonDelta::ZERO)
 }
 
+#[allow(dead_code)]
 pub fn seasonal_params(
     params: &CellParameters,
     season: Season,
@@ -187,6 +189,7 @@ impl SeaLevelSeason {
         self.offset(season)
     }
 
+    #[allow(dead_code)]
     pub fn min(&self) -> f32 {
         Season::ALL
             .iter()
@@ -295,6 +298,7 @@ impl FloodZone {
         height >= self.low && height <= self.high
     }
 
+    #[allow(dead_code)]
     pub fn classify(&self, field: &ScalarField) -> Vec<bool> {
         field
             .values
@@ -303,6 +307,7 @@ impl FloodZone {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn coverage(&self, field: &ScalarField) -> f32 {
         if field.values.is_empty() {
             return 0.0;
@@ -393,25 +398,6 @@ pub fn shore_surface(
     }
 }
 
-pub fn shore_override(
-    season: Season,
-    zone: &FloodZone,
-    height: f32,
-    salinity: Salinity,
-    precipitation: Precipitation,
-    sea_level: f32,
-) -> Option<SurfaceLayer> {
-    shore_override_with_hardness(
-        season,
-        zone,
-        height,
-        salinity,
-        precipitation,
-        sea_level,
-        0.0,
-    )
-}
-
 pub const HARD_SHORE_HARDNESS: f32 = 0.5;
 
 pub fn shore_override_with_hardness(
@@ -436,10 +422,6 @@ pub fn shore_override_with_hardness(
         return None;
     }
     shore_surface(season, salinity, precipitation, height <= sea_level).layer()
-}
-
-pub fn is_frozen(season: Season, temperature: Temperature) -> bool {
-    season == Season::Winter || temperature.index() >= Temperature::Cold.index()
 }
 
 pub fn is_water_frozen(
@@ -535,6 +517,7 @@ pub fn ground_tint(base: Color, snow: f32) -> Color {
     base.mix(&frost, snow * 0.75)
 }
 
+#[allow(dead_code)]
 pub fn seasonal_wind_bias(season: Season) -> f32 {
     match season {
         Season::Spring => 1.0,
@@ -544,6 +527,7 @@ pub fn seasonal_wind_bias(season: Season) -> f32 {
     }
 }
 
+#[allow(dead_code)]
 pub fn prevailing_wind_for_season(base: Vec2, season: Season) -> Vec2 {
     let rotated = if season == Season::Fall || season == Season::Winter {
         Vec2::new(-base.y, base.x)
@@ -912,19 +896,51 @@ mod tests {
     fn shore_material_overrides_follow_season_and_salinity() {
         let zone = FloodZone::new(-2.0, 2.0);
         assert_eq!(
-            shore_override(Season::Winter, &zone, 0.0, Salinity::Marine, Precipitation::Low, 0.0),
+            shore_override_with_hardness(
+                Season::Winter,
+                &zone,
+                0.0,
+                Salinity::Marine,
+                Precipitation::Low,
+                0.0,
+                0.0
+            ),
             Some(SurfaceLayer::Snow)
         );
         assert_eq!(
-            shore_override(Season::Summer, &zone, -0.5, Salinity::Marine, Precipitation::Low, 0.0),
+            shore_override_with_hardness(
+                Season::Summer,
+                &zone,
+                -0.5,
+                Salinity::Marine,
+                Precipitation::Low,
+                0.0,
+                0.0
+            ),
             Some(SurfaceLayer::Sand)
         );
         assert_eq!(
-            shore_override(Season::Summer, &zone, -0.5, Salinity::Hypersaline, Precipitation::Low, 0.0),
+            shore_override_with_hardness(
+                Season::Summer,
+                &zone,
+                -0.5,
+                Salinity::Hypersaline,
+                Precipitation::Low,
+                0.0,
+                0.0
+            ),
             Some(SurfaceLayer::Gravel)
         );
         assert_eq!(
-            shore_override(Season::Summer, &zone, 9.0, Salinity::Marine, Precipitation::Low, 0.0),
+            shore_override_with_hardness(
+                Season::Summer,
+                &zone,
+                9.0,
+                Salinity::Marine,
+                Precipitation::Low,
+                0.0,
+                0.0
+            ),
             None,
             "outside the flood zone there is no override"
         );
@@ -932,9 +948,24 @@ mod tests {
 
     #[test]
     fn freezing_and_snow_coverage_track_season_and_altitude() {
-        assert!(is_frozen(Season::Winter, Temperature::Temperate));
-        assert!(!is_frozen(Season::Summer, Temperature::Warm));
-        assert!(is_frozen(Season::Summer, Temperature::Freezing));
+        assert!(is_water_frozen(
+            Season::Winter,
+            Temperature::Temperate,
+            Salinity::Freshwater,
+            Geothermal::None
+        ));
+        assert!(!is_water_frozen(
+            Season::Summer,
+            Temperature::Warm,
+            Salinity::Freshwater,
+            Geothermal::None
+        ));
+        assert!(is_water_frozen(
+            Season::Summer,
+            Temperature::Freezing,
+            Salinity::Freshwater,
+            Geothermal::None
+        ));
 
         assert!(snow_coverage(Season::Winter, Temperature::Cold, 0.0, 50.0) > 0.9);
         assert!(snow_coverage(Season::Summer, Temperature::Warm, 0.0, 50.0) < 0.01);

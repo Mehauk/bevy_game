@@ -20,6 +20,7 @@ pub enum NoiseAlgorithm {
 }
 
 impl NoiseAlgorithm {
+    #[allow(dead_code)]
     pub fn all() -> [NoiseAlgorithm; 7] {
         [
             NoiseAlgorithm::Hilly,
@@ -32,6 +33,7 @@ impl NoiseAlgorithm {
         ]
     }
 
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             NoiseAlgorithm::Hilly => "hilly",
@@ -44,6 +46,7 @@ impl NoiseAlgorithm {
         }
     }
 
+    #[allow(dead_code)]
     pub fn parse(label: &str) -> Option<NoiseAlgorithm> {
         NoiseAlgorithm::all().into_iter().find(|a| a.label() == label)
     }
@@ -310,6 +313,37 @@ fn octave_gain(frac: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
+fn octave_sum(
+    budget: f64,
+    max_octaves: usize,
+    persistence: f64,
+    lacunarity: f64,
+    frequency: f64,
+    mut octave: impl FnMut(usize, f64) -> (f64, f64),
+) -> (f64, f64) {
+    let budget = budget.clamp(1.0, max_octaves as f64);
+    let full = budget.floor() as usize;
+    let frac = budget - budget.floor();
+    let count = if frac > 0.0 { full + 1 } else { full };
+    let mut sum = 0.0;
+    let mut norm = 0.0;
+    let mut amplitude = 1.0;
+    let mut scale = frequency;
+    for index in 0..count {
+        let gain = if frac > 0.0 && index + 1 == count {
+            octave_gain(frac)
+        } else {
+            1.0
+        };
+        let (signal, weight) = octave(index, scale);
+        sum += signal * amplitude * weight * gain;
+        norm += amplitude * weight * gain;
+        amplitude *= persistence;
+        scale *= lacunarity;
+    }
+    (sum, norm)
+}
+
 pub struct NoiseEngine {
     seed: u32,
     hilly: Vec<Perlin>,
@@ -412,77 +446,51 @@ impl NoiseEngine {
     }
 
     fn fbm(&self, sources: &[Perlin], point: SamplePoint, frequency: f64, budget: f64, persistence: f64) -> f64 {
-        let budget = budget.clamp(1.0, sources.len() as f64);
-        let full = budget.floor() as usize;
-        let frac = budget - budget.floor();
-        let count = if frac > 0.0 { full + 1 } else { full };
-        let mut sum = 0.0;
-        let mut norm = 0.0;
-        let mut amplitude = 1.0;
-        let mut scale = frequency;
-        for (index, source) in sources.iter().take(count).enumerate() {
-            let gain = if frac > 0.0 && index + 1 == count {
-                octave_gain(frac)
-            } else {
-                1.0
-            };
-            sum += source.eval(scale_point(point, scale)) * amplitude * gain;
-            norm += amplitude * gain;
-            amplitude *= persistence;
-            scale *= LACUNARITY;
-        }
+        let (sum, norm) = octave_sum(
+            budget,
+            sources.len(),
+            persistence,
+            LACUNARITY,
+            frequency,
+            |index, scale| (sources[index].eval(scale_point(point, scale)), 1.0),
+        );
         sum / norm
     }
 
     fn billow_field(&self, sources: &[Perlin], point: SamplePoint, frequency: f64, budget: f64, persistence: f64) -> f64 {
-        let budget = budget.clamp(1.0, sources.len() as f64);
-        let full = budget.floor() as usize;
-        let frac = budget - budget.floor();
-        let count = if frac > 0.0 { full + 1 } else { full };
-        let mut sum = 0.0;
-        let mut norm = 0.0;
-        let mut amplitude = 1.0;
-        let mut scale = frequency;
-        for (index, source) in sources.iter().take(count).enumerate() {
-            let gain = if frac > 0.0 && index + 1 == count {
-                octave_gain(frac)
-            } else {
-                1.0
-            };
-            let raw = source.eval(scale_point(point, scale));
-            sum += (2.0 * raw.abs() - 1.0) * amplitude * gain;
-            norm += amplitude * gain;
-            amplitude *= persistence;
-            scale *= LACUNARITY;
-        }
+        let (sum, norm) = octave_sum(
+            budget,
+            sources.len(),
+            persistence,
+            LACUNARITY,
+            frequency,
+            |index, scale| {
+                (
+                    2.0 * sources[index].eval(scale_point(point, scale)).abs() - 1.0,
+                    1.0,
+                )
+            },
+        );
         (sum / norm).clamp(-1.0, 1.0)
     }
 
     fn ridged_field(&self, point: SamplePoint, frequency: f64, budget: f64) -> f64 {
-        let budget = budget.clamp(1.0, self.ridged.len() as f64);
-        let full = budget.floor() as usize;
-        let frac = budget - budget.floor();
-        let count = if frac > 0.0 { full + 1 } else { full };
-        let mut sum = 0.0;
-        let mut norm = 0.0;
-        let mut amplitude = 1.0;
         let mut slope_weight = 1.0;
-        let mut scale = frequency;
-        for (index, source) in self.ridged.iter().take(count).enumerate() {
-            let gain = if frac > 0.0 && index + 1 == count {
-                octave_gain(frac)
-            } else {
-                1.0
-            };
-            let raw = source.eval(scale_point(point, scale));
-            let ridge = 1.0 - raw.abs();
-            let signal = ridge * ridge;
-            sum += signal * amplitude * slope_weight * gain;
-            norm += amplitude * slope_weight * gain;
-            slope_weight = (signal / RIDGE_ATTENUATION).clamp(0.0, 1.0);
-            amplitude *= 0.5;
-            scale *= LACUNARITY;
-        }
+        let (sum, norm) = octave_sum(
+            budget,
+            self.ridged.len(),
+            0.5,
+            LACUNARITY,
+            frequency,
+            |index, scale| {
+                let raw = self.ridged[index].eval(scale_point(point, scale));
+                let ridge = 1.0 - raw.abs();
+                let signal = ridge * ridge;
+                let weight = slope_weight;
+                slope_weight = (signal / RIDGE_ATTENUATION).clamp(0.0, 1.0);
+                (signal, weight)
+            },
+        );
         let normalized = sum / norm.max(1e-9);
         (normalized * 2.0 - 1.0).clamp(-1.0, 1.0)
     }
@@ -563,30 +571,20 @@ impl NoiseEngine {
     }
 
     fn cracks(&self, point: SamplePoint, frequency: f64, budget: f64) -> f64 {
-        let budget = budget.clamp(1.0, MAX_CRACK_OCTAVES);
-        let full = budget.floor() as usize;
-        let frac = budget - budget.floor();
-        let count = if frac > 0.0 { full + 1 } else { full };
-        let mut sum = 0.0;
-        let mut norm = 0.0;
-        let mut amplitude = 1.0;
-        let mut scale = frequency;
-        for index in 0..count {
-            let gain = if frac > 0.0 && index + 1 == count {
-                octave_gain(frac)
-            } else {
-                1.0
-            };
-            let gap = match point {
-                SamplePoint::Plane(p) => self.f2_minus_f1(&p, scale),
-                SamplePoint::Torus(p) => self.f2_minus_f1(&p, scale),
-            };
-            let crack = (gap / CRACK_WIDTH).clamp(0.0, 1.0);
-            sum += (2.0 * crack - 1.0) * amplitude * gain;
-            norm += amplitude * gain;
-            amplitude *= CRACK_PERSISTENCE;
-            scale *= CRACK_LACUNARITY;
-        }
+        let (sum, norm) = octave_sum(
+            budget,
+            MAX_CRACK_OCTAVES as usize,
+            CRACK_PERSISTENCE,
+            CRACK_LACUNARITY,
+            frequency,
+            |_index, scale| {
+                let gap = match point {
+                    SamplePoint::Plane(p) => self.f2_minus_f1(&p, scale),
+                    SamplePoint::Torus(p) => self.f2_minus_f1(&p, scale),
+                };
+                (2.0 * (gap / CRACK_WIDTH).clamp(0.0, 1.0) - 1.0, 1.0)
+            },
+        );
         (sum / norm).clamp(-1.0, 1.0)
     }
 
@@ -658,6 +656,7 @@ impl NoiseEngine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn sample(&self, algorithm: NoiseAlgorithm, x: f32, z: f32, ctx: &NoiseContext) -> f32 {
         self.sample_with(algorithm, x, z, ctx, &NoiseShape::default())
     }
@@ -744,6 +743,7 @@ impl NoiseEngine {
         }
     }
 
+    #[allow(dead_code)]
     pub fn sample_blend(
         &self,
         contributions: &[(NoiseAlgorithm, f32)],

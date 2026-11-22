@@ -11,6 +11,7 @@ macro_rules! param_enum {
         }
 
         impl $name {
+            #[allow(dead_code)]
             pub const COUNT: usize = [$(Self::$variant),+].len();
 
             pub const fn ordinal(self) -> usize {
@@ -172,6 +173,7 @@ pub struct ParamRange<T: ParamLevel> {
 }
 
 impl<T: ParamLevel> ParamRange<T> {
+    #[allow(dead_code)]
     pub fn new(first: T, second: T) -> Self {
         let (lo, hi) = if first.index() <= second.index() {
             (first, second)
@@ -181,10 +183,12 @@ impl<T: ParamLevel> ParamRange<T> {
         Self { min: lo, max: hi }
     }
 
+    #[allow(dead_code)]
     pub fn exact(value: T) -> Self {
         Self { min: value, max: value }
     }
 
+    #[allow(dead_code)]
     pub fn full() -> Self {
         Self {
             min: T::ALL[0],
@@ -276,6 +280,7 @@ impl CellParameters {
             && self.humidity.index() >= Humidity::Dry.index()
     }
 
+    #[allow(dead_code)]
     pub fn describe(&self) -> String {
         format!(
             "temp={} humidity={} wind={} sun={} precip={} height={} slope={} hydro={} substrate={} geothermal={} salinity={}",
@@ -515,20 +520,6 @@ pub fn roll_substrate(
             }
         }
     }
-}
-
-pub fn roll_slope(seed: WorldSeed, cell_index: u64, band: BaseHeightBand) -> SlopeMagnitude {
-    let base = match band {
-        BaseHeightBand::Abyssal | BaseHeightBand::DeepOcean => SlopeMagnitude::Flat,
-        BaseHeightBand::CoastalShelf | BaseHeightBand::SeaLevel | BaseHeightBand::Lowland => {
-            SlopeMagnitude::Gentle
-        }
-        BaseHeightBand::Highland => SlopeMagnitude::Moderate,
-        BaseHeightBand::Alpine => SlopeMagnitude::Steep,
-        BaseHeightBand::Peak => SlopeMagnitude::Sheer,
-    };
-    let drift = ((seed.unit(STAGE_PARAMETERS, cell_index, 43) * 3.0).floor() as i32) - 1;
-    base.shift(drift)
 }
 
 pub fn slope_from_relief(relief_slope: f32) -> SlopeMagnitude {

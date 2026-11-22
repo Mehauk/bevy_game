@@ -23,6 +23,7 @@ use crate::terrain::{DebugView, TerrainDebugView};
 use crate::utils::SpawnGroundHeight;
 
 pub const DEFAULT_CHUNK_SIZE: f32 = 200.0;
+#[allow(dead_code)]
 pub const CHUNK_MESH_STEPS: usize = 48;
 pub const CHUNK_UPLOAD_BUDGET: usize = 4;
 pub const MAX_CHUNK_MESH_STEPS: usize = 512;

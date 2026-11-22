@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use bevy::prelude::Vec2;
 
 use crate::terrain::material::SurfaceLayer;

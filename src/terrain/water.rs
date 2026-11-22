@@ -58,17 +58,21 @@ pub enum WaterKind {
 #[derive(Clone, Copy, Debug)]
 pub struct WaterSample {
     pub surface_y: f32,
+    #[allow(dead_code)]
     pub depth: f32,
+    #[allow(dead_code)]
     pub salinity: Salinity,
     pub frozen: bool,
     pub flow: Vec2,
+    #[allow(dead_code)]
     pub kind: WaterKind,
 }
 
 #[derive(Clone, Debug)]
 pub struct WaterBody {
-    pub center: Vec2,
+    #[allow(dead_code)]
     pub radius: f32,
+    #[allow(dead_code)]
     pub surface: f32,
     pub salinity: Salinity,
     pub frozen: bool,
@@ -337,7 +341,6 @@ pub fn lake_planes(
                 })
                 .fold(0.0f32, f32::max);
             WaterBody {
-                center: centre,
                 radius,
                 surface: lake.surface,
                 salinity: salinities
@@ -1028,7 +1031,6 @@ mod tests {
     #[test]
     fn frozen_water_gets_a_brighter_material() {
         let liquid = WaterBody {
-            center: Vec2::ZERO,
             radius: 50.0,
             surface: 0.0,
             salinity: Salinity::Marine,

@@ -199,7 +199,6 @@ pub fn drain_water_builds(
                 match build {
                     WaterBuild::Sea { mesh, ice, frozen } => {
                         let body = WaterBody {
-                            center: Vec2::ZERO,
                             radius: chunk_size,
                             surface: sea_level,
                             salinity: Salinity::Marine,
@@ -235,7 +234,6 @@ pub fn drain_water_builds(
                         collider,
                     } => {
                         let body = WaterBody {
-                            center: anchor,
                             radius: 1.0,
                             surface,
                             salinity,

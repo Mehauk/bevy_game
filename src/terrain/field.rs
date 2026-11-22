@@ -167,6 +167,7 @@ impl ScalarField {
         top + (bottom - top) * tz
     }
 
+    #[allow(dead_code)]
     fn catmull(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
         let t2 = t * t;
         let t3 = t2 * t;
@@ -176,6 +177,7 @@ impl ScalarField {
             + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
     }
 
+    #[allow(dead_code)]
     pub fn sample_catmull_rom(&self, p: Vec2) -> f32 {
         let wrapped = self.topology.wrap_xz(p, self.size);
         let gx = self.lattice_axis(wrapped.x);

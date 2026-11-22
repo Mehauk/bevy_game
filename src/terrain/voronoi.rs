@@ -25,6 +25,7 @@ pub struct BoundaryEdge {
     pub p1: Vec2,
     pub midpoint: Vec2,
     pub blend_width: f32,
+    #[allow(dead_code)]
     pub wraps: bool,
 }
 
@@ -268,10 +269,6 @@ pub struct VertexBlendCache {
 }
 
 impl VertexBlendCache {
-    pub fn len(&self) -> usize {
-        self.cell_ids.len()
-    }
-
     pub fn cell_at(&self, index: usize) -> Option<usize> {
         self.cell_ids.get(index).copied().flatten()
     }
@@ -1346,13 +1343,13 @@ mod tests {
         for topology in [WorldTopology::Finite, WorldTopology::FiniteTorus] {
             let layout = VoronoiLayout::generate(WorldSeed::new(71), config(topology, 6));
             let cache = layout.vertex_cache(24, 200.0, topology);
-            assert_eq!(cache.len(), 24 * 24);
+            assert_eq!(cache.cell_ids.len(), 24 * 24);
             let spacing = if topology.wraps() {
                 200.0 / 24.0
             } else {
                 200.0 / 23.0
             };
-            for index in 0..cache.len() {
+            for index in 0..cache.cell_ids.len() {
                 let point = Vec2::new(
                     -100.0 + (index % 24) as f32 * spacing,
                     -100.0 + (index / 24) as f32 * spacing,

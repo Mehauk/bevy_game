@@ -266,6 +266,7 @@ pub fn pick_spawn_height(map: &TerrainMap) -> f32 {
     best.map(|(_, height)| height).unwrap_or(origin)
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PropScatter {
     pub trees: Vec<Vec2>,
@@ -273,6 +274,7 @@ pub struct PropScatter {
     pub grass: Vec<Vec2>,
 }
 
+#[allow(dead_code)]
 pub fn scatter_props(map: &TerrainMap, centre: Vec2, extent: f32) -> PropScatter {
     let seed = map.seed().0.rotate_left(17)
         ^ map.generation()

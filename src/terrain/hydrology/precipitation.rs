@@ -27,11 +27,6 @@ pub struct PrecipitationInput<'a> {
     pub cell_precipitation: &'a [Precipitation],
     pub cell_rain_shadow: &'a [f32],
     pub wind: Vec2,
-    pub relief: f32,
-}
-
-pub fn generate_precipitation(field: &ScalarField, input: &PrecipitationInput) -> ScalarField {
-    generate_precipitation_blended(field, input, None)
 }
 
 pub fn generate_precipitation_blended(
@@ -124,9 +119,8 @@ mod tests {
             cell_precipitation: &cell_precip,
             cell_rain_shadow: &[0.0],
             wind: Vec2::X,
-            relief: 60.0,
         };
-        let rain = generate_precipitation(&field, &input);
+        let rain = generate_precipitation_blended(&field, &input, None);
         assert!(rain.values.iter().all(|v| *v > 0.0));
         assert!(rain.values.iter().all(|v| v.is_finite()));
     }
@@ -137,15 +131,15 @@ mod tests {
         let cells = vec![0usize; field.len()];
         let cell_precip = vec![Precipitation::Heavy; 1];
         let build = |shadow: f32| {
-            generate_precipitation(
+            generate_precipitation_blended(
                 &field,
                 &PrecipitationInput {
                     cell_of_vertex: &cells,
                     cell_precipitation: &cell_precip,
                     cell_rain_shadow: &[shadow],
                     wind: Vec2::X,
-                    relief: 60.0,
                 },
+                None,
             )
             .mean()
         };
@@ -191,9 +185,8 @@ mod tests {
             cell_precipitation: &cell_precipitation,
             cell_rain_shadow: &cell_rain_shadow,
             wind: Vec2::ZERO,
-            relief: 60.0,
         };
-        let hard = generate_precipitation(&field, &input);
+        let hard = generate_precipitation_blended(&field, &input, None);
         let blended = generate_precipitation_blended(&field, &input, Some(&cache));
 
         let max_step = |f: &ScalarField| -> f32 {

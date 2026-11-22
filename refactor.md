@@ -1249,3 +1249,103 @@ Deliberately left for later passes: `hydrology.rs` (3044 lines), `map.rs` (2949)
 `water.rs` (1605) and `noise.rs` (1507) are still monoliths; `smooth_once`/`smooth_once_masked`
 near-duplication; the partial-octave fbm loop duplicated four times in `noise.rs`; and the
 pre-existing dead-code warnings.
+
+## Pass 2 — modularity (post-implementation, on the settled tree)
+
+Baseline 533 passed / 1 flaky budget test; result **536 passed, 0 failed, 2 ignored** across 538
+`#[test]` attributes, with the golden checksums unchanged (`GOLDEN_FINITE 0x496B_ED77_DADE_79E1`,
+`GOLDEN_TORUS 0x1B5B_C536_BAEE_65E5`) — the splits moved code, not behaviour. Zero comment lines in
+the diff and zero in the new directories, checked separately because untracked directories are not
+part of `git diff` at all.
+
+The two monoliths were split along seams that already existed in the code rather than by size:
+
+- `hydrology.rs` (3044) → `hydrology/` — `flow.rs` 730 (D-infinity flow, `FlowField`, priority flood),
+  `droplet.rs` 514, `craters.rs` 447, `rivers.rs` 434, `waterfalls.rs` 296, `precipitation.rs` 247,
+  `lakes.rs` 213, `wind.rs` 196, `thermal.rs` 125, `geom.rs` 66, plus `test_support.rs` behind
+  `cfg(test)`. `mod.rs` is 30 lines of `mod` + `pub use`, so every `terrain::hydrology::*` path still
+  resolves from outside.
+- `map.rs` (2949) → `map/` — `stages.rs` 565 (the five feature stages), `mod.rs` 538 (`TerrainMap`
+  plus the thin delegating accessors), `cache.rs` 462 (`TerrainCache`, `CachedWorld`, `TerrainSource`,
+  `StaticHeightmap`), `query.rs` 214, `surface.rs` 168, `config.rs` 134, `tests.rs` 856 behind
+  `cfg(test)`. `map/mod.rs` also re-exports the erosion constants callers previously reached through
+  `map::`.
+
+Largest file in the crate is now `voronoi.rs` at 1959; nothing else exceeds 1883.
+
+Boundary audit after the session's additions: `utils/` imports no feature, `terrain/` imports no other
+feature, the only feature-internal imports are `menus` reaching its own submodules, and all
+cross-feature wiring sits in the seven `integration/` files. One pre-existing exception is left in
+place deliberately: `utils/registry/commands.rs` declares `CommandRegistryPlugin`, which breaks the
+"no plugins in `utils`" rule, but the same file holds the only `command!` call site outside a feature,
+and that macro derives the user-facing name from `module_path!()` at the call site — moving it silently
+renames a registered command. Flagged rather than fixed.
+
+Two suite-stability fixes came out of verifying the pass, not out of the split itself:
+
+- `bench.rs` — `violations_under(slack)` with `CONTENTION_SLACK = 2.0` for the three always-on budget
+  tests. `droplet_erosion` measures ~2.5 s idle and 6.1 s while the other 530 tests saturate the
+  machine, so the strict 6000 ms gate failed under a full `cargo test` and passed in isolation and
+  when the bench module ran alone. Strict `violations()` is unchanged and still backs the in-game
+  `bench` console command; `contention_slack_absorbs_a_loaded_test_harness` pins both behaviours.
+- A `shader_assets_register_with_the_asset_store` failure mid-pass looked like the split had dropped
+  `flow_envelope` from the water shader. It had not: the `.wesl` files had been edited outside the
+  pass and were then restored, and the assertion list was correct against HEAD all along. Check who
+  wrote a file before "fixing" a test that file breaks.
+
+## Pass 3 — dead code and duplication (post-implementation, on the settled tree)
+
+Result **540 passed, 0 failed, 2 ignored**, `cargo check --all-targets` clean for both the bin and the
+test target, golden checksums unchanged, 34156 lines against 34080 at pass start. The dead-code removal
+itself was −1182 lines; restoring three wrongly-deleted features (below) put 1258 back, so the net is +76.
+
+Duplication collapsed:
+
+- `noise.rs` — the partial-octave fBm loop existed four times (`fbm`, `billow_field`, `ridged_field`,
+  `cracks`) and is now one `octave_sum(budget, max_octaves, persistence, lacunarity, frequency, closure)`.
+  The `ridged` slope-weight carry survives because the helper returns `(signal, weight)`; the goldens prove
+  the arithmetic is bit-identical.
+- `gpu.rs::array_image` now uses `splat::mip_level_count` / `mip_size` instead of its own
+  `width.min(height).ilog2() + 1` and `(width >> mip).max(1)` copies, which also removes a latent
+  `ilog2(0)` panic on a zero-sized tile.
+- Superseded wrappers folded into the richer function they shadowed: `thermal_relax` →
+  `thermal_relax_repose`, `generate_precipitation` → `generate_precipitation_blended(…, None)`,
+  `shore_override` → `shore_override_with_hardness(…, 0.0)`, `is_frozen` →
+  `is_water_frozen(…, Freshwater, Geothermal::None)`, `fallback_array` → `fallback_array_image`,
+  `height_in_chunk` (a duplicate of `chunk::sample_chunk`), and the dead `PrecipitationInput.relief` field
+  removed through the three layers that carried it.
+
+Truly dead and now gone: `TerrainMap::height_span`, `MacroField::hotspots` (stored, never read),
+`WaterBody::center`, `roll_slope`, nine unused region mask constants, `smooth_once`, `ambient_colour_at`,
+`lake_planes`, `VertexBlendCache::len`, `seed::signed`, and the unused re-export blocks in `map/mod.rs`
+and `hydrology/mod.rs`. Sixty targeted `#[allow(dead_code)]` attributes mark API that is real but only
+exercised by tests — `TerrainMap::{compact, regenerate, reseed}`, `NoiseAlgorithm::{all, label, parse}`,
+`SplatMaps::{normal, orm, cell_data}`, `FloodZone::{classify, coverage}` and similar — with no crate-wide
+allow anywhere, plus two `#[allow(unused_imports)]` on `pub use` lines because a bin crate can never "use"
+its own public re-exports.
+
+**The pass over-deleted, and a green suite did not catch it.** `utils/scatter.rs`, `map/cache.rs` and the
+`TerrainSource::StaticAsset` path were removed as dead code, taking their tests with them, so the run still
+reported green at 521 passed while quietly invalidating three checked TODO-TERRAIN.md items: §582
+(variable-radius Poisson disc scatter), §417 (surface/scatter query API and static heightmap loading), and
+§14.3 line 497 (config validation plus optional disk caching). All three were restored — from the committed
+copies at `ed490c2`, which is byte-faithful — and the count returned to 540 with the 19 restored tests. The
+rule that was missing, and that should govern any future dead-code pass here: **a symbol that backs a checked
+TODO-TERRAIN.md item is not dead code even when no Rust code calls it at runtime**; grep the TODO files for
+the name before deleting, and treat a falling test count as a red flag rather than as expected cleanup.
+
+Deliberate non-changes, each a case where a shared helper would need more parameters than it saves:
+`fallback_array_image` vs `fallback_2d_image` (differ in array depth, format, view dimension, fill and
+sampler); the terrain/sky/water uniform builders (distinct struct fills, no shared sub-expression);
+`ParamRange::new` vs `region.rs`'s `const fn band/temp/hum/prec` (unifiable only if `index()` were `const`);
+`to_distance_fog` vs `to_distance_fog_at` (day-dependent). The `preview.rs` mip/row duplication named as a
+target does not exist in the tree.
+
+## Between passes — generated console-command docs
+
+`src/docgen/command_docs.rs` walks `CommandRegistry` at `Startup` and writes `docs/.compiled/commands.md`,
+grouping by the `>` namespace prefix the `command!` macro derives from `module_path!()`, so any new
+`command!` appears with no hand-maintained list. Four tests cover it, including one that registers through
+the macro itself to prove the chain. All 29 `command!` call sites sit inside their plugin's `build()`, and
+`DocgenPlugin` is added after every plugin that registers one, so the registry is populated before the
+system runs. Verified against a real launch, not only the unit tests.

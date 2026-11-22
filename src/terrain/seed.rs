@@ -7,6 +7,7 @@ pub const STAGE_BOUNDARY_BLEND: u64 = 4;
 pub const STAGE_BASE_GRADIENT: u64 = 5;
 pub const STAGE_NOISE: u64 = 6;
 pub const STAGE_CRATERS: u64 = 9;
+#[allow(dead_code)]
 pub const STAGE_WIND: u64 = 10;
 pub const STAGE_DROPLETS: u64 = 11;
 
@@ -28,6 +29,7 @@ impl WorldSeed {
         splitmix64(self.0 ^ splitmix64(stage.wrapping_mul(0x9e37_79b9_7f4a_7c15)))
     }
 
+    #[allow(dead_code)]
     pub fn derive(&self, stage: u64, index: u64) -> u64 {
         splitmix64(
             self.stage(stage)
@@ -48,10 +50,7 @@ impl WorldSeed {
         min + (max - min) * self.unit(stage, index, channel)
     }
 
-    pub fn signed(&self, stage: u64, index: u64, channel: u64) -> f32 {
-        self.unit(stage, index, channel) * 2.0 - 1.0
-    }
-
+    #[allow(dead_code)]
     pub fn index_of(&self, stage: u64, index: u64, channel: u64, len: usize) -> usize {
         if len == 0 {
             return 0;

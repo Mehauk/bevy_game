@@ -5,7 +5,7 @@ use super::flow::Hydrology;
 const MAX_RIVER_INCISION: f32 = 6.0;
 const RIVER_DEPOSIT_FRACTION: f32 = 0.35;
 
-pub fn river_cells(hydrology: &Hydrology, threshold: f32, ocean: &[bool]) -> Vec<bool> {
+pub(super) fn river_cells(hydrology: &Hydrology, threshold: f32, ocean: &[bool]) -> Vec<bool> {
     (0..hydrology.accumulation.len())
         .map(|index| {
             !ocean[index] && hydrology.accumulation.get_at(index) >= threshold
@@ -142,23 +142,6 @@ fn smooth_once_masked(field: &mut ScalarField, mask: &[bool]) {
             if !mask[index] {
                 continue;
             }
-            let mut sum = snapshot[index] * 2.0;
-            let mut weight = 2.0f32;
-            for neighbour in field.neighbours8(x, z) {
-                sum += snapshot[neighbour];
-                weight += 1.0;
-            }
-            field.set_at(index, sum / weight);
-        }
-    }
-}
-
-pub fn smooth_once(field: &mut ScalarField) {
-    let snapshot = field.values.clone();
-    let dim = field.dim;
-    for z in 0..dim {
-        for x in 0..dim {
-            let index = field.index(x, z);
             let mut sum = snapshot[index] * 2.0;
             let mut weight = 2.0f32;
             for neighbour in field.neighbours8(x, z) {

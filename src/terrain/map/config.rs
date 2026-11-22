@@ -75,16 +75,19 @@ impl Default for TerrainConfig {
 }
 
 impl TerrainConfig {
+    #[allow(dead_code)]
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = WorldSeed::new(seed);
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_topology(mut self, topology: WorldTopology) -> Self {
         self.topology = topology;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_shape(mut self, shape: WorldShape) -> Self {
         self.shape = shape;
         self

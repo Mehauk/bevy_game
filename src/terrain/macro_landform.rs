@@ -125,7 +125,6 @@ pub struct MacroField {
     pub prevailing_wind: Vec2,
     pub downslope: Vec<Vec2>,
     pub slope_magnitude: Vec<f32>,
-    pub hotspots: Vec<Hotspot>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -644,6 +643,7 @@ fn tectonic_elevation(
     shelf_curve(config.sea_level + metres, config.sea_level)
 }
 
+#[allow(dead_code)]
 pub fn macro_elevation_at(
     seed: WorldSeed,
     shape: WorldShape,
@@ -814,7 +814,6 @@ pub fn generate_macro_field(
         prevailing_wind,
         downslope,
         slope_magnitude,
-        hotspots,
     }
 }
 
@@ -926,6 +925,7 @@ pub fn cell_power_weights(
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn land_fraction(elevation: &[f32], sea_level: f32) -> f32 {
     if elevation.is_empty() {
         return 0.0;
@@ -1171,7 +1171,6 @@ mod tests {
             WorldShape::Continent,
             &cfg,
         );
-        assert!(!field.hotspots.is_empty());
         let strong = field
             .geothermal_intensity
             .iter()

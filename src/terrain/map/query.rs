@@ -8,7 +8,6 @@ use crate::terrain::region::{self, Region};
 use crate::terrain::seed::WorldSeed;
 use crate::terrain::topology::WorldTopology;
 use crate::terrain::voronoi::VoronoiLayout;
-use crate::terrain::water::WaterBody;
 
 use super::{TerrainCell, TerrainConfig, TerrainMap};
 
@@ -67,10 +66,6 @@ impl TerrainMap {
 
     pub fn lakes(&self) -> &[Lake] {
         &self.lakes
-    }
-
-    pub fn lake_planes(&self) -> &[WaterBody] {
-        &self.lake_planes
     }
 
     pub fn lake_salinity(&self) -> &[Salinity] {
@@ -149,6 +144,7 @@ impl TerrainMap {
         self.heights.gradient_world(Vec2::new(x, z)).length()
     }
 
+    #[allow(dead_code)]
     pub fn height_at_smooth(&self, x: f32, z: f32) -> f32 {
         self.heights.sample_catmull_rom(Vec2::new(x, z))
     }
@@ -157,6 +153,7 @@ impl TerrainMap {
         self.hardness.sample_world(Vec2::new(x, z)).clamp(0.0, 1.0)
     }
 
+    #[allow(dead_code)]
     pub fn hardness_field(&self) -> &ScalarField {
         &self.hardness
     }
@@ -165,10 +162,12 @@ impl TerrainMap {
         &self.flow
     }
 
+    #[allow(dead_code)]
     pub fn flow_direction_at(&self, x: f32, z: f32) -> Vec2 {
         self.flow.direction_at(Vec2::new(x, z))
     }
 
+    #[allow(dead_code)]
     pub fn flow_slope_at(&self, x: f32, z: f32) -> f32 {
         self.flow.slope_at(Vec2::new(x, z))
     }
@@ -193,22 +192,5 @@ impl TerrainMap {
             -self.config.size * 0.5 + chunk.y as f32 * chunk_size,
         );
         (low, low + Vec2::splat(chunk_size))
-    }
-
-    pub fn height_in_chunk(&self, chunk: IVec2, chunk_size: f32, steps: usize) -> Vec<(Vec2, f32)> {
-        let (low, high) = self.chunk_bounds(chunk, chunk_size);
-        let steps = steps.max(1);
-        let step = chunk_size / steps as f32;
-        let mut samples = Vec::with_capacity((steps + 1) * (steps + 1));
-        for iz in 0..=steps {
-            for ix in 0..=steps {
-                let point = Vec2::new(
-                    (low.x + ix as f32 * step).min(high.x),
-                    (low.y + iz as f32 * step).min(high.y),
-                );
-                samples.push((point, self.height_at(point.x, point.y)));
-            }
-        }
-        samples
     }
 }

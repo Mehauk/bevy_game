@@ -13,19 +13,15 @@ const HYD_FLOODED: u32 = bit(4);
 const HYD_WET: u32 = bit(2) | bit(3) | bit(4);
 const HYD_DRAINED: u32 = bit(0) | bit(1);
 const HYD_FLUVIAL: u32 = bit(3) | bit(4);
-const HYD_WET_FLUVIAL: u32 = bit(2) | bit(3) | bit(4);
 const HYD_NOT_DRY: u32 = bit(1) | bit(2) | bit(3) | bit(4);
-const HYD_DRY_WELL: u32 = bit(0) | bit(1);
 
 const SUB_ALL: u32 = bit(0) | bit(1) | bit(2) | bit(3) | bit(4);
 const SUB_SAND: u32 = bit(0);
 const SUB_SAND_SILT: u32 = bit(0) | bit(1);
 const SUB_SILT: u32 = bit(1);
-const SUB_SILT_LIMESTONE: u32 = bit(1) | bit(2);
 const SUB_LIMESTONE: u32 = bit(2);
 const SUB_ROCK: u32 = bit(3);
 const SUB_VOLCANIC: u32 = bit(4);
-const SUB_ANY_HARD: u32 = bit(2) | bit(3) | bit(4);
 const SUB_SAND_SILT_LIMESTONE: u32 = bit(0) | bit(1) | bit(2);
 
 const GEO_NONE: u32 = bit(0);
@@ -36,15 +32,10 @@ const SAL_FRESH: u32 = bit(0);
 const SAL_MARINE: u32 = bit(2);
 const SAL_MARINE_BRACKISH: u32 = bit(1) | bit(2);
 const SAL_ALL: u32 = bit(0) | bit(1) | bit(2) | bit(3);
-const SAL_CLOSED: u32 = bit(0) | bit(3);
-const SAL_FRESH_BRACKISH: u32 = bit(0) | bit(1);
 
 const SLOPE_ALL: u32 = bit(0) | bit(1) | bit(2) | bit(3) | bit(4);
 const SLOPE_FLAT_GENTLE: u32 = bit(0) | bit(1);
-const SLOPE_GENTLE_MODERATE: u32 = bit(1) | bit(2);
-const SLOPE_MODERATE_STEEP: u32 = bit(2) | bit(3);
 const SLOPE_STEEP_SHEER: u32 = bit(3) | bit(4);
-const SLOPE_NOT_SHEER: u32 = bit(0) | bit(1) | bit(2) | bit(3);
 const SLOPE_ROUGH: u32 = bit(2) | bit(3) | bit(4);
 
 const WIND_ALL: u32 = bit(0) | bit(1) | bit(2) | bit(3);
@@ -68,6 +59,7 @@ pub enum RegionTier {
 }
 
 impl RegionTier {
+    #[allow(dead_code)]
     pub fn all() -> [RegionTier; 5] {
         [
             RegionTier::Submerged,
@@ -1408,6 +1400,7 @@ impl Region {
             .unwrap_or(0)
     }
 
+    #[allow(dead_code)]
     pub fn from_index(index: usize) -> Region {
         REGION_TABLE[index % REGION_TABLE.len()].region
     }
@@ -1420,6 +1413,7 @@ impl Region {
         self.definition().sub_variants
     }
 
+    #[allow(dead_code)]
     pub fn rule(self) -> &'static RegionRule {
         &self.definition().rule
     }

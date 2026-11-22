@@ -13,12 +13,6 @@ pub fn repose_tan(substrate: Substrate) -> f32 {
     }
 }
 
-pub fn thermal_relax(heights: &mut ScalarField, max_slope: f32, iterations: usize) {
-    let mut repose = ScalarField::new(heights.dim, heights.size, heights.topology);
-    repose.fill(max_slope);
-    thermal_relax_repose(heights, &repose, iterations);
-}
-
 pub fn thermal_relax_repose(heights: &mut ScalarField, repose: &ScalarField, iterations: usize) {
     let spacing = heights.spacing().max(1e-3);
 
@@ -59,14 +53,18 @@ mod tests {
     fn thermal_relaxation_caps_steep_slopes() {
         let mut field = ScalarField::new(12, 120.0, WorldTopology::Finite);
         field.set(6, 6, 100.0);
+        let mut repose = ScalarField::new(12, 120.0, WorldTopology::Finite);
+        repose.fill(0.6);
         let before = field.max() - field.min();
-        thermal_relax(&mut field, 0.6, 40);
+        thermal_relax_repose(&mut field, &repose, 40);
         let after = field.max() - field.min();
         assert!(after < before, "a spike must relax: {before} -> {after}");
 
         let mut flat = ScalarField::new(8, 80.0, WorldTopology::Finite);
         flat.fill(5.0);
-        thermal_relax(&mut flat, 0.5, 10);
+        let mut flat_repose = ScalarField::new(8, 80.0, WorldTopology::Finite);
+        flat_repose.fill(0.5);
+        thermal_relax_repose(&mut flat, &flat_repose, 10);
         assert!((flat.max() - flat.min()).abs() < 1e-5, "flat ground must not move");
     }
 

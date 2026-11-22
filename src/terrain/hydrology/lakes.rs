@@ -9,6 +9,7 @@ pub struct Lake {
     pub cells: Vec<usize>,
     pub surface: f32,
     pub depth: f32,
+    #[allow(dead_code)]
     pub outlet: Option<usize>,
     pub drains_to_sea: bool,
 }

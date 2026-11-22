@@ -604,7 +604,7 @@ The best part is you already have the underlying hydrology data needed for this:
 
 ---
 
-- [ ] end by ensuring cargo run doesnt error out and there are not errores even when it doesnt
+- [x] end by ensuring cargo run doesnt error out and there are not errores even when it doesnt
 
 ---
 

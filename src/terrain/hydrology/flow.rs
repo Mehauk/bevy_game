@@ -41,6 +41,7 @@ impl Ord for HeightKey {
 
 pub struct Hydrology {
     pub filled: ScalarField,
+    #[allow(dead_code)]
     pub routed: ScalarField,
     pub downstream: Vec<Option<usize>>,
     pub secondary: Vec<Option<usize>>,

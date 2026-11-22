@@ -1010,3 +1010,13 @@ pub fn river_network_mesh(
   - Unwrap `lake.cells` coordinates relative to the first cell via `topology.delta_xz` on `FiniteTorus` before computing centroids or building meshes so seam-wrapping lakes don't span the entire map.
 - [ ] **Gate lake formation by catchment water budget (`hydrology.rs`, `map.rs`)**
   - Filter out dry/evaporating high-altitude dimples and noise micro-pits (require minimum catchment inflow / `accumulation` relative to lake surface area and aridity, or clamp lake level below the full spill rim in arid climates) instead of filling every geometric depression to the brim.
+
+---
+
+If you'd like to push visuals even further and want to share your Rust material definitions / mesh generation files (e.g., sky.rs, terrain.rs, water.rs, camera setup):
+
+- [ ] Depth Prepass & Screen-Space Water Refraction (DepthPrepass + ViewDepthTexture / ViewTransmissionTexture): Gives true depth-based shoreline feathering without relying on vertex-baked vdata.r, plus underwater refraction distortion.
+
+- [ ] Vertex Displacement for Water Waves: Adding a custom vertex shader (vertex_shader()) to WaterMaterial lets large ocean swells physically bob up and down in 3D instead of normal-only shading.
+
+- [ ] Animated Clouds & Wind-Blown Snow in SkySurface: Passing time: f32 (using existing padding or adding a field) lets the procedural cirrus clouds drift smoothly across the sky.

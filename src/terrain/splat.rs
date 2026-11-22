@@ -10,9 +10,7 @@ use image::{ImageBuffer, RgbaImage};
 
 use crate::terrain::chunk::clamped_chunk_bounds;
 use crate::terrain::map::TerrainMap;
-use crate::terrain::material::{
-    RegionMaterialProfile, SurfaceLayer, material_profile, tint_multiplier,
-};
+use crate::terrain::material::{SurfaceLayer, material_profile, tint_multiplier};
 use crate::terrain::region::Region;
 
 pub const SPLAT_RESOLUTION: usize = 64;
@@ -205,8 +203,11 @@ pub fn cliff_share(slope: f32) -> f32 {
 
 pub struct SplatMaps {
     pub albedo: RgbaImage,
+    #[allow(dead_code)]
     pub normal: RgbaImage,
+    #[allow(dead_code)]
     pub orm: RgbaImage,
+    #[allow(dead_code)]
     pub cell_data: RgbaImage,
 }
 
@@ -558,7 +559,11 @@ pub fn bake_control_chunk(
     }
 }
 
-fn mip_level_count(width: u32, height: u32) -> u32 {
+pub(crate) fn mip_size(size: u32, mip: u32) -> u32 {
+    (size >> mip).max(1)
+}
+
+pub(crate) fn mip_level_count(width: u32, height: u32) -> u32 {
     width.min(height).max(1).ilog2() + 1
 }
 
@@ -579,8 +584,8 @@ fn mip_chain(
         if mip + 1 < levels {
             let mut resized = image::imageops::resize(
                 &current,
-                (width >> (mip + 1)).max(1),
-                (height >> (mip + 1)).max(1),
+                mip_size(width, mip + 1),
+                mip_size(height, mip + 1),
                 filter,
             );
             if renormalize {
@@ -707,7 +712,7 @@ pub fn splat_material(handles: &SplatHandles) -> StandardMaterial {
 mod tests {
     use super::*;
     use crate::terrain::map::TerrainConfig;
-    use crate::terrain::material::DISK_ROOT;
+    use crate::terrain::material::{RegionMaterialProfile, DISK_ROOT};
     use crate::terrain::season::Season;
     use bevy::image::ImageFilterMode;
 

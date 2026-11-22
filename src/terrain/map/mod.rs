@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod cache;
 mod config;
 mod query;
@@ -7,20 +8,17 @@ mod surface;
 #[cfg(test)]
 mod tests;
 
+#[allow(unused_imports)]
 pub use cache::{
     CachedWaterfall, CachedWorld, HeightmapError, StaticHeightmap, TerrainCache, TerrainSource,
 };
 pub use config::{TerrainCell, TerrainConfig};
 pub use stages::{
-    BaseFeatureStage, EvolvingFeatureStage, NoiseFeatureStage, ParameterStage,
-    SeasonalFeatureStage, run_base_stage, run_evolving_stage, run_noise_stage,
+    EvolvingFeatureStage, ParameterStage, run_base_stage, run_evolving_stage, run_noise_stage,
     run_parameter_stage, run_seasonal_stage, run_seasonal_stage_with,
 };
+#[allow(unused_imports)]
 pub use surface::{SurfaceInfo, SurfaceWater};
-pub use crate::terrain::hydrology::{
-    DROPLET_REFERENCE_CELLS, EROSION_DEPOSIT_RADIUS_METRES, EROSION_ERODE_RADIUS_METRES,
-    EROSION_STEP_METRES, erosion_geometry, scaled_droplet_count,
-};
 
 use bevy::prelude::{Resource, Vec2};
 
@@ -114,6 +112,7 @@ impl TerrainMap {
         (layout, macro_field)
     }
 
+    #[allow(dead_code)]
     pub fn new_cached(config: TerrainConfig, cache: Option<&TerrainCache>) -> Self {
         let config = config.sanitized();
         let Some(cache) = cache else {
@@ -129,10 +128,12 @@ impl TerrainMap {
         map
     }
 
+    #[allow(dead_code)]
     pub fn compact() -> Self {
         Self::new(TerrainConfig::compact())
     }
 
+    #[allow(dead_code)]
     pub fn from_source(source: &TerrainSource) -> Result<Self, HeightmapError> {
         match source {
             TerrainSource::Generated(config) => Ok(Self::new(config.clone())),
@@ -140,6 +141,7 @@ impl TerrainMap {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_static_heightmap(asset: &StaticHeightmap) -> Result<Self, HeightmapError> {
         let heights = asset.load_field()?;
         let config = TerrainConfig {
@@ -152,7 +154,10 @@ impl TerrainMap {
         .sanitized();
         if config.subdivisions != heights.dim {
             return Err(HeightmapError::Unsupported {
-                detail: format!("a {}x{} grid cannot be used as a terrain grid", heights.dim, heights.dim),
+                detail: format!(
+                    "a {}x{} grid cannot be used as a terrain grid",
+                    heights.dim, heights.dim
+                ),
             });
         }
         let (layout, macro_field) = Self::stage_inputs(&config);
@@ -161,14 +166,8 @@ impl TerrainMap {
         let cell_of_vertex: Vec<usize> = (0..heights.len())
             .map(|index| cache.cell_at(index).unwrap_or(0))
             .collect();
-        let precipitation = precipitation_field(
-            &heights,
-            &cache,
-            &cell_of_vertex,
-            &macro_field,
-            &parameters,
-            config.relief,
-        );
+        let precipitation =
+            precipitation_field(&heights, &cache, &cell_of_vertex, &macro_field, &parameters);
         let cached = CachedWorld {
             dim: heights.dim as u32,
             size: config.size,
@@ -231,6 +230,7 @@ impl TerrainMap {
         map
     }
 
+    #[allow(dead_code)]
     fn from_cached(config: TerrainConfig, cached: &CachedWorld) -> Option<Self> {
         let dim = config.subdivisions;
         if cached.dim as usize != dim
@@ -430,15 +430,18 @@ impl TerrainMap {
         }
     }
 
+    #[allow(dead_code)]
     pub fn regenerate(&mut self) {
         let config = self.config.clone();
         *self = Self::new(config);
     }
 
+    #[allow(dead_code)]
     pub fn reseed(&mut self, seed: u64) {
         self.config.seed = WorldSeed::new(seed);
         self.regenerate();
     }
+
     fn rebuild_surface(&mut self) {
         let parameters = ParameterStage {
             cells: self.cells.clone(),
@@ -521,11 +524,6 @@ impl TerrainMap {
 
 fn map_base_parameters(cells: &[TerrainCell]) -> Vec<CellParameters> {
     cells.iter().map(|cell| cell.parameters).collect()
-}
-
-#[cfg(test)]
-pub fn height_span(field: &ScalarField) -> f32 {
-    field.max() - field.min()
 }
 
 #[cfg(test)]

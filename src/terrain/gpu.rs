@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::asset::RenderAssetUsages;
-use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
@@ -16,7 +16,7 @@ use crate::terrain::chunk::clamped_chunk_bounds;
 use crate::terrain::map::TerrainMap;
 use crate::terrain::material::{RegionMaterialProfile, SurfaceLayer};
 use crate::terrain::season::{self, Season, SeasonClock};
-use crate::terrain::splat::{self, ControlHandles, SurfaceTiles, TileSlot};
+use crate::terrain::splat::{self, ControlHandles, SurfaceTiles, TileSlot, mip_level_count, mip_size};
 use crate::terrain::water::{WaterKind, FOAM_DEPTH};
 
 pub const TERRAIN_SHADER_PATH: &str = "shaders/terrain_material.wesl";
@@ -259,11 +259,11 @@ fn layer_stack(tiles: &SurfaceTiles, slot: TileSlot) -> Vec<RgbaImage> {
 pub fn array_image(layers: &[RgbaImage], format: TextureFormat) -> Image {
     let width = layers[0].width();
     let height = layers[0].height();
-    let levels = width.min(height).ilog2() + 1;
+    let levels = mip_level_count(width, height);
     let mut texel_bytes: Vec<u8> = Vec::new();
     for mip in 0..levels {
-        let mip_width = (width >> mip).max(1);
-        let mip_height = (height >> mip).max(1);
+        let mip_width = mip_size(width, mip);
+        let mip_height = mip_size(height, mip);
         for layer in layers {
             let resized;
             let texels = if mip == 0 {
@@ -339,23 +339,6 @@ pub fn fallback_2d_image() -> Image {
     });
     image.data = Some(vec![0, 0, 0, 255]);
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::nearest());
-    image
-}
-
-fn fallback_array() -> Image {
-    let layers = SurfaceLayer::ALL.len();
-    let mut image = Image::new_uninit(
-        Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: layers as u32,
-        },
-        TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    );
-    image.data = Some(vec![128; layers * 4]);
-    image.sampler = ImageSampler::Descriptor(tile_sampler_descriptor());
     image
 }
 
@@ -602,6 +585,7 @@ mod tests {
     use crate::terrain::map::TerrainConfig;
     use crate::terrain::material::DISK_ROOT;
     use crate::terrain::region::Region;
+    use bevy::image::ImageFilterMode;
     use bevy::asset::{AssetApp, AssetPlugin};
     use bevy::pbr::PbrPlugin;
     use bevy::shader::{Shader, ShaderLoader};
@@ -1139,7 +1123,7 @@ mod tests {
         let mut app = image_app();
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
         let arrays = TileArrays {
-            fallback: images.add(fallback_array()),
+            fallback: images.add(fallback_array_image()),
             ..default()
         };
         let profile = crate::terrain::material::material_profile(Region::TemperateGrassland);

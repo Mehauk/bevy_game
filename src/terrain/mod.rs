@@ -27,7 +27,7 @@ mod setup;
 pub mod sky;
 pub mod splat;
 pub mod stream;
-mod surfaces;
+pub mod surfaces;
 pub mod topology;
 pub mod voronoi;
 pub mod water;

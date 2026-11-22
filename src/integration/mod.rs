@@ -9,6 +9,7 @@ mod agent_bridge;
 mod bridges;
 mod menu_wiring;
 mod state_pause;
+mod world_shot;
 mod world_wrap;
 
 #[cfg(test)]
@@ -42,6 +43,7 @@ impl Plugin for IntegrationPlugin {
         agent_bridge::register(app);
         bridges::register(app);
         state_pause::register(app);
+        world_shot::register(app);
         world_wrap::register(app);
     }
 }

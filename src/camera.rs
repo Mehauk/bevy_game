@@ -8,7 +8,7 @@ use bevy_enhanced_input::prelude::*;
 
 use crate::{
     input::InputAppExt,
-    utils::registry::commands::{CommandAppExt, command},
+    utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
 };
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,6 +65,16 @@ impl Plugin for CameraPlugin {
         );
 
         command!(app, "toggle between first and third person view", toggle_view_mode);
+        command!(
+            app,
+            "Angle the camera: <yaw_deg> <pitch_deg> [distance] (negative pitch looks down)",
+            angle_camera
+        );
+        command!(
+            app,
+            "Show the camera view mode, angles, distance and position",
+            camera_info
+        );
     }
 }
 
@@ -130,11 +140,25 @@ const PITCH_LIMIT: f32 = 1.35;
 const ZOOM_EPSILON: f32 = 0.01;
 const CAMERA_CLIP_MARGIN: f32 = 0.05;
 const MIN_CAMERA_CLIP: f32 = 0.4;
+const MAX_COMMAND_PITCH: f32 = 1.54;
+const MAX_COMMAND_DISTANCE: f32 = 500.0;
 
 impl CameraRig {
     pub fn apply_look(&mut self, delta: Vec2) {
         self.yaw -= delta.x * self.sensitivity;
         self.pitch = (self.pitch - delta.y * self.sensitivity).clamp(-PITCH_LIMIT, PITCH_LIMIT);
+    }
+
+    pub fn set_angles_deg(&mut self, yaw_deg: f32, pitch_deg: f32) {
+        self.yaw = yaw_deg.to_radians();
+        self.pitch = pitch_deg
+            .to_radians()
+            .clamp(-MAX_COMMAND_PITCH, MAX_COMMAND_PITCH);
+    }
+
+    pub fn set_distance(&mut self, distance: f32) {
+        self.distance = distance.clamp(MIN_THIRD_PERSON_DIST, MAX_COMMAND_DISTANCE);
+        self.view_mode = ViewMode::ThirdPerson;
     }
 
     pub fn apply_zoom(&mut self, scroll_y: f32) {
@@ -181,10 +205,50 @@ fn camera_hotkey() -> ActionSettings {
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn((
+        Name::new("MainCamera"),
         MainCamera,
         Camera3d::default(),
         CameraRig::default(),
         Transform::default(),
+    ));
+}
+
+fn angle_camera(
+    args: Res<CommandArgs>,
+    mut output: ResMut<CommandOutput>,
+    rig: Single<&mut CameraRig>,
+) {
+    let (Some(yaw_deg), Some(pitch_deg)) = (args.get_f32(0), args.get_f32(1)) else {
+        output.set("Usage: angle_camera <yaw_deg> <pitch_deg> [distance]");
+        return;
+    };
+    let mut rig = rig.into_inner();
+    rig.set_angles_deg(yaw_deg, pitch_deg);
+    if let Some(distance) = args.get_f32(2) {
+        rig.set_distance(distance);
+    }
+    output.set(format!(
+        "Camera yaw: {:.1}°, pitch: {:.1}°, distance: {:.1}",
+        rig.yaw.to_degrees(),
+        rig.pitch.to_degrees(),
+        rig.distance
+    ));
+}
+
+fn camera_info(rig: Single<(&CameraRig, &Transform)>, mut output: ResMut<CommandOutput>) {
+    let (rig, transform) = rig.into_inner();
+    let mode = match rig.view_mode {
+        ViewMode::FirstPerson => "first-person",
+        ViewMode::ThirdPerson => "third-person",
+    };
+    output.set(format!(
+        "view: {mode}, yaw: {:.1}°, pitch: {:.1}°, distance: {:.1}, position: ({:.1}, {:.1}, {:.1})",
+        rig.yaw.to_degrees(),
+        rig.pitch.to_degrees(),
+        rig.distance,
+        transform.translation.x,
+        transform.translation.y,
+        transform.translation.z
     ));
 }
 
@@ -393,6 +457,42 @@ mod tests {
         rig.apply_zoom(-1.0);
         assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
         assert!(rig.distance > MIN_THIRD_PERSON_DIST);
+    }
+
+    #[test]
+    fn command_angles_convert_degrees_and_clamp_pitch() {
+        let mut rig = CameraRig::default();
+        rig.set_angles_deg(90.0, -45.0);
+        assert!((rig.yaw - 90f32.to_radians()).abs() < 1e-6);
+        assert!((rig.pitch - (-45f32).to_radians()).abs() < 1e-6);
+
+        rig.set_angles_deg(0.0, -90.0);
+        assert!(
+            (rig.pitch + MAX_COMMAND_PITCH).abs() < 1e-6,
+            "pitch clamps short of vertical to avoid gimbal lock"
+        );
+        rig.set_angles_deg(0.0, 90.0);
+        assert!((rig.pitch - MAX_COMMAND_PITCH).abs() < 1e-6);
+    }
+
+    #[test]
+    fn command_yaw_stays_unbounded() {
+        let mut rig = CameraRig::default();
+        rig.set_angles_deg(720.0, 0.0);
+        assert!((rig.yaw - 720f32.to_radians()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn command_distance_clamps_and_forces_third_person() {
+        let mut rig = rig_at(6.0, ViewMode::FirstPerson);
+        rig.set_distance(50.0);
+        assert_eq!(rig.distance, 50.0);
+        assert_eq!(rig.view_mode, ViewMode::ThirdPerson);
+
+        rig.set_distance(0.0);
+        assert_eq!(rig.distance, MIN_THIRD_PERSON_DIST);
+        rig.set_distance(10_000.0);
+        assert_eq!(rig.distance, MAX_COMMAND_DISTANCE);
     }
 
     #[test]

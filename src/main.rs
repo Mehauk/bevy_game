@@ -6,6 +6,7 @@ mod input;
 mod integration;
 mod menus;
 mod profiler;
+mod screenshot;
 mod state;
 mod terrain;
 mod utils;
@@ -27,6 +28,7 @@ use input::InputPlugin;
 use integration::IntegrationPlugin;
 use menus::MenuPlugin;
 use profiler::ProfilerPlugin;
+use screenshot::ScreenshotPlugin;
 use state::StatePlugin;
 use terrain::TerrainPlugin;
 use utils::registry::commands::CommandRegistryPlugin;
@@ -53,6 +55,7 @@ fn main() {
             CameraPlugin,
             CharacterPlugin,
             TerrainPlugin,
+            ScreenshotPlugin,
             DocgenPlugin,
             IntegrationPlugin,
         ))

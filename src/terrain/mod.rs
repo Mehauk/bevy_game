@@ -37,21 +37,25 @@ fn setup_terrain(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.spawn((
-        Name::new("Terrain"),
-        RigidBody::Static,
-        Collider::half_space(Vec3::Y),
-        Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
-        Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
-        Transform::default(),
-        Mesh3d(meshes.add(Mesh::from(
-            Plane3d::default().mesh().size(GROUND_EXTENT, GROUND_EXTENT),
-        ))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgb(0.28, 0.42, 0.20),
-            perceptual_roughness: 0.92,
-            reflectance: 0.15,
-            ..default()
-        })),
-    ));
+    commands
+        .spawn((
+            Name::new("Terrain"),
+            RigidBody::Static,
+            Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
+            Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
+            Transform::default(),
+            Mesh3d(meshes.add(Mesh::from(
+                Plane3d::default().mesh().size(GROUND_EXTENT, GROUND_EXTENT),
+            ))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.28, 0.42, 0.20),
+                perceptual_roughness: 0.92,
+                reflectance: 0.15,
+                ..default()
+            })),
+        ))
+        .with_child((
+            Transform::from_xyz(0.0, -0.5, 0.0),
+            Collider::cuboid(GROUND_EXTENT, 1.0, GROUND_EXTENT),
+        ));
 }

@@ -1,11 +1,14 @@
+use std::fmt;
+
 use avian3d::prelude::*;
 use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
     input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
-    utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
     utils::SpawnGroundHeight,
+    utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
+    utils::registry::debug_info::{DebugInfoAppExt, debug_info},
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
@@ -57,6 +60,9 @@ impl Plugin for CharacterPlugin {
             "Increase character speed: <walk_add> [sprint_add] (e.g. 'increase_speed 2 4')",
             increase_character_speed
         );
+
+        debug_info!(app, "Movement State", debug_movement_state);
+        debug_info!(app, "Movement Speed", debug_movement_speed);
     }
 }
 
@@ -118,6 +124,67 @@ pub struct GroundState {
     pub ground_distance: f32,
     pub jump_cooldown_timer: f32,
     pub jump_held_last_frame: bool,
+}
+
+#[derive(Component, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MovementState {
+    #[default]
+    Standing,
+    Walking,
+    Running,
+    Falling,
+    Jumping,
+}
+
+impl fmt::Display for MovementState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            MovementState::Standing => "standing",
+            MovementState::Walking => "walking",
+            MovementState::Running => "running",
+            MovementState::Falling => "falling",
+            MovementState::Jumping => "jumping",
+        };
+        write!(f, "{name}")
+    }
+}
+
+const MOVEMENT_SPEED_EPSILON: f32 = 0.05;
+
+fn horizontal_speed(velocity: Vec3) -> f32 {
+    Vec2::new(velocity.x, velocity.z).length()
+}
+
+fn classify_movement_state(
+    is_grounded: bool,
+    horiz_speed: f32,
+    velocity_y: f32,
+    sprinting: bool,
+) -> MovementState {
+    if !is_grounded {
+        if velocity_y > 0.0 {
+            MovementState::Jumping
+        } else {
+            MovementState::Falling
+        }
+    } else if horiz_speed <= MOVEMENT_SPEED_EPSILON {
+        MovementState::Standing
+    } else if sprinting {
+        MovementState::Running
+    } else {
+        MovementState::Walking
+    }
+}
+
+fn debug_movement_state(states: Query<&MovementState, With<Character>>) -> Option<String> {
+    states.iter().next().map(|state| state.to_string())
+}
+
+fn debug_movement_speed(velocities: Query<&LinearVelocity, With<Character>>) -> Option<String> {
+    velocities
+        .iter()
+        .next()
+        .map(|velocity| format!("{:.2} m/s", horizontal_speed(velocity.0)))
 }
 
 #[derive(Component)]
@@ -291,6 +358,7 @@ fn setup_character(world: &mut World) {
             LinearVelocity::default(),
             GravityScale(Character::default().base_gravity),
             GroundState::default(),
+            MovementState::default(),
             TransformInterpolation,
             ShapeCaster::new(
                 Collider::sphere(GROUND_PROBE_RADIUS),
@@ -372,9 +440,11 @@ fn character_physics_move(
         &mut GroundState,
         &mut LinearVelocity,
         &mut GravityScale,
+        &mut MovementState,
     )>,
 ) {
-    let (character, mut ground, mut velocity, mut gravity_scale) = character_query.into_inner();
+    let (character, mut ground, mut velocity, mut gravity_scale, mut movement_state) =
+        character_query.into_inner();
     let dt = time.delta_secs();
 
     let move_vec = ***move_action;
@@ -428,6 +498,13 @@ fn character_physics_move(
     }
 
     ground.jump_held_last_frame = jumping;
+
+    *movement_state = classify_movement_state(
+        ground.is_grounded,
+        horizontal_speed(velocity.0),
+        velocity.y,
+        sprinting,
+    );
 }
 
 fn character_rotate_body(
@@ -486,13 +563,16 @@ fn respawn_character(
         &mut LinearVelocity,
         &mut GroundState,
         &mut GravityScale,
+        &mut MovementState,
         &Character,
     )>,
 ) {
-    let (mut transform, mut velocity, mut ground, mut gravity, character) = query.into_inner();
+    let (mut transform, mut velocity, mut ground, mut gravity, mut movement_state, character) =
+        query.into_inner();
     transform.translation = spawn_translation(ground_height.0);
     velocity.0 = Vec3::ZERO;
     *ground = GroundState::default();
+    *movement_state = MovementState::default();
     gravity.0 = character.base_gravity;
 }
 
@@ -637,6 +717,43 @@ mod tests {
         assert!(slope_tangent_y(1.0, 0.0, Vec3::Y).abs() < 1e-9, "flat ground has no vertical term");
         let v = slope_tangent_y(1.0, 0.0, SLOPE_45);
         assert!((v + 1.0).abs() < 1e-4, "moving +X up a 45deg slope should give -1, got {v}");
+    }
+
+    #[test]
+    fn horizontal_speed_ignores_vertical_motion() {
+        assert!((horizontal_speed(Vec3::new(3.0, -40.0, 4.0)) - 5.0).abs() < 1e-6);
+        assert_eq!(horizontal_speed(Vec3::new(0.0, 9.0, 0.0)), 0.0);
+    }
+
+    #[test]
+    fn airborne_rises_fall_by_vertical_velocity() {
+        assert_eq!(classify_movement_state(false, 0.0, 1.0, false), MovementState::Jumping);
+        assert_eq!(classify_movement_state(false, 8.0, 0.1, true), MovementState::Jumping);
+        assert_eq!(classify_movement_state(false, 8.0, -0.1, false), MovementState::Falling);
+        assert_eq!(classify_movement_state(false, 0.0, 0.0, false), MovementState::Falling);
+    }
+
+    #[test]
+    fn grounded_walk_down_a_slope_is_not_falling() {
+        assert_eq!(classify_movement_state(true, 6.0, -2.0, false), MovementState::Walking);
+    }
+
+    #[test]
+    fn grounded_speed_and_sprint_split_the_states() {
+        assert_eq!(classify_movement_state(true, 0.0, 0.0, false), MovementState::Standing);
+        assert_eq!(
+            classify_movement_state(true, MOVEMENT_SPEED_EPSILON, 0.0, true),
+            MovementState::Standing,
+            "at the epsilon it still counts as standing"
+        );
+        assert_eq!(classify_movement_state(true, 6.0, 0.0, false), MovementState::Walking);
+        assert_eq!(classify_movement_state(true, 12.0, 0.0, true), MovementState::Running);
+    }
+
+    #[test]
+    fn movement_state_displays_lowercase() {
+        assert_eq!(MovementState::Jumping.to_string(), "jumping");
+        assert_eq!(MovementState::default(), MovementState::Standing);
     }
 
     #[test]

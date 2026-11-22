@@ -7,8 +7,8 @@ use crate::terrain::noise::{NoiseShape, shape_for};
 use crate::terrain::topology::WorldTopology;
 
     const GOLDEN_SEED: u64 = 20_261_120;
-    const GOLDEN_FINITE: u64 = 0x496B_ED77_DADE_79E1;
-    const GOLDEN_TORUS: u64 = 0x1B5B_C536_BAEE_65E5;
+    const GOLDEN_FINITE: u64 = 0xE959_AF3C_D192_EFD8;
+    const GOLDEN_TORUS: u64 = 0xD844_B48F_D14B_F1E4;
 
     struct Stages {
         parameters: ParameterStage,

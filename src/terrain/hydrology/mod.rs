@@ -18,7 +18,7 @@ pub use droplet::{
     scaled_droplet_count,
 };
 pub use flow::{FlowField, Hydrology, bake_flow_vectors, flow_accumulation, priority_flood};
-pub use lakes::{Lake, find_lakes};
+pub use lakes::{Lake, find_lakes, validate_lake_surfaces};
 pub use precipitation::{PrecipitationInput, generate_precipitation_blended};
 pub use rivers::{carve_rivers, river_paths};
 pub use thermal::{repose_tan, thermal_relax_repose};

@@ -961,7 +961,7 @@ pub fn river_network_mesh(
 }
 ```
 
-- [ ] complete the above
+- [x] complete the above
 
 ---
 
@@ -985,38 +985,38 @@ pub fn river_network_mesh(
 
 ## Water-to-Terrain Gap & Seam Fixes
 
-- [ ] **Seal lake & sea shoreline perimeters under dry banks (`water.rs`)**
+- [x] **Seal lake & sea shoreline perimeters under dry banks (`water.rs`)**
   - When building basin-clipped lake or sea chunk meshes, include every grid quad with **at least 1 submerged corner** (extending the water mesh 1 cell ring under the dry bank at `surface_y`, or clipping boundary quads at the `height == surface_y` contour) so no 1-cell shoreline gap ever appears around shores or islands.
   - Ensure `CHUNK_MESH_STEPS` matches `ScalarField` spacing so terrain triangles and water quads never disagree on shoreline elevation.
-- [ ] **Anchor river ribbon edges into terrain banks (`water.rs::river_ribbon_mesh`)**
+- [x] **Anchor river ribbon edges into terrain banks (`water.rs::river_ribbon_mesh`)**
   - Replace the 2-vertex flat cross-section with a **4-vertex channel cross-section**: flat/crowned water surface across the stream center (`max(ground_at_center, water_level) + RIBBON_LIFT`), plus outer bank-skirt vertices tucked `~0.25m` below `map.height_at(edge.x, edge.z)` so edges never float on sloped hillsides.
   - Subdivide smoothed `river_paths` finely enough (sampling `map.height_at` per step) that river chords never cut underneath convex crests or bridge above concave valley floors.
-- [ ] **Bridge river mouths, lakes, waterfalls & seasonal sea levels seamlessly (`hydrology.rs`, `water.rs`, `map.rs`)**
+- [x] **Bridge river mouths, lakes, waterfalls & seasonal sea levels seamlessly (`hydrology.rs`, `water.rs`, `map.rs`)**
   - Extend `river_paths` 1–2 steps past the shoreline/lake boundary (`height <= sea_levels.min()` for sea mouths, or inside `lake.cells` for lake inlets) so river mouths remain submerged into the ocean even at `Winter` low tide (`-1.6m`).
   - Clamp river station elevation to `max(ground + lift, target_lake_surface, current_sea_level)` near inlets/mouths so rivers meet lakes and oceans flush without diving into the bed or stopping mid-air.
   - Match `cascade_mesh` lip/plunge positions, elevation offsets, and width directly to the upstream/downstream `river_ribbon_mesh` stations so waterfalls connect continuously without lip/plunge gaps.
-- [ ] **Recompute/validate `lake.surface` after final heightfield passes (`map.rs`, `hydrology.rs`)**
+- [x] **Recompute/validate `lake.surface` after final heightfield passes (`map.rs`, `hydrology.rs`)**
   - Re-run or update `find_lakes` / `lake.surface` after `carve_plunge_pools` and `coastal_erosion` settle final `heights` (and after `river_paths` split across `FiniteTorus` seams) so lake surfaces never detach from altered rims.
 
 ---
 
 ## Fix Floating Lake Meshes
 
-- [ ] **Group lakes strictly by equal `filled` water level in `find_lakes` (`hydrology.rs`)**
+- [x] **Group lakes strictly by equal `filled` water level in `find_lakes` (`hydrology.rs`)**
   - In `find_lakes`'s BFS, only merge `neighbour` into the current lake if `(hydrology.filled.get_at(neighbour) - level).abs() <= DEPRESSION_EPSILON` so upper perched basins never merge with lower valley basins and pull their `surface` up into the sky.
   - Set each lake's `surface` from its own shared `filled` level (verified `<=` all surrounding non-lake rim vertices) rather than `max()` across disparate basins.
-- [ ] **Replace square `lake_planes` & fix torus centroid wrapping (`water.rs`)**
+- [x] **Replace square `lake_planes` & fix torus centroid wrapping (`water.rs`)**
   - Replace the bounding-square quad (`water_surface_mesh(body.radius)`) with the basin-clipped grid mesh tucked 1 cell under the shoreline bank (Section 19), so lake geometry never overhangs off hillsides or ridges.
   - Unwrap `lake.cells` coordinates relative to the first cell via `topology.delta_xz` on `FiniteTorus` before computing centroids or building meshes so seam-wrapping lakes don't span the entire map.
-- [ ] **Gate lake formation by catchment water budget (`hydrology.rs`, `map.rs`)**
+- [x] **Gate lake formation by catchment water budget (`hydrology.rs`, `map.rs`)**
   - Filter out dry/evaporating high-altitude dimples and noise micro-pits (require minimum catchment inflow / `accumulation` relative to lake surface area and aridity, or clamp lake level below the full spill rim in arid climates) instead of filling every geometric depression to the brim.
 
 ---
 
 If you'd like to push visuals even further and want to share your Rust material definitions / mesh generation files (e.g., sky.rs, terrain.rs, water.rs, camera setup):
 
-- [ ] Depth Prepass & Screen-Space Water Refraction (DepthPrepass + ViewDepthTexture / ViewTransmissionTexture): Gives true depth-based shoreline feathering without relying on vertex-baked vdata.r, plus underwater refraction distortion.
+- [~] SKIP Depth Prepass & Screen-Space Water Refraction (DepthPrepass + ViewDepthTexture / ViewTransmissionTexture): Gives true depth-based shoreline feathering without relying on vertex-baked vdata.r, plus underwater refraction distortion.
 
-- [ ] Vertex Displacement for Water Waves: Adding a custom vertex shader (vertex_shader()) to WaterMaterial lets large ocean swells physically bob up and down in 3D instead of normal-only shading.
+- [~] SKIP Vertex Displacement for Water Waves: Adding a custom vertex shader (vertex_shader()) to WaterMaterial lets large ocean swells physically bob up and down in 3D instead of normal-only shading.
 
-- [ ] Animated Clouds & Wind-Blown Snow in SkySurface: Passing time: f32 (using existing padding or adding a field) lets the procedural cirrus clouds drift smoothly across the sky.
+- [~] SKIP Animated Clouds & Wind-Blown Snow in SkySurface: Passing time: f32 (using existing padding or adding a field) lets the procedural cirrus clouds drift smoothly across the sky.

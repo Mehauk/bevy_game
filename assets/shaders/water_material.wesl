@@ -182,7 +182,12 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     let ripple_phase = depth * RIPPLE_FREQ - water.time * 2.2;
     let ripple_grad = vec2<f32>(dpdx(ripple_phase), dpdy(ripple_phase));
     if (running) {
-        depth = 0.0;
+        if (water.kind == KIND_RIVER && water.use_vertex_data == 1u) {
+            depth = max(vdata.z, 0.0);
+            frozen = clamp(max(vdata.w, water.frozen_blend), 0.0, 1.0);
+        } else {
+            depth = 0.0;
+        }
         grad = running_gradient(world_pos.xz, flow, vertex_output.uv.x, min(slope, 3.0));
     } else {
         frozen = clamp(max(vdata.g, water.frozen_blend), 0.0, 1.0);

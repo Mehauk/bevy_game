@@ -55,6 +55,9 @@ fn drains_through_saddle(hydrology: &Hydrology, saddle: usize, sea_level: f32) -
     false
 }
 
+const MIN_LAKE_CELLS: usize = 6;
+const MIN_LAKE_DEPTH: f32 = 0.05;
+
 pub fn find_lakes(
     heights: &ScalarField,
     hydrology: &Hydrology,
@@ -64,11 +67,19 @@ pub fn find_lakes(
     let count = heights.len();
     let mut assigned = vec![false; count];
     let mut lakes: Vec<Lake> = Vec::new();
+    let budget_active = hydrology
+        .accumulation
+        .values
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max)
+        > 0.0;
 
     for start in 0..count {
         if assigned[start] || ocean[start] || !hydrology.depressions[start] {
             continue;
         }
+        let level = hydrology.filled.get_at(start);
         let mut cells = Vec::new();
         let mut queue = VecDeque::new();
         queue.push_back(start);
@@ -78,25 +89,42 @@ pub fn find_lakes(
             cells.push(index);
             let (x, z) = heights.coords(index);
             for neighbour in heights.neighbours8(x, z) {
-                if !assigned[neighbour] && !ocean[neighbour] && hydrology.depressions[neighbour] {
+                if !assigned[neighbour]
+                    && !ocean[neighbour]
+                    && hydrology.depressions[neighbour]
+                    && (hydrology.filled.get_at(neighbour) - level).abs() <= DEPRESSION_EPSILON
+                {
                     assigned[neighbour] = true;
                     queue.push_back(neighbour);
                 }
             }
         }
 
-        let surface = cells
-            .iter()
-            .map(|&c| hydrology.filled.get_at(c))
-            .fold(f32::NEG_INFINITY, f32::max);
+        let surface = level;
         let depth = cells
             .iter()
-            .map(|&c| hydrology.filled.get_at(c) - heights.get_at(c))
+            .map(|&c| level - heights.get_at(c))
             .fold(0.0f32, f32::max);
         let outlet = spill_saddle(heights, hydrology, &cells, &assigned);
         let drains_to_sea = outlet
             .map(|saddle| drains_through_saddle(hydrology, saddle, sea_level))
             .unwrap_or(false);
+        let pour_catchment = outlet.map_or_else(
+            || {
+                cells
+                    .iter()
+                    .map(|&c| hydrology.accumulation.get_at(c))
+                    .fold(0.0f32, f32::max)
+            },
+            |saddle| hydrology.accumulation.get_at(saddle),
+        );
+
+        let holds_water = cells.len() >= MIN_LAKE_CELLS
+            && depth > MIN_LAKE_DEPTH
+            && (!budget_active || pour_catchment > 0.0);
+        if !holds_water {
+            continue;
+        }
 
         lakes.push(Lake {
             cells,
@@ -109,6 +137,35 @@ pub fn find_lakes(
 
     lakes.sort_by(|a, b| b.cells.len().cmp(&a.cells.len()));
     lakes
+}
+
+pub fn validate_lake_surfaces(heights: &ScalarField, lakes: &mut [Lake]) {
+    let count = heights.len();
+    let mut owner = vec![usize::MAX; count];
+    for (id, lake) in lakes.iter().enumerate() {
+        for &cell in &lake.cells {
+            owner[cell] = id;
+        }
+    }
+    for lake in lakes.iter_mut() {
+        let mut rim = f32::INFINITY;
+        for &cell in &lake.cells {
+            let (x, z) = heights.coords(cell);
+            for neighbour in heights.neighbours8(x, z) {
+                if owner[neighbour] == usize::MAX {
+                    rim = rim.min(heights.get_at(neighbour));
+                }
+            }
+        }
+        if rim.is_finite() && rim < lake.surface {
+            lake.surface = rim;
+            lake.depth = lake
+                .cells
+                .iter()
+                .map(|&c| (rim - heights.get_at(c)).max(0.0))
+                .fold(0.0f32, f32::max);
+        }
+    }
 }
 
 #[cfg(test)]

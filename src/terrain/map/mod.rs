@@ -224,6 +224,7 @@ impl TerrainMap {
             season_clock: SeasonClock::default(),
             flow: evolving.flow,
         };
+        hydrology::validate_lake_surfaces(&map.heights, &mut map.lakes);
         let clock = map.season_clock.clone();
         map.apply_seasonal_parameters(&clock);
         map.refresh_water();

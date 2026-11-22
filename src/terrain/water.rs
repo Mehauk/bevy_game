@@ -21,9 +21,6 @@ const WATER_UV_TILE_METRES: f32 = 8.0;
 const RIVER_FLOW_SPEED_GAIN: f32 = 0.05;
 const RIVER_FLOW_SPEED_MIN: f32 = 0.3;
 const RIVER_FLOW_SPEED_MAX: f32 = 2.5;
-const RIVER_HALF_WIDTH_BASE_SPACING: f32 = 0.35;
-const RIVER_HALF_WIDTH_ACCUMULATION_GAIN: f32 = 0.05;
-const RIVER_HALF_WIDTH_MAX_SPACING: f32 = 3.0;
 const RIVER_BANK_SKIRT_SPACING: f32 = 0.3;
 const BANK_U_EXTENT: f32 = 0.15;
 const RIVER_UV_V_TILE_SPACING: f32 = 2.0;
@@ -324,21 +321,23 @@ pub fn lake_planes(
         .enumerate()
         .filter(|(_, lake)| lake.cells.len() >= minimum_area && lake.depth > MIN_VISIBLE_LAKE_DEPTH)
         .map(|(index, lake)| {
+            let anchor = heights.world_of(
+                heights.coords(lake.cells[0]).0,
+                heights.coords(lake.cells[0]).1,
+            );
+            let unwrapped = |cell: usize| -> Vec2 {
+                let raw = heights.world_of(heights.coords(cell).0, heights.coords(cell).1);
+                anchor + heights.topology.delta_xz(anchor, raw, heights.size)
+            };
             let mut centre = Vec2::ZERO;
             for &cell in &lake.cells {
-                centre += heights.world_of(heights.coords(cell).0, heights.coords(cell).1);
+                centre += unwrapped(cell);
             }
             centre /= lake.cells.len().max(1) as f32;
             let radius = lake
                 .cells
                 .iter()
-                .map(|&cell| {
-                    let (x, z) = heights.coords(cell);
-                    heights
-                        .world_of(x, z)
-                        .distance(centre)
-                        .max(heights.spacing())
-                })
+                .map(|&cell| unwrapped(cell).distance(centre).max(heights.spacing()))
                 .fold(0.0f32, f32::max);
             WaterBody {
                 radius,
@@ -468,7 +467,7 @@ pub fn sea_chunk_mesh(
                 (ix, iz + 1),
                 (ix + 1, iz + 1),
             ];
-            if !corners.iter().all(|&(cx, cz)| wet[cz * stride + cx]) {
+            if !corners.iter().any(|&(cx, cz)| wet[cz * stride + cx]) {
                 continue;
             }
             if frozen_only && !corners.iter().all(|&(cx, cz)| {
@@ -589,144 +588,840 @@ pub fn lake_basin_mesh(lake: &Lake, heights: &ScalarField, frozen: bool) -> Opti
     Some((anchor, mesh))
 }
 
-pub fn river_half_width(accumulation: f32, spacing: f32) -> f32 {
-    spacing
-        * (RIVER_HALF_WIDTH_BASE_SPACING
-            + RIVER_HALF_WIDTH_ACCUMULATION_GAIN * accumulation.max(0.0).sqrt())
-            .clamp(
-                RIVER_HALF_WIDTH_BASE_SPACING,
-                RIVER_HALF_WIDTH_MAX_SPACING,
-            )
+const RIVER_RUNOFF_SCALE: f32 = 0.02;
+const RIVER_VELOCITY_COEFF: f32 = 1.8;
+const RIVER_MIN_VELOCITY: f32 = 0.35;
+const RIVER_MAX_VELOCITY: f32 = 4.5;
+const RIVER_MIN_WIDTH_SPACING: f32 = 0.25;
+const RIVER_MAX_WIDTH_SPACING: f32 = 4.5;
+const RIVER_PROFILE_STEPS: usize = 24;
+const RIVER_SPLINE_SUBDIV: usize = 4;
+const RIVER_OVERFLOW_SPREAD: f32 = 1.6;
+const RIVER_MAX_SHEET_DEPTH: f32 = 0.45;
+const RIVER_SOLVER_STEPS: usize = 12;
+
+fn seasonal_runoff_scale(season: Season) -> f32 {
+    match season {
+        Season::Spring => 1.35,
+        Season::Summer => 0.85,
+        Season::Fall => 1.05,
+        Season::Winter => 0.70,
+    }
 }
 
-pub const SLOPE_SPEED_GAIN: f32 = 1.5;
-pub const FLOW_SPEED_MAX: f32 = 4.0;
+fn unwrap_path(path: &[usize], heights: &ScalarField) -> Vec<Vec2> {
+    let mut points = Vec::with_capacity(path.len());
+    if path.is_empty() {
+        return points;
+    }
+    let first = heights.world_of(heights.coords(path[0]).0, heights.coords(path[0]).1);
+    points.push(first);
+    let mut cursor = first;
+    for pair in path.windows(2) {
+        let a = heights.world_of(heights.coords(pair[0]).0, heights.coords(pair[0]).1);
+        let b = heights.world_of(heights.coords(pair[1]).0, heights.coords(pair[1]).1);
+        cursor += heights.topology.delta_xz(a, b, heights.size);
+        if cursor.distance_squared(*points.last().unwrap()) > 1e-6 {
+            points.push(cursor);
+        }
+    }
+    points
+}
 
-fn chaikin(points: &[Vec2]) -> Vec<Vec2> {
-    if points.len() < 3 {
-        return points.to_vec();
+fn centripetal_segment(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, t_norm: f32) -> (Vec2, Vec2) {
+    let chord = |a: Vec2, b: Vec2| a.distance(b).sqrt().max(1e-4);
+    let t0 = 0.0f32;
+    let t1 = t0 + chord(p0, p1);
+    let t2 = t1 + chord(p1, p2);
+    let t3 = t2 + chord(p2, p3);
+    let t = t1 + (t2 - t1) * t_norm.clamp(0.0, 1.0);
+
+    let lerp_pt = |a: Vec2, b: Vec2, ta: f32, tb: f32| -> (Vec2, Vec2) {
+        let span = (tb - ta).max(1e-5);
+        let u = (t - ta) / span;
+        (a + (b - a) * u, (b - a) / span)
+    };
+
+    let (a1, da1) = lerp_pt(p0, p1, t0, t1);
+    let (a2, da2) = lerp_pt(p1, p2, t1, t2);
+    let (a3, da3) = lerp_pt(p2, p3, t2, t3);
+
+    let (b1, db1) = {
+        let span = (t2 - t0).max(1e-5);
+        let u = (t - t0) / span;
+        (
+            a1 + (a2 - a1) * u,
+            da1 * (1.0 - u) + da2 * u + (a2 - a1) / span,
+        )
+    };
+    let (b2, db2) = {
+        let span = (t3 - t1).max(1e-5);
+        let u = (t - t1) / span;
+        (
+            a2 + (a3 - a2) * u,
+            da2 * (1.0 - u) + da3 * u + (a3 - a2) / span,
+        )
+    };
+
+    let span = (t2 - t1).max(1e-5);
+    let u = (t - t1) / span;
+    let pos = b1 + (b2 - b1) * u;
+    let tan = (db1 * (1.0 - u) + db2 * u + (b2 - b1) / span).normalize_or_zero();
+    (pos, tan)
+}
+
+fn sample_centripetal_spline(
+    control: &[Vec2],
+    subdiv: usize,
+    start_hint: Option<Vec2>,
+    end_hint: Option<Vec2>,
+) -> Vec<(Vec2, Vec2)> {
+    if control.len() < 2 {
+        return Vec::new();
     }
-    let mut out = vec![points[0]];
-    for pair in points.windows(2) {
-        out.push(pair[0] * 0.75 + pair[1] * 0.25);
-        out.push(pair[0] * 0.25 + pair[1] * 0.75);
-    }
-    if let Some(last) = points.last() {
-        out.push(*last);
+    let subdiv = subdiv.max(1);
+    let mut out = Vec::with_capacity((control.len() - 1) * subdiv + 1);
+    for i in 0..control.len() - 1 {
+        let p1 = control[i];
+        let p2 = control[i + 1];
+        let p0 = if i > 0 {
+            control[i - 1]
+        } else {
+            start_hint.unwrap_or(p1 * 2.0 - p2)
+        };
+        let p3 = if i + 2 < control.len() {
+            control[i + 2]
+        } else {
+            end_hint.unwrap_or(p2 * 2.0 - p1)
+        };
+        let count = if i + 2 == control.len() {
+            subdiv + 1
+        } else {
+            subdiv
+        };
+        for s in 0..count {
+            let t = s as f32 / subdiv as f32;
+            let (pos, tan) = centripetal_segment(p0, p1, p2, p3, t);
+            let tan = if tan.length_squared() > 1e-8 {
+                tan
+            } else {
+                (p2 - p1).normalize_or_zero()
+            };
+            out.push((pos, tan));
+        }
     }
     out
 }
 
-pub fn river_ribbon_mesh(
-    path: &[usize],
+#[derive(Clone, Debug)]
+struct RiverStation {
+    pos: Vec2,
+    tan: Vec2,
+    side: Vec2,
+    surface_y: f32,
+    left_w: f32,
+    right_w: f32,
+    bed_y: f32,
+    velocity: Vec2,
+    frozen: bool,
+    travelled: f32,
+}
+
+fn channel_cross_section(
+    heights: &ScalarField,
+    center: Vec2,
+    side: Vec2,
+    max_half: f32,
+) -> ([f32; RIVER_PROFILE_STEPS * 2 + 1], f32, f32, f32, f32) {
+    let mut profile = [0.0f32; RIVER_PROFILE_STEPS * 2 + 1];
+    let step = max_half / RIVER_PROFILE_STEPS as f32;
+    for k in 0..profile.len() {
+        let offset = (k as isize - RIVER_PROFILE_STEPS as isize) as f32 * step;
+        profile[k] = heights.sample_catmull_rom(center + side * offset);
+    }
+    let bed_y = profile[RIVER_PROFILE_STEPS - 1..=RIVER_PROFILE_STEPS + 1]
+        .iter()
+        .copied()
+        .fold(f32::INFINITY, f32::min);
+    let mut left_rim = bed_y;
+    for k in (0..RIVER_PROFILE_STEPS).rev() {
+        left_rim = left_rim.max(profile[k]);
+    }
+    let mut right_rim = bed_y;
+    for k in (RIVER_PROFILE_STEPS + 1)..profile.len() {
+        right_rim = right_rim.max(profile[k]);
+    }
+    (profile, step, bed_y, left_rim, right_rim)
+}
+
+fn wetted_area_and_widths(
+    profile: &[f32; RIVER_PROFILE_STEPS * 2 + 1],
+    step: f32,
+    surface_y: f32,
+    min_half: f32,
+) -> (f32, f32, f32) {
+    let mut area = 0.0f32;
+    let mut left_w = min_half;
+    for k in (0..RIVER_PROFILE_STEPS).rev() {
+        let d0 = surface_y - profile[k + 1];
+        let d1 = surface_y - profile[k];
+        if d0 <= 0.0 && d1 <= 0.0 {
+            break;
+        }
+        let dist = (RIVER_PROFILE_STEPS - k) as f32 * step;
+        if d1 >= 0.0 {
+            area += (d0.max(0.0) + d1) * 0.5 * step;
+            left_w = left_w.max(dist);
+        } else {
+            let frac = (d0 / (d0 - d1).max(1e-5)).clamp(0.0, 1.0);
+            area += d0 * 0.5 * step * frac;
+            left_w = left_w.max(((RIVER_PROFILE_STEPS - k - 1) as f32 + frac) * step);
+            break;
+        }
+    }
+    let mut right_w = min_half;
+    for k in (RIVER_PROFILE_STEPS + 1)..profile.len() {
+        let d0 = surface_y - profile[k - 1];
+        let d1 = surface_y - profile[k];
+        if d0 <= 0.0 && d1 <= 0.0 {
+            break;
+        }
+        let dist = (k - RIVER_PROFILE_STEPS) as f32 * step;
+        if d1 >= 0.0 {
+            area += (d0.max(0.0) + d1) * 0.5 * step;
+            right_w = right_w.max(dist);
+        } else {
+            let frac = (d0 / (d0 - d1).max(1e-5)).clamp(0.0, 1.0);
+            area += d0 * 0.5 * step * frac;
+            right_w = right_w.max(((k - RIVER_PROFILE_STEPS - 1) as f32 + frac) * step);
+            break;
+        }
+    }
+    (area, left_w, right_w)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_station_volume(
+    pos: Vec2,
+    tan: Vec2,
     heights: &ScalarField,
     accumulation: &ScalarField,
     flow: &FlowField,
-) -> Option<(Vec2, Mesh)> {
-    if path.len() < 2 {
+    frozen_mask: &[bool],
+    season: Season,
+    travelled: f32,
+) -> RiverStation {
+    let spacing = heights.spacing();
+    let min_half = spacing * RIVER_MIN_WIDTH_SPACING;
+    let max_half = spacing * RIVER_MAX_WIDTH_SPACING;
+    let side = if tan.length_squared() > 1e-8 {
+        Vec2::new(-tan.y, tan.x).normalize()
+    } else {
+        Vec2::Y
+    };
+
+    let accum = accumulation.sample_world(pos).max(0.0);
+    let discharge = accum * spacing * spacing * RIVER_RUNOFF_SCALE * seasonal_runoff_scale(season);
+    let slope = flow.slope_at(pos).max(0.01);
+    let speed = (RIVER_VELOCITY_COEFF * slope.sqrt()).clamp(RIVER_MIN_VELOCITY, RIVER_MAX_VELOCITY);
+    let water_volume = (discharge / speed).max(0.05);
+
+    let baked = flow.direction_at(pos);
+    let flow_dir = if baked.length_squared() > 1e-6 {
+        baked.normalize()
+    } else {
+        tan
+    };
+    let velocity = flow_dir * speed;
+
+    let (gx, gz) = heights.grid_of(pos);
+    let frozen = frozen_mask
+        .get(heights.index(gx, gz))
+        .copied()
+        .unwrap_or(false);
+
+    let (profile, step, bed_y, left_rim, right_rim) = channel_cross_section(heights, pos, side, max_half);
+    let channel_rim = left_rim.min(right_rim);
+    let min_surface = bed_y + RIBBON_LIFT;
+
+    let (surface_y, mut left_w, mut right_w) = if channel_rim > min_surface {
+        let (channel_volume, rim_lw, rim_rw) = wetted_area_and_widths(&profile, step, channel_rim, min_half);
+        if water_volume <= channel_volume {
+            let mut lo = min_surface;
+            let mut hi = channel_rim;
+            for _ in 0..RIVER_SOLVER_STEPS {
+                let mid = 0.5 * (lo + hi);
+                let (area, _, _) = wetted_area_and_widths(&profile, step, mid, min_half);
+                if area < water_volume {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let y = 0.5 * (lo + hi);
+            let (_, lw, rw) = wetted_area_and_widths(&profile, step, y, min_half);
+            (y, lw, rw)
+        } else {
+            let excess = water_volume - channel_volume;
+            let spread = (excess * RIVER_OVERFLOW_SPREAD).sqrt() * 0.5;
+            let sheet = (excess / ((rim_lw + rim_rw + 2.0 * spread).max(1e-3))).min(RIVER_MAX_SHEET_DEPTH);
+            (
+                channel_rim + sheet,
+                (rim_lw + spread).clamp(min_half, max_half),
+                (rim_rw + spread).clamp(min_half, max_half),
+            )
+        }
+    } else {
+        let sheet = (water_volume.sqrt() * 0.25).clamp(RIBBON_LIFT, RIVER_MAX_SHEET_DEPTH);
+        let half = (water_volume / (2.0 * sheet)).clamp(min_half, max_half);
+        (bed_y + sheet, half, half)
+    };
+
+    left_w = left_w.clamp(min_half, max_half);
+    right_w = right_w.clamp(min_half, max_half);
+
+    RiverStation {
+        pos,
+        tan,
+        side,
+        surface_y,
+        left_w,
+        right_w,
+        bed_y,
+        velocity,
+        frozen,
+        travelled,
+    }
+}
+
+fn smooth_stations(stations: &mut [RiverStation], outlet_y: Option<f32>) {
+    if stations.len() < 3 {
+        return;
+    }
+    let snapshot_w: Vec<(f32, f32, f32)> = stations
+        .iter()
+        .map(|s| (s.surface_y, s.left_w, s.right_w))
+        .collect();
+    for i in 1..stations.len() - 1 {
+        stations[i].surface_y =
+            snapshot_w[i - 1].0 * 0.25 + snapshot_w[i].0 * 0.5 + snapshot_w[i + 1].0 * 0.25;
+        stations[i].left_w =
+            snapshot_w[i - 1].1 * 0.25 + snapshot_w[i].1 * 0.5 + snapshot_w[i + 1].1 * 0.25;
+        stations[i].right_w =
+            snapshot_w[i - 1].2 * 0.25 + snapshot_w[i].2 * 0.5 + snapshot_w[i + 1].2 * 0.25;
+    }
+    if let Some(target_y) = outlet_y {
+        if let Some(last) = stations.last_mut() {
+            last.surface_y = last.surface_y.min(target_y);
+        }
+    }
+    for i in 1..stations.len() {
+        let min_y = stations[i].bed_y + RIBBON_LIFT;
+        stations[i].surface_y = stations[i].surface_y.min(stations[i - 1].surface_y).max(min_y);
+    }
+}
+
+struct Reach {
+    stations: Vec<RiverStation>,
+    parent: Option<(usize, usize)>,
+}
+
+#[derive(Clone)]
+struct BankSplit {
+    station_idx: usize,
+    left_side: bool,
+    u_center: f32,
+    u_a: f32,
+    u_b: f32,
+    pos_a: Vec2,
+    pos_center: Vec2,
+    pos_b: Vec2,
+    y_a: f32,
+    y_center: f32,
+    y_b: f32,
+    skirt_a: Vec2,
+    skirt_b: Vec2,
+    vel: Vec2,
+    depth_center: f32,
+    frozen: bool,
+    travelled: f32,
+}
+
+fn bank_point(station: &RiverStation, left: bool) -> Vec2 {
+    if left {
+        station.pos - station.side * station.left_w
+    } else {
+        station.pos + station.side * station.right_w
+    }
+}
+
+fn skirt_point(station: &RiverStation, left: bool, skirt_dist: f32, heights: &ScalarField) -> Vec3 {
+    let dir = if left { -station.side } else { station.side };
+    let w = if left { station.left_w } else { station.right_w };
+    let xz = station.pos + dir * (w + skirt_dist);
+    let y = (heights.sample_world(xz) - BANK_TUCK).min(station.surface_y - BANK_TUCK);
+    Vec3::new(xz.x, y, xz.y)
+}
+
+fn bank_vertex_y(station: &RiverStation, bank_xz: Vec2, heights: &ScalarField) -> f32 {
+    let local_ground = heights.sample_world(bank_xz);
+    station.surface_y.min(local_ground + RIBBON_LIFT)
+}
+
+fn seg_intersect(a0: Vec2, a1: Vec2, b0: Vec2, b1: Vec2) -> Option<(f32, f32, Vec2)> {
+    let da = a1 - a0;
+    let db = b1 - b0;
+    let denom = da.x * db.y - da.y * db.x;
+    if denom.abs() < 1e-6 {
         return None;
     }
-    let raw: Vec<Vec2> = path
-        .iter()
-        .map(|&cell| heights.world_of(heights.coords(cell).0, heights.coords(cell).1))
-        .collect();
-    let anchor = raw[0];
-    let mut local = vec![Vec2::ZERO];
-    let mut cursor = Vec2::ZERO;
-    for pair in raw.windows(2) {
-        cursor += heights.topology.delta_xz(pair[0], pair[1], heights.size);
-        local.push(cursor);
+    let diff = b0 - a0;
+    let ua = (diff.x * db.y - diff.y * db.x) / denom;
+    let ub = (diff.x * da.y - diff.y * da.x) / denom;
+    if (-0.05..=1.05).contains(&ua) && (-0.05..=1.05).contains(&ub) {
+        Some((ua.clamp(0.0, 1.0), ub.clamp(0.0, 1.0), a0 + da * ua.clamp(0.0, 1.0)))
+    } else {
+        None
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn river_network_mesh(
+    paths: &[Vec<usize>],
+    heights: &ScalarField,
+    accumulation: &ScalarField,
+    flow: &FlowField,
+    lakes: &[Lake],
+    ocean: &[bool],
+    frozen_mask: &[bool],
+    sea_level: f32,
+    season: Season,
+) -> Option<Mesh> {
+    if paths.is_empty() {
+        return None;
     }
 
-    let smoothed = chaikin(&chaikin(&local));
-    let mut centre: Vec<Vec2> = Vec::with_capacity(smoothed.len());
-    for point in smoothed {
-        if centre
-            .last()
-            .is_some_and(|last| last.distance_squared(point) < 1e-6)
-        {
+    let mut ordered: Vec<(f32, usize)> = paths
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.len() >= 2)
+        .map(|(i, p)| {
+            let end_acc = p.last().map(|&v| accumulation.get_at(v)).unwrap_or(0.0);
+            (end_acc, i)
+        })
+        .collect();
+    if ordered.is_empty() {
+        return None;
+    }
+    ordered.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+
+    let mut owner_of_vertex: std::collections::HashMap<usize, (usize, usize)> =
+        std::collections::HashMap::new();
+    let mut reaches: Vec<Reach> = Vec::with_capacity(ordered.len());
+    let spacing = heights.spacing();
+    let uv_v_scale = (spacing * RIVER_UV_V_TILE_SPACING).max(1e-3);
+
+    for (_, path_idx) in ordered {
+        let path = &paths[path_idx];
+        let unwrapped = unwrap_path(path, heights);
+        if unwrapped.len() < 2 {
             continue;
         }
-        centre.push(point);
+        let end_vertex = *path.last().unwrap();
+        let parent = owner_of_vertex.get(&end_vertex).copied();
+        let outlet_y = if ocean.get(end_vertex).copied().unwrap_or(false) {
+            Some(sea_level)
+        } else {
+            lakes
+                .iter()
+                .find(|l| l.cells.contains(&end_vertex))
+                .map(|l| l.surface)
+        };
+
+        let samples = sample_centripetal_spline(&unwrapped, RIVER_SPLINE_SUBDIV, None, None);
+        if samples.len() < 2 {
+            continue;
+        }
+
+        let mut stations = Vec::with_capacity(samples.len());
+        let mut travelled = 0.0f32;
+        for (idx, &(pos, tan)) in samples.iter().enumerate() {
+            if idx > 0 {
+                travelled += pos.distance(samples[idx - 1].0);
+            }
+            stations.push(solve_station_volume(
+                pos,
+                tan,
+                heights,
+                accumulation,
+                flow,
+                frozen_mask,
+                season,
+                travelled,
+            ));
+        }
+        smooth_stations(&mut stations, outlet_y);
+
+        let reach_id = reaches.len();
+        for (step_idx, &vertex) in path.iter().enumerate() {
+            let station_idx = (step_idx * RIVER_SPLINE_SUBDIV).min(stations.len() - 1);
+            owner_of_vertex.entry(vertex).or_insert((reach_id, station_idx));
+        }
+        reaches.push(Reach { stations, parent });
     }
-    if centre.len() < 2 {
+
+    if reaches.is_empty() {
         return None;
     }
 
-    let spacing = heights.spacing();
-    let skirt = spacing * RIVER_BANK_SKIRT_SPACING;
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut uvs = Vec::new();
-    let mut colors: Vec<[f32; 4]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
-    let mut travelled = 0.0f32;
-    let mut previous: Option<Vec2> = None;
+    let skirt_dist = spacing * RIVER_BANK_SKIRT_SPACING;
+    let mut splits_by_reach: Vec<Vec<BankSplit>> = vec![Vec::new(); reaches.len()];
+    let mut trimmed_end: Vec<Option<(usize, BankSplit)>> = vec![None; reaches.len()];
 
-    for index in 0..centre.len() {
-        let point = centre[index];
-        let world = anchor + point;
-        let ground = heights.sample_world(world);
-        let accum = accumulation.sample_world(world);
-        let half = river_half_width(accum, spacing);
-
-        let before = centre
-            .get(index.saturating_sub(1))
-            .copied()
-            .unwrap_or(point);
-        let after = centre.get(index + 1).copied().unwrap_or(point);
-        let tangent = after - before;
-        let side = Vec2::new(-tangent.y, tangent.x).normalize_or_zero();
-        let side = if side.length_squared() < 1e-9 {
-            Vec2::Y
-        } else {
-            side
+    for reach_id in 0..reaches.len() {
+        let Some((parent_id, approx_p_idx)) = reaches[reach_id].parent else {
+            continue;
         };
-        let baked = flow.direction_at(world);
-        let tangent_dir = tangent.normalize_or_zero();
-        let direction = if baked.length_squared() > 1e-6 {
-            baked.normalize_or_zero()
-        } else {
-            tangent_dir
-        };
-        let slope = flow.slope_at(world).max(0.0);
-        let base_speed = (accum.max(0.0).sqrt() * RIVER_FLOW_SPEED_GAIN)
-            .clamp(RIVER_FLOW_SPEED_MIN, RIVER_FLOW_SPEED_MAX);
-        let flow_speed = (base_speed * (1.0 + slope * SLOPE_SPEED_GAIN))
-            .clamp(RIVER_FLOW_SPEED_MIN, FLOW_SPEED_MAX);
-        let velocity = direction * flow_speed;
-
-        if let Some(before) = previous {
-            travelled += point.distance(before);
+        let parent_len = reaches[parent_id].stations.len();
+        if parent_len < 2 {
+            continue;
         }
-        previous = Some(point);
-
-        let surface_y = ground + RIBBON_LIFT;
-        let v = travelled / (spacing * RIVER_UV_V_TILE_SPACING).max(1e-3);
-        let cross = [
-            (point - side * (half + skirt), 0.0, false),
-            (point - side * half, BANK_U_EXTENT, true),
-            (point + side * half, 1.0 - BANK_U_EXTENT, true),
-            (point + side * (half + skirt), 1.0, false),
-        ];
-        for (offset, u, crown) in cross {
-            let y = if crown {
-                surface_y
-            } else {
-                heights.sample_world(anchor + offset) - BANK_TUCK
-            };
-            positions.push([offset.x, y, offset.y]);
-            normals.push([0.0, 1.0, 0.0]);
-            uvs.push([u, v]);
-            colors.push([velocity.x, velocity.y, flow_speed, 1.0]);
-        }
-        if index > 0 {
-            let a = (index as u32 - 1) * 4;
-            let b = index as u32 * 4;
-            for k in 0..3u32 {
-                indices.extend_from_slice(&[a + k, a + k + 1, b + k, b + k, a + k + 1, b + k + 1]);
+        let approx_p_idx = approx_p_idx.min(parent_len - 1);
+        let parent_anchor = reaches[parent_id].stations[approx_p_idx].pos;
+        let child_end = reaches[reach_id].stations.last().unwrap().pos;
+        let shift = heights
+            .topology
+            .delta_xz(child_end, parent_anchor, heights.size)
+            - (parent_anchor - child_end);
+        if shift.length_squared() > 1e-4 {
+            for s in &mut reaches[reach_id].stations {
+                s.pos += shift;
             }
         }
+
+        let p_station = &reaches[parent_id].stations[approx_p_idx];
+        let c_last = reaches[reach_id].stations.last().unwrap();
+        let entry_offset = c_last.pos - p_station.pos;
+        let left_side = if entry_offset.length_squared() > 1e-4 {
+            entry_offset.dot(-p_station.side) >= 0.0
+        } else {
+            c_last.tan.dot(p_station.side) > 0.0
+        };
+
+        let p_start = approx_p_idx.saturating_sub(RIVER_SPLINE_SUBDIV * 2);
+        let p_end = (approx_p_idx + RIVER_SPLINE_SUBDIV * 2).min(parent_len - 1);
+        let child_len = reaches[reach_id].stations.len();
+        let c_start = child_len.saturating_sub(RIVER_SPLINE_SUBDIV * 3);
+
+        let mut hit: Option<(usize, usize, f32, Vec2)> = None;
+        'search: for ci in (c_start..child_len.saturating_sub(1)).rev() {
+            let ca = reaches[reach_id].stations[ci].pos;
+            let cb = reaches[reach_id].stations[ci + 1].pos;
+            for pi in p_start..p_end {
+                let pa = bank_point(&reaches[parent_id].stations[pi], left_side);
+                let pb = bank_point(&reaches[parent_id].stations[pi + 1], left_side);
+                if let Some((up, _, pt)) = seg_intersect(pa, pb, ca, cb) {
+                    hit = Some((ci, pi, up, pt));
+                    break 'search;
+                }
+            }
+        }
+
+        let (cut_ci, pi, u_center, hit_pt) = hit.unwrap_or((
+            child_len.saturating_sub(2).max(1),
+            approx_p_idx.min(parent_len.saturating_sub(2)),
+            0.5,
+            bank_point(
+                &reaches[parent_id].stations[approx_p_idx.min(parent_len - 1)],
+                left_side,
+            ),
+        ));
+        let pi = pi.min(parent_len.saturating_sub(2));
+
+        let pa_station = &reaches[parent_id].stations[pi];
+        let pb_station = &reaches[parent_id].stations[pi + 1];
+        let bank_a = bank_point(pa_station, left_side);
+        let bank_b = bank_point(pb_station, left_side);
+        let seg_len = bank_a.distance(bank_b).max(1e-3);
+
+        let cut_ci = cut_ci.min(child_len - 1);
+        let mouth_half = ((reaches[reach_id].stations[cut_ci].left_w
+            + reaches[reach_id].stations[cut_ci].right_w)
+            * 0.5)
+            .min(seg_len * 0.45);
+        let du = mouth_half / seg_len;
+        let u_a = (u_center - du).clamp(0.02, 0.96);
+        let u_b = (u_center + du).clamp((u_a + 0.02).min(0.98), 0.98);
+        let pos_a = bank_a.lerp(bank_b, u_a);
+        let pos_center = bank_a.lerp(bank_b, u_center);
+        let pos_b = bank_a.lerp(bank_b, u_b);
+
+        let parent_y = pa_station.surface_y + (pb_station.surface_y - pa_station.surface_y) * u_center;
+        let y_a = pa_station.surface_y + (pb_station.surface_y - pa_station.surface_y) * u_a;
+        let y_b = pa_station.surface_y + (pb_station.surface_y - pa_station.surface_y) * u_b;
+
+        let skirt_dir = if left_side { -pa_station.side } else { pa_station.side };
+        let skirt_a = pos_a + skirt_dir * skirt_dist;
+        let skirt_b = pos_b + skirt_dir * skirt_dist;
+
+        let mut split = BankSplit {
+            station_idx: pi,
+            left_side,
+            u_center,
+            u_a,
+            u_b,
+            pos_a,
+            pos_center: hit_pt.lerp(pos_center, 0.5),
+            pos_b,
+            y_a,
+            y_center: parent_y,
+            y_b,
+            skirt_a,
+            skirt_b,
+            vel: reaches[reach_id].stations[cut_ci].velocity,
+            depth_center: (parent_y - heights.sample_world(pos_center)).max(0.05),
+            frozen: reaches[reach_id].stations[cut_ci].frozen,
+            travelled: reaches[reach_id].stations[cut_ci].travelled,
+        };
+        if split.u_a > split.u_b {
+            std::mem::swap(&mut split.u_a, &mut split.u_b);
+        }
+
+        splits_by_reach[parent_id].push(split.clone());
+        trimmed_end[reach_id] = Some((cut_ci, split));
+    }
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut colors: Vec<[f32; 4]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    for (reach_id, reach) in reaches.iter().enumerate() {
+        let end_count = trimmed_end[reach_id]
+            .as_ref()
+            .map(|(cut, _)| (*cut + 1).max(1))
+            .unwrap_or(reach.stations.len());
+        let stations = &reach.stations[..end_count.min(reach.stations.len())];
+        if stations.is_empty() {
+            continue;
+        }
+
+        let push_station = |positions: &mut Vec<[f32; 3]>,
+                            normals: &mut Vec<[f32; 3]>,
+                            uvs: &mut Vec<[f32; 2]>,
+                            colors: &mut Vec<[f32; 4]>,
+                            s: &RiverStation,
+                            shift: Vec2|
+         -> u32 {
+            let base = positions.len() as u32;
+            let shifted = RiverStation {
+                pos: s.pos + shift,
+                ..*s
+            };
+            let lb_xz = bank_point(&shifted, true);
+            let rb_xz = bank_point(&shifted, false);
+            let ls = skirt_point(&shifted, true, skirt_dist, heights);
+            let rs = skirt_point(&shifted, false, skirt_dist, heights);
+            let lb_y = bank_vertex_y(&shifted, lb_xz, heights);
+            let rb_y = bank_vertex_y(&shifted, rb_xz, heights);
+            let c_depth = (shifted.surface_y - heights.sample_world(shifted.pos)).max(0.05);
+            let f_flag = if shifted.frozen { 1.0 } else { 0.0 };
+            let v = shifted.travelled / uv_v_scale;
+            let col = [shifted.velocity.x, shifted.velocity.y, c_depth, f_flag];
+            let edge_col = [shifted.velocity.x, shifted.velocity.y, 0.0, f_flag];
+
+            positions.push(ls.to_array());
+            positions.push([lb_xz.x, lb_y, lb_xz.y]);
+            positions.push([shifted.pos.x, shifted.surface_y, shifted.pos.y]);
+            positions.push([rb_xz.x, rb_y, rb_xz.y]);
+            positions.push(rs.to_array());
+
+            for _ in 0..5 {
+                normals.push([0.0, 1.0, 0.0]);
+            }
+            uvs.push([0.0, v]);
+            uvs.push([BANK_U_EXTENT, v]);
+            uvs.push([0.5, v]);
+            uvs.push([1.0 - BANK_U_EXTENT, v]);
+            uvs.push([1.0, v]);
+
+            colors.push(edge_col);
+            colors.push(edge_col);
+            colors.push(col);
+            colors.push(edge_col);
+            colors.push(edge_col);
+            base
+        };
+
+        let wrap_shift = |pos: Vec2| -> Vec2 {
+            if heights.topology.wraps() {
+                heights.topology.wrap_xz(pos, heights.size) - pos
+            } else {
+                Vec2::ZERO
+            }
+        };
+
+        let mut prev_shift = wrap_shift(stations[0].pos);
+        let mut prev_base =
+            push_station(&mut positions, &mut normals, &mut uvs, &mut colors, &stations[0], prev_shift);
+
+        for i in 0..stations.len().saturating_sub(1) {
+            let next_shift = wrap_shift(stations[i + 1].pos);
+            let bridge_base = push_station(
+                &mut positions,
+                &mut normals,
+                &mut uvs,
+                &mut colors,
+                &stations[i + 1],
+                prev_shift,
+            );
+
+            let split = splits_by_reach[reach_id].iter().find(|sp| sp.station_idx == i);
+
+            if let Some(sp) = split {
+                let ps = prev_shift;
+                let push_pt = |positions: &mut Vec<[f32; 3]>,
+                               normals: &mut Vec<[f32; 3]>,
+                               uvs: &mut Vec<[f32; 2]>,
+                               colors: &mut Vec<[f32; 4]>,
+                               xz: Vec2,
+                               y: f32,
+                               u: f32,
+                               v_t: f32,
+                               depth: f32|
+                 -> u32 {
+                    let id = positions.len() as u32;
+                    let p = xz + ps;
+                    positions.push([p.x, y, p.y]);
+                    normals.push([0.0, 1.0, 0.0]);
+                    uvs.push([u, v_t]);
+                    colors.push([sp.vel.x, sp.vel.y, depth, if sp.frozen { 1.0 } else { 0.0 }]);
+                    id
+                };
+                let v_a = (stations[i].travelled
+                    + (stations[i + 1].travelled - stations[i].travelled) * sp.u_a)
+                    / uv_v_scale;
+                let v_c = (stations[i].travelled
+                    + (stations[i + 1].travelled - stations[i].travelled) * sp.u_center)
+                    / uv_v_scale;
+                let v_b = (stations[i].travelled
+                    + (stations[i + 1].travelled - stations[i].travelled) * sp.u_b)
+                    / uv_v_scale;
+                let u_bank = if sp.left_side { BANK_U_EXTENT } else { 1.0 - BANK_U_EXTENT };
+                let u_skirt = if sp.left_side { 0.0 } else { 1.0 };
+
+                let pa = push_pt(&mut positions, &mut normals, &mut uvs, &mut colors, sp.pos_a, sp.y_a, u_bank, v_a, 0.0);
+                let pm = push_pt(&mut positions, &mut normals, &mut uvs, &mut colors, sp.pos_center, sp.y_center, 0.5, v_c, sp.depth_center);
+                let pb = push_pt(&mut positions, &mut normals, &mut uvs, &mut colors, sp.pos_b, sp.y_b, u_bank, v_b, 0.0);
+                let ska_y = (heights.sample_world(sp.skirt_a) - BANK_TUCK).min(sp.y_a - BANK_TUCK);
+                let skb_y = (heights.sample_world(sp.skirt_b) - BANK_TUCK).min(sp.y_b - BANK_TUCK);
+                let ska = push_pt(&mut positions, &mut normals, &mut uvs, &mut colors, sp.skirt_a, ska_y, u_skirt, v_a, 0.0);
+                let skb = push_pt(&mut positions, &mut normals, &mut uvs, &mut colors, sp.skirt_b, skb_y, u_skirt, v_b, 0.0);
+
+                if sp.left_side {
+                    indices.extend_from_slice(&[prev_base, prev_base + 1, pa, prev_base, pa, ska]);
+                    indices.extend_from_slice(&[pb, bridge_base + 1, bridge_base, pb, bridge_base, skb]);
+                    indices.extend_from_slice(&[prev_base + 1, prev_base + 2, pa, pa, prev_base + 2, pm]);
+                    indices.extend_from_slice(&[pm, prev_base + 2, bridge_base + 2, pm, bridge_base + 2, pb]);
+                    indices.extend_from_slice(&[pb, bridge_base + 2, bridge_base + 1]);
+                    for k in 2..4u32 {
+                        indices.extend_from_slice(&[
+                            prev_base + k,
+                            prev_base + k + 1,
+                            bridge_base + k,
+                            bridge_base + k,
+                            prev_base + k + 1,
+                            bridge_base + k + 1,
+                        ]);
+                    }
+                } else {
+                    for k in 0..2u32 {
+                        indices.extend_from_slice(&[
+                            prev_base + k,
+                            prev_base + k + 1,
+                            bridge_base + k,
+                            bridge_base + k,
+                            prev_base + k + 1,
+                            bridge_base + k + 1,
+                        ]);
+                    }
+                    indices.extend_from_slice(&[prev_base + 2, prev_base + 3, pa, prev_base + 2, pa, pm]);
+                    indices.extend_from_slice(&[prev_base + 2, pm, bridge_base + 2, pm, pb, bridge_base + 2]);
+                    indices.extend_from_slice(&[pb, bridge_base + 3, bridge_base + 2]);
+                    indices.extend_from_slice(&[prev_base + 3, prev_base + 4, ska, prev_base + 3, ska, pa]);
+                    indices.extend_from_slice(&[pb, skb, bridge_base + 4, pb, bridge_base + 4, bridge_base + 3]);
+                }
+            } else {
+                for k in 0..4u32 {
+                    indices.extend_from_slice(&[
+                        prev_base + k,
+                        prev_base + k + 1,
+                        bridge_base + k,
+                        bridge_base + k,
+                        prev_base + k + 1,
+                        bridge_base + k + 1,
+                    ]);
+                }
+            }
+
+            if (next_shift - prev_shift).length_squared() > 1e-4 {
+                prev_shift = next_shift;
+                prev_base =
+                    push_station(&mut positions, &mut normals, &mut uvs, &mut colors, &stations[i + 1], prev_shift);
+            } else {
+                prev_base = bridge_base;
+            }
+        }
+
+        if let Some((_, sp)) = trimmed_end[reach_id].as_ref() {
+            let ps = prev_shift;
+            let push_end = |positions: &mut Vec<[f32; 3]>,
+                            normals: &mut Vec<[f32; 3]>,
+                            uvs: &mut Vec<[f32; 2]>,
+                            colors: &mut Vec<[f32; 4]>,
+                            xz: Vec2,
+                            y: f32,
+                            u: f32,
+                            depth: f32|
+             -> u32 {
+                let id = positions.len() as u32;
+                let p = xz + ps;
+                positions.push([p.x, y, p.y]);
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([u, sp.travelled / uv_v_scale]);
+                colors.push([sp.vel.x, sp.vel.y, depth, if sp.frozen { 1.0 } else { 0.0 }]);
+                id
+            };
+            let ska_y = (heights.sample_world(sp.skirt_a) - BANK_TUCK).min(sp.y_a - BANK_TUCK);
+            let skb_y = (heights.sample_world(sp.skirt_b) - BANK_TUCK).min(sp.y_b - BANK_TUCK);
+            let (l_pos, l_y, r_pos, r_y, ls_pos, ls_y, rs_pos, rs_y) = if sp.left_side {
+                (sp.pos_b, sp.y_b, sp.pos_a, sp.y_a, sp.skirt_b, skb_y, sp.skirt_a, ska_y)
+            } else {
+                (sp.pos_a, sp.y_a, sp.pos_b, sp.y_b, sp.skirt_a, ska_y, sp.skirt_b, skb_y)
+            };
+            let e0 = push_end(&mut positions, &mut normals, &mut uvs, &mut colors, ls_pos, ls_y, 0.0, 0.0);
+            let e1 = push_end(&mut positions, &mut normals, &mut uvs, &mut colors, l_pos, l_y, BANK_U_EXTENT, 0.0);
+            let e2 = push_end(&mut positions, &mut normals, &mut uvs, &mut colors, sp.pos_center, sp.y_center, 0.5, sp.depth_center);
+            let e3 = push_end(&mut positions, &mut normals, &mut uvs, &mut colors, r_pos, r_y, 1.0 - BANK_U_EXTENT, 0.0);
+            let e4 = push_end(&mut positions, &mut normals, &mut uvs, &mut colors, rs_pos, rs_y, 1.0, 0.0);
+
+            let end_ring = [e0, e1, e2, e3, e4];
+            for k in 0..4usize {
+                indices.extend_from_slice(&[
+                    prev_base + k as u32,
+                    prev_base + k as u32 + 1,
+                    end_ring[k],
+                    end_ring[k],
+                    prev_base + k as u32 + 1,
+                    end_ring[k + 1],
+                ]);
+            }
+        }
+    }
+
+    if indices.is_empty() {
+        return None;
     }
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
@@ -735,7 +1430,7 @@ pub fn river_ribbon_mesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
-    Some((anchor, mesh))
+    Some(mesh)
 }
 
 pub fn cascade_lip_width(fall: &Waterfall, heights: &ScalarField, fallback: f32) -> f32 {
@@ -1222,89 +1917,156 @@ mod tests {
         (field, accumulation, path)
     }
 
-    #[test]
-    fn river_ribbon_needs_at_least_two_stations() {
-        let (field, accumulation, path) = straight_field(10.0);
-        assert!(river_ribbon_mesh(&[], &field, &accumulation, &flow_field(&field)).is_none());
-        assert!(river_ribbon_mesh(&path[..1], &field, &accumulation, &flow_field(&field)).is_none());
-        assert!(river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).is_some());
+    fn network(field: &ScalarField, accumulation: &ScalarField, paths: Vec<Vec<usize>>) -> Option<Mesh> {
+        let flow = flow_field(field);
+        let frozen = vec![false; field.len()];
+        river_network_mesh(&paths, field, accumulation, &flow, &[], &[], &frozen, 0.0, Season::Summer)
     }
 
     #[test]
-    fn river_ribbon_is_a_four_vertex_per_station_strip() {
+    fn river_network_needs_at_least_two_stations() {
         let (field, accumulation, path) = straight_field(10.0);
-        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
-        assert_eq!(anchor, field.world_of(2, 8));
+        assert!(network(&field, &accumulation, vec![]).is_none());
+        assert!(network(&field, &accumulation, vec![path[..1].to_vec()]).is_none());
+        assert!(network(&field, &accumulation, vec![path]).is_some());
+    }
+
+    #[test]
+    fn river_network_is_a_single_continuous_mesh() {
+        let (field, accumulation, path) = straight_field(10.0);
+        let mesh = network(&field, &accumulation, vec![path]).expect("network");
         let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions");
-        assert!(positions.len() >= path.len() * 4 / 2);
-        assert_eq!(positions.len() % 4, 0, "four vertices per station");
-        assert!(mesh.indices().expect("indices").len() > 0);
+        let indices = mesh.indices().expect("indices");
+        assert!(positions.len() >= 5, "at least one 5-vertex station");
+        assert!(!indices.is_empty(), "the ribbon must be triangulated");
+        assert_eq!(indices.len() % 3, 0, "whole triangles");
     }
 
     #[test]
-    fn river_ribbon_hugs_the_ground_and_widens_with_accumulation() {
+    fn river_network_center_encodes_positive_depth() {
         let (field, accumulation, path) = straight_field(16.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
+        let mesh = network(&field, &accumulation, vec![path]).expect("network");
+        let VertexAttributeValues::Float32x4(colors) =
+            mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors")
+        else {
+            panic!("expected float colors");
+        };
+        assert!(
+            colors.iter().any(|c| c[2] > 0.04),
+            "the centre vertex must carry positive water depth for Beer-Lambert absorption"
+        );
+    }
+
+    #[test]
+    fn river_network_skirts_sit_below_the_bank() {
+        let (field, accumulation, path) = straight_field(10.0);
+        let mesh = network(&field, &accumulation, vec![path]).expect("network");
         let VertexAttributeValues::Float32x3(positions) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions")
         else {
             panic!("expected float positions");
         };
-        for station in positions.chunks(4) {
-            assert!(
-                (station[1][1] - (10.0 + RIBBON_LIFT)).abs() < 1e-3,
-                "the water surface rides just above the ground"
-            );
-            assert!(
-                (station[2][1] - station[1][1]).abs() < 1e-6,
-                "the crown is flat across the channel"
-            );
-            assert!(
-                station[0][1] < station[1][1] - BANK_TUCK * 0.9,
-                "the skirt must tuck below the bank"
-            );
-        }
-        assert!(river_half_width(4.0, 4.0) < river_half_width(64.0, 4.0));
-        assert!(river_half_width(10_000.0, 4.0) <= 4.0 * 3.0, "width stays bounded");
-    }
-
-    #[test]
-    fn river_ribbon_encodes_flow_distance_in_uv() {
-        let (field, accumulation, path) = straight_field(10.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
         let VertexAttributeValues::Float32x2(uvs) =
             mesh.attribute(Mesh::ATTRIBUTE_UV_0).expect("uvs")
         else {
             panic!("expected float uvs");
         };
-        assert!(uvs.iter().any(|uv| uv[0] <= 0.01));
-        assert!(uvs.iter().any(|uv| uv[0] >= 0.99));
-        let first_v = uvs[0][1];
-        let last_v = uvs[uvs.len() - 1][1];
-        assert!(last_v > first_v, "UV.y must grow downstream");
+        for (pos, uv) in positions.iter().zip(uvs.iter()) {
+            if uv[0] <= 0.001 || uv[0] >= 0.999 {
+                let ground = field.sample_world(Vec2::new(pos[0], pos[2]));
+                assert!(
+                    pos[1] <= ground + 1e-3,
+                    "the bank skirt must never float above the local ground"
+                );
+            }
+        }
     }
 
     #[test]
-    fn river_ribbon_unwraps_across_the_torus_seam() {
+    fn river_network_widens_with_discharge() {
+        let mut field = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        field.fill(10.0);
+        let flow = flow_field(&field);
+        let frozen = vec![false; field.len()];
+        let pos = field.world_of(5, 8);
+        let mut low = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        low.fill(4.0);
+        let mut high = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        high.fill(64.0);
+        let narrow = solve_station_volume(pos, Vec2::X, &field, &low, &flow, &frozen, Season::Summer, 0.0);
+        let wide = solve_station_volume(pos, Vec2::X, &field, &high, &flow, &frozen, Season::Summer, 0.0);
+        assert!(
+            wide.left_w + wide.right_w > narrow.left_w + narrow.right_w,
+            "more discharge must widen the channel"
+        );
+    }
+
+    #[test]
+    fn river_network_narrow_canyon_is_narrower_than_a_wide_valley() {
+        let mut gorge = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        gorge.fill(20.0);
+        for x in 2..8 {
+            gorge.set(x, 8, 4.0);
+        }
+        let mut valley = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        valley.fill(20.0);
+        for z in 4..13 {
+            for x in 2..8 {
+                valley.set(x, z, 4.0);
+            }
+        }
+        let mut accumulation = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        accumulation.fill(20.0);
+        let pos = valley.world_of(5, 8);
+        let frozen = vec![false; valley.len()];
+        let g = solve_station_volume(pos, Vec2::X, &gorge, &accumulation, &flow_field(&gorge), &frozen, Season::Summer, 0.0);
+        let v = solve_station_volume(pos, Vec2::X, &valley, &accumulation, &flow_field(&valley), &frozen, Season::Summer, 0.0);
+        assert!(
+            g.left_w + g.right_w < v.left_w + v.right_w,
+            "the same discharge in a narrow gorge must stay narrower than in a wide valley"
+        );
+    }
+
+    #[test]
+    fn river_network_unwraps_across_the_torus_seam() {
         let mut field = ScalarField::new(16, 160.0, WorldTopology::FiniteTorus);
         for index in 0..field.len() {
             field.set_at(index, 10.0);
         }
         let accumulation = ScalarField::new(16, 160.0, WorldTopology::FiniteTorus);
         let path: Vec<usize> = (13..=18).map(|x| field.index(x, 8)).collect();
-        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("seam ribbon");
+        let mesh = network(&field, &accumulation, vec![path]).expect("seam network");
         let VertexAttributeValues::Float32x3(positions) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions")
         else {
             panic!("expected float positions");
         };
-        let max_x = positions.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
-        let min_x = positions.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+        let idx: Vec<usize> = mesh.indices().expect("indices").iter().collect();
+        let mut max_edge = 0.0f32;
+        for tri in idx.chunks(3) {
+            for k in 0..3 {
+                let a = positions[tri[k]];
+                let b = positions[tri[(k + 1) % 3]];
+                max_edge = max_edge.max(Vec2::new(a[0] - b[0], a[2] - b[2]).length());
+            }
+        }
         assert!(
-            max_x - min_x < field.size * 0.5,
-            "the ribbon must not stretch across the whole map"
+            max_edge < field.size * 0.3,
+            "no triangle may stretch across the seam: max edge {max_edge}"
         );
-        assert_eq!(anchor, field.world_of(13, 8));
+    }
+
+    #[test]
+    fn river_network_stitches_a_confluence_into_one_mesh() {
+        let mut field = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        field.fill(10.0);
+        let mut accumulation = ScalarField::new(16, 160.0, WorldTopology::Finite);
+        accumulation.fill(20.0);
+        let trunk: Vec<usize> = (2..12).map(|x| field.index(x, 8)).collect();
+        let tributary: Vec<usize> = (3..9).map(|z| field.index(6, z)).collect();
+        let mesh = network(&field, &accumulation, vec![trunk, tributary]).expect("confluence mesh");
+        assert!(!mesh.indices().expect("indices").is_empty());
+        assert!(mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions").len() >= 10);
     }
 
     fn scarp_field() -> (ScalarField, Waterfall) {
@@ -1392,81 +2154,6 @@ mod tests {
             max_x - min_x < field.size * 0.5,
             "the cascade must follow the short way across the seam"
         );
-    }
-
-    #[test]
-    fn river_ribbon_encodes_flow_in_vertex_colors() {
-        let (field, accumulation, path) = straight_field(100.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
-        let VertexAttributeValues::Float32x4(colors) =
-            mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors")
-        else {
-            panic!("expected float colors");
-        };
-        let expected_speed = (100.0f32.sqrt() * 0.05).clamp(0.3, 2.5);
-        assert!(
-            colors.iter().all(|c| (c[0] - expected_speed).abs() < 1e-4),
-            "the flow must point downstream along +x"
-        );
-        assert!(colors.iter().all(|c| c[1].abs() < 1e-4));
-        assert!(colors.iter().all(|c| (c[2] - expected_speed).abs() < 1e-4));
-        assert!(colors.iter().all(|c| c[3] == 1.0));
-    }
-
-    fn tilted_field(slope_x: f32, slope_z: f32) -> (ScalarField, ScalarField, Vec<usize>) {
-        let mut field = ScalarField::new(16, 160.0, WorldTopology::Finite);
-        for z in 0..16 {
-            for x in 0..16 {
-                let w = field.world_of(x, z);
-                field.set(x, z, 10.0 + slope_x * w.x + slope_z * w.y);
-            }
-        }
-        let mut accumulation = ScalarField::new(16, 160.0, WorldTopology::Finite);
-        accumulation.fill(100.0);
-        let path = (2..8).map(|x| field.index(x, 8)).collect();
-        (field, accumulation, path)
-    }
-
-    #[test]
-    fn river_flow_accelerates_down_a_slope() {
-        let (field, accumulation, path) = tilted_field(-0.5, 0.0);
-        let (_, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("downhill ribbon");
-        let VertexAttributeValues::Float32x4(colors) =
-            mesh.attribute(Mesh::ATTRIBUTE_COLOR).expect("colors")
-        else {
-            panic!("expected float colors");
-        };
-        let flat_speed = (100.0f32.sqrt() * 0.05).clamp(0.3, 2.5);
-        assert!(
-            colors.iter().all(|c| c[2] > flat_speed + 1e-3),
-            "a downhill reach must run faster than still water"
-        );
-        assert!(colors.iter().all(|c| c[0] > 0.0), "flow still points downstream");
-    }
-
-    #[test]
-    fn river_skirt_hugs_the_bank_on_a_cross_slope() {
-        let (field, accumulation, path) = tilted_field(0.0, 0.6);
-        let (anchor, mesh) = river_ribbon_mesh(&path, &field, &accumulation, &flow_field(&field)).expect("ribbon");
-        let VertexAttributeValues::Float32x3(positions) =
-            mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("positions")
-        else {
-            panic!("expected float positions");
-        };
-        for station in positions.chunks(4) {
-            assert!(
-                (station[1][1] - station[2][1]).abs() < 1e-6,
-                "the crown stays level across the channel"
-            );
-            for k in [0usize, 3] {
-                let world = anchor + Vec2::new(station[k][0], station[k][2]);
-                let ground = field.sample_world(world);
-                assert!(
-                    station[k][1] <= ground + 1e-3,
-                    "the bank skirt must never float above the local ground"
-                );
-            }
-        }
     }
 
     #[test]

@@ -42,8 +42,7 @@ pub enum WaterBuild {
         frozen: bool,
         collider: Option<Collider>,
     },
-    River {
-        anchor: Vec2,
+    RiverNetwork {
         mesh: Mesh,
     },
     Cascade {
@@ -149,17 +148,22 @@ pub fn rebuild_water_surfaces(
         }));
     }
 
-    for path in map.river_paths() {
+    if !map.river_paths().is_empty() {
         let map = shared.clone();
-        let path = path.clone();
+        let season = clock.season;
         queue.jobs.push(AsyncComputeTaskPool::get().spawn(async move {
-            let (anchor, mesh) = water::river_ribbon_mesh(
-                &path,
+            let mesh = water::river_network_mesh(
+                map.river_paths(),
                 map.heights(),
                 map.accumulation_field(),
                 map.flow_field(),
+                map.lakes(),
+                map.ocean_mask(),
+                map.water_frozen(),
+                map.sea_level(),
+                season,
             )?;
-            Some(WaterBuild::River { anchor, mesh })
+            Some(WaterBuild::RiverNetwork { mesh })
         }));
     }
 
@@ -259,7 +263,7 @@ pub fn drain_water_builds(
                             }
                         }
                     }
-                    WaterBuild::River { anchor, mesh } => {
+                    WaterBuild::RiverNetwork { mesh } => {
                         let material = materials.add(gpu::water_render_material(
                             water::river_material(),
                             water::WaterKind::River,
@@ -269,9 +273,9 @@ pub fn drain_water_builds(
                         let handle = meshes.add(mesh);
                         for offset in &copies {
                             commands.spawn((
-                                Name::new("River Ribbon"),
+                                Name::new("River Network"),
                                 WaterSurface,
-                                Transform::from_xyz(anchor.x + offset.x, 0.0, anchor.y + offset.y),
+                                Transform::from_xyz(offset.x, 0.0, offset.y),
                                 Mesh3d(handle.clone()),
                                 MeshMaterial3d(material.clone()),
                             ));

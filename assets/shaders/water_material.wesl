@@ -38,6 +38,9 @@ const FLOW_CYCLE: f32 = 9.0;
 const FLOW_DETAIL: f32 = 0.11;
 const FLOW_MIN_SPEED: f32 = 0.18;
 const FLOW_SLOPE_GAIN: f32 = 0.9;
+const FLOW_REF_SPEED: f32 = 4.5;
+const FLOW_RAPID_LO: f32 = 2.4;
+const FLOW_RAPID_HI: f32 = 4.2;
 const RIPPLE_FREQ: f32 = 2.4;
 const RIPPLE_AMP: f32 = 0.35;
 const PI: f32 = 3.14159265;
@@ -118,9 +121,13 @@ fn flow_envelope(phase: f32) -> f32 {
 }
 
 fn running_gradient(world_xz: vec2<f32>, flow: vec2<f32>, across: f32, slope: f32) -> vec2<f32> {
-    let dir = normalize(flow);
+    let baked = length(flow);
+    let dir = flow / max(baked, 1e-4);
     let channel = sin(clamp(across, 0.0, 1.0) * PI);
-    let speed = (FLOW_MIN_SPEED + (1.0 - FLOW_MIN_SPEED) * channel) * (1.0 + slope * FLOW_SLOPE_GAIN);
+    let flow_factor = 0.5 + clamp(baked / FLOW_REF_SPEED, 0.0, 1.0);
+    let speed = (FLOW_MIN_SPEED + (1.0 - FLOW_MIN_SPEED) * channel)
+        * (1.0 + slope * FLOW_SLOPE_GAIN)
+        * flow_factor;
     let downstream = dot(world_xz, dir);
     var g = vec2<f32>(0.0);
     for (var i: u32 = 0u; i < 3u; i = i + 1u) {
@@ -221,7 +228,8 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     } else if (water.kind == KIND_RIVER) {
         let bank = min(vertex_output.uv.x, 1.0 - vertex_output.uv.x);
         let bank_foam = 1.0 - smoothstep(0.0, 0.14, bank);
-        foam = clamp(bank_foam * (0.35 + 0.65 * streak), 0.0, 1.0);
+        let rapid = smoothstep(FLOW_RAPID_LO, FLOW_RAPID_HI, length(flow));
+        foam = clamp(max(bank_foam, rapid) * (0.35 + 0.65 * streak), 0.0, 1.0);
     } else {
         let depth_foam = 1.0 - smoothstep(0.0, max(water.foam_depth, 0.01), depth);
         foam = clamp(max(depth_foam, shore * max(ripple, 0.0) * 0.3) * (0.4 + 0.9 * streak) * water.foam_scale, 0.0, 1.0);

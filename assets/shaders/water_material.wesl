@@ -1,9 +1,9 @@
 import bevy_pbr::render::{
+    forward_io::{FragmentOutput, VertexOutput},
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::main_pass_post_lighting_processing,
-    forward_io::{VertexOutput, FragmentOutput},
+    pbr_functions::main_pass_post_lighting_processing
 };
-import super::shaderutils::{PI, hash21, smooth_noise2, schlick_fresnel};
+import super::shaderutils::{PI, hash21, schlick_fresnel, smooth_noise2};
 
 struct WaterSurface {
     shallow_color: vec4<f32>,
@@ -25,9 +25,10 @@ struct WaterSurface {
     kind: u32,
     use_vertex_data: u32,
     caustics: f32,
-};
+}
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(31) var<uniform> water: WaterSurface;
+@group(constants::MATERIAL_BIND_GROUP) @binding(31)
+var<uniform> water: WaterSurface;
 
 const KIND_SEA: u32 = 0u;
 const KIND_LAKE: u32 = 1u;
@@ -62,8 +63,8 @@ fn caustic_layer(p: vec2<f32>) -> f32 {
     let g = floor(p);
     let f = fract(p);
     var best = 8.0;
-    for (var j: i32 = -1; j <= 1; j = j + 1) {
-        for (var i: i32 = -1; i <= 1; i = i + 1) {
+    for(var j: i32 = -1; j <= 1; j = j + 1) {
+        for(var i: i32 = -1; i <= 1; i = i + 1) {
             let cell = vec2<f32>(f32(i), f32(j));
             let seed = caustic_hash(g + cell);
             let drift = 0.5 + 0.5 * sin(water.time * 0.6 + seed * 6.2831853);
@@ -77,8 +78,12 @@ fn caustic_layer(p: vec2<f32>) -> f32 {
 }
 
 fn caustic_field(world_xz: vec2<f32>) -> f32 {
-    let a = caustic_layer(world_xz * CAUSTIC_SCALE + vec2<f32>(water.time * 0.05, water.time * 0.03));
-    let b = caustic_layer(world_xz * (CAUSTIC_SCALE * CAUSTIC_DETAIL) - vec2<f32>(water.time * 0.04, water.time * 0.06));
+    let a =
+        caustic_layer(world_xz * CAUSTIC_SCALE + vec2<f32>(water.time * 0.05, water.time * 0.03));
+    let b = caustic_layer(
+            world_xz * (CAUSTIC_SCALE * CAUSTIC_DETAIL)
+            - vec2<f32>(water.time * 0.04, water.time * 0.06),
+        );
     return clamp((a + b) * water.caustics, 0.0, 1.0);
 }
 
@@ -99,7 +104,9 @@ fn standing_gradient(world_xz: vec2<f32>) -> vec2<f32> {
     let drive = water.wind.xy * water.wind.z;
     let g1 = wave_gradient(world_xz * water.wave_scale + drive * (water.time * 0.05));
     let cross_wind = vec2<f32>(-drive.y, drive.x);
-    let g2 = wave_gradient(world_xz * (water.wave_scale * DETAIL_RATIO) + cross_wind * (water.time * 0.031));
+    let g2 = wave_gradient(
+            world_xz * (water.wave_scale * DETAIL_RATIO) + cross_wind * (water.time * 0.031),
+        );
     return g1 + 0.6 * g2;
 }
 
@@ -112,13 +119,14 @@ fn running_gradient(world_xz: vec2<f32>, flow: vec2<f32>, across: f32, slope: f3
     let dir = flow / max(baked, 1e-4);
     let channel = sin(clamp(across, 0.0, 1.0) * PI);
     let flow_factor = 0.5 + clamp(baked / FLOW_REF_SPEED, 0.0, 1.0);
-    let speed = (FLOW_MIN_SPEED + (1.0 - FLOW_MIN_SPEED) * channel)
-        * (1.0 + slope * FLOW_SLOPE_GAIN)
+    let speed =
+        (FLOW_MIN_SPEED + (1.0 - FLOW_MIN_SPEED) * channel) * (1.0 + slope * FLOW_SLOPE_GAIN)
         * flow_factor;
     let downstream = dot(world_xz, dir);
     var g = vec2<f32>(0.0);
-    for (var i: u32 = 0u; i < 3u; i = i + 1u) {
-        let phase = fract(downstream / FLOW_CYCLE - water.time * speed * 0.12 + f32(i) * 0.33333333);
+    for(var i: u32 = 0u; i < 3u; i = i + 1u) {
+        let phase =
+            fract(downstream / FLOW_CYCLE - water.time * speed * 0.12 + f32(i) * 0.33333333);
         let w = flow_envelope(phase);
         let p = (world_xz + dir * (phase * FLOW_CYCLE)) * FLOW_DETAIL;
         g = g + w * wave_gradient(p);
@@ -134,11 +142,10 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 
     var vdata = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     @if(VERTEX_COLORS)
-    if (water.use_vertex_data == 1u) {
+    if water.use_vertex_data == 1u {
         vdata = vertex_output.color;
     }
     @if(true)
-
     let dpos_dx = dpdx(vertex_output.world_position.xyz);
     let dpos_dy = dpdy(vertex_output.world_position.xyz);
     let du_x = dpdx(vertex_output.uv.x);
@@ -149,18 +156,18 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 
     var flow = vec2<f32>(0.0);
     var slope = 0.0;
-    if (abs(det) > 1e-7) {
+    if abs(det) > 1e-7 {
         let down = (dpos_dy * du_x - dpos_dx * du_y) / det;
         slope = abs(down.y) / max(length(vec2<f32>(down.x, down.z)), 1e-5);
-        if (water.kind == KIND_RIVER) {
+        if water.kind == KIND_RIVER {
             flow = vec2<f32>(vdata.x, vdata.y);
-        } else if (water.kind == KIND_WATERFALL) {
+        } else if water.kind == KIND_WATERFALL {
             let baked = vec2<f32>(vdata.x, vdata.y);
-            if (water.use_vertex_data == 1u && length(baked) > 1e-4) {
+            if water.use_vertex_data == 1u && length(baked) > 1e-4 {
                 flow = baked;
             } else {
                 let down_xz = vec2<f32>(down.x, down.z);
-                if (length(down_xz) > 1e-6) {
+                if length(down_xz) > 1e-6 {
                     flow = normalize(down_xz);
                 }
             }
@@ -175,8 +182,8 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     var shore = 0.0;
     let ripple_phase = depth * RIPPLE_FREQ - water.time * 2.2;
     let ripple_grad = vec2<f32>(dpdx(ripple_phase), dpdy(ripple_phase));
-    if (running) {
-        if (water.kind == KIND_RIVER && water.use_vertex_data == 1u) {
+    if running {
+        if water.kind == KIND_RIVER && water.use_vertex_data == 1u {
             depth = max(vdata.z, 0.0);
             frozen = clamp(max(vdata.w, water.frozen_blend), 0.0, 1.0);
         } else {
@@ -191,13 +198,14 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         grad = grad + ripple_grad * (RIPPLE_AMP * shore);
     }
 
-    var wave_n = normalize(vec3<f32>(-grad.x * water.wave_amplitude, 1.0, -grad.y * water.wave_amplitude));
-    if (!is_front) {
+    var wave_n =
+        normalize(vec3<f32>(-grad.x * water.wave_amplitude, 1.0, -grad.y * water.wave_amplitude));
+    if !is_front {
         wave_n = -wave_n;
     }
     let geo_n = pbr_input.N;
     var N = normalize(mix(geo_n, wave_n, mix(0.85, 0.15, frozen)));
-    if (water.kind == KIND_WATERFALL) {
+    if water.kind == KIND_WATERFALL {
         N = normalize(geo_n + vec3<f32>(grad.x, 0.0, grad.y) * 0.35);
     }
 
@@ -210,20 +218,25 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 
     let streak = smooth_noise2(vec2<f32>(world_pos.x * 0.7, world_pos.z * 2.2 - water.time * 1.8));
     var foam = 0.0;
-    if (water.kind == KIND_WATERFALL) {
+    if water.kind == KIND_WATERFALL {
         foam = clamp(0.55 + 0.6 * streak, 0.0, 1.0);
-    } else if (water.kind == KIND_RIVER) {
+    } else if water.kind == KIND_RIVER {
         let bank = min(vertex_output.uv.x, 1.0 - vertex_output.uv.x);
         let bank_foam = 1.0 - smoothstep(0.0, 0.14, bank);
         let rapid = smoothstep(FLOW_RAPID_LO, FLOW_RAPID_HI, length(flow));
         foam = clamp(max(bank_foam, rapid) * (0.35 + 0.65 * streak), 0.0, 1.0);
     } else {
         let depth_foam = 1.0 - smoothstep(0.0, max(water.foam_depth, 0.01), depth);
-        foam = clamp(max(depth_foam, shore * max(ripple, 0.0) * 0.3) * (0.4 + 0.9 * streak) * water.foam_scale, 0.0, 1.0);
+        foam = clamp(
+                max(depth_foam, shore * max(ripple, 0.0) * 0.3) * (0.4 + 0.9 * streak)
+                * water.foam_scale,
+                0.0,
+                1.0,
+            );
     }
 
     var roughness = mix(0.06, water.ice_roughness, frozen);
-    if (water.kind == KIND_WATERFALL) {
+    if water.kind == KIND_WATERFALL {
         roughness = 0.4;
     }
 
@@ -232,7 +245,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     let caustic = caustic_field(world_pos.xz);
     let shallow_light = clamp((transmit.r + transmit.g + transmit.b) / 3.0, 0.0, 1.0);
     let caustic_light = caustic * water.sun_color.rgb * water.sun_direction.w * CAUSTIC_GAIN;
-    if (is_front) {
+    if is_front {
         let R = reflect(-V, N);
         let sky = mix(water.sky_horizon.rgb, water.sky_zenith.rgb, clamp(R.y, 0.0, 1.0));
         colour = mix(colour, sky, fresnel);
@@ -243,17 +256,26 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         colour = colour + caustic_light * shallow_light;
         let sss_phase = clamp(dot(V, -L) * 0.5 + 0.5, 0.0, 1.0);
         let sss = pow(sss_phase, SSS_POWER) * exp(-depth * SSS_DEPTH) * (1.0 - frozen);
-        colour = colour + water.sun_color.rgb * water.sun_direction.w * (SSS_GAIN * sss) * water.shallow_color.rgb;
+        colour = colour
+            + water.sun_color.rgb * water.sun_direction.w * (SSS_GAIN * sss)
+            * water.shallow_color.rgb;
     } else {
         under_absorb = clamp(1.0 - shallow_light, 0.0, 1.0);
         colour = mix(water.shallow_color.rgb, water.deep_color.rgb, 0.2 + 0.6 * under_absorb);
-        let shimmer = smooth_noise2(vec2<f32>(world_pos.x * 1.3 + water.time * 0.6, world_pos.z * 1.1 - water.time * 0.4));
-        colour = colour + water.sun_color.rgb * water.sun_direction.w * (0.16 + 0.24 * shimmer) * (1.0 - under_absorb);
+        let shimmer = smooth_noise2(
+                vec2<f32>(
+                    world_pos.x * 1.3 + water.time * 0.6,
+                    world_pos.z * 1.1 - water.time * 0.4,
+                ),
+            );
+        colour = colour
+            + water.sun_color.rgb * water.sun_direction.w * (0.16 + 0.24 * shimmer)
+            * (1.0 - under_absorb);
         colour = colour + caustic_light * (1.0 - under_absorb);
         colour = colour + vec3<f32>(0.04 * streak);
     }
 
-    if (frozen > 0.0) {
+    if frozen > 0.0 {
         let crack_field = abs(smooth_noise2(world_pos.xz * 0.35) - 0.5);
         let cracks = 1.0 - smoothstep(0.0, 0.035, crack_field);
         let ice = mix(vec3<f32>(0.82, 0.90, 0.95), vec3<f32>(0.45, 0.58, 0.68), cracks);
@@ -264,7 +286,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     colour = mix(colour, vec3<f32>(0.94, 0.97, 1.0), foam);
 
     var alpha = base_alpha;
-    if (!is_front) {
+    if !is_front {
         alpha = base_alpha * mix(0.55, 0.9, under_absorb);
     }
     alpha = mix(alpha, 1.0, frozen);

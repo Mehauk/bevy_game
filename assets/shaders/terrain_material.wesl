@@ -1,9 +1,9 @@
 import bevy_pbr::render::{
+    forward_io::{FragmentOutput, VertexOutput},
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
-    forward_io::{VertexOutput, FragmentOutput},
+    pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing}
 };
-import super::shaderutils::{hash22, fbm2};
+import super::shaderutils::{fbm2, hash22};
 
 struct TerrainSurface {
     tint: vec4<f32>,
@@ -26,23 +26,38 @@ struct TerrainSurface {
     debug_mode: u32,
     layer_count: u32,
     cliff_layer: u32,
-};
+}
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(31) var<uniform> terrain: TerrainSurface;
-@group(constants::MATERIAL_BIND_GROUP) @binding(32) var albedo_array: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(33) var albedo_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(34) var normal_array: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(35) var normal_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(36) var orm_array: texture_2d_array<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(37) var orm_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(38) var splat_weights: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(39) var weights_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(40) var splat_indices: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(41) var cell_data: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(42) var cell_sampler: sampler;
-@group(constants::MATERIAL_BIND_GROUP) @binding(43) var cliff_meta: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(44) var region_tint: texture_2d<f32>;
-@group(constants::MATERIAL_BIND_GROUP) @binding(45) var region_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(31)
+var<uniform> terrain: TerrainSurface;
+@group(constants::MATERIAL_BIND_GROUP) @binding(32)
+var albedo_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(33)
+var albedo_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(34)
+var normal_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(35)
+var normal_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(36)
+var orm_array: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(37)
+var orm_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(38)
+var splat_weights: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(39)
+var weights_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(40)
+var splat_indices: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(41)
+var cell_data: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(42)
+var cell_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(43)
+var cliff_meta: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(44)
+var region_tint: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(45)
+var region_sampler: sampler;
 
 const TILE_TEXELS: f32 = 256.0;
 const MAX_MIP: f32 = 8.0;
@@ -75,25 +90,25 @@ struct StochasticField {
     o1: vec2<f32>,
     o2: vec2<f32>,
     w: vec3<f32>,
-};
+}
 
 fn stochastic_offsets(uv: vec2<f32>) -> StochasticField {
     let g = floor(uv * STOCH_GRID);
     let f = fract(uv * STOCH_GRID);
-    if (f.x + f.y < 1.0) {
+    if f.x + f.y < 1.0 {
         return StochasticField(
-            hash22(g) - 0.5,
-            hash22(g + vec2<f32>(1.0, 0.0)) - 0.5,
-            hash22(g + vec2<f32>(0.0, 1.0)) - 0.5,
-            vec3<f32>(1.0 - f.x - f.y, f.x, f.y),
-        );
+                hash22(g) - 0.5,
+                hash22(g + vec2<f32>(1.0, 0.0)) - 0.5,
+                hash22(g + vec2<f32>(0.0, 1.0)) - 0.5,
+                vec3<f32>(1.0 - f.x - f.y, f.x, f.y),
+            );
     }
     return StochasticField(
-        hash22(g + vec2<f32>(1.0, 1.0)) - 0.5,
-        hash22(g + vec2<f32>(0.0, 1.0)) - 0.5,
-        hash22(g + vec2<f32>(1.0, 0.0)) - 0.5,
-        vec3<f32>(f.x + f.y - 1.0, 1.0 - f.x, 1.0 - f.y),
-    );
+            hash22(g + vec2<f32>(1.0, 1.0)) - 0.5,
+            hash22(g + vec2<f32>(0.0, 1.0)) - 0.5,
+            hash22(g + vec2<f32>(1.0, 0.0)) - 0.5,
+            vec3<f32>(f.x + f.y - 1.0, 1.0 - f.x, 1.0 - f.y),
+        );
 }
 
 fn sample_albedo_st(layer: u32, uv: vec2<f32>, field: StochasticField, mip: f32) -> vec3<f32> {
@@ -157,7 +172,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     let world_pos = vertex_output.world_position.xyz;
     var out: FragmentOutput;
 
-    if (terrain.debug_mode == 1u) {
+    if terrain.debug_mode == 1u {
         pbr_input.material.base_color = vec4<f32>(terrain.tint.rgb, 1.0);
         pbr_input.material.perceptual_roughness = terrain.roughness;
         out.color = apply_pbr_lighting(pbr_input);
@@ -165,7 +180,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         return out;
     }
 
-    if (terrain.debug_mode == 2u) {
+    if terrain.debug_mode == 2u {
         pbr_input.material.base_color = vec4<f32>(uv_grid_colour(vertex_output.uv), 1.0);
         pbr_input.material.perceptual_roughness = 0.6;
         out.color = apply_pbr_lighting(pbr_input);
@@ -173,7 +188,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         return out;
     }
 
-    if (terrain.debug_mode == 3u) {
+    if terrain.debug_mode == 3u {
         @if(VERTEX_COLORS)
         pbr_input.material.base_color = vertex_output.color;
         @else
@@ -205,22 +220,22 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     var orm = vec3<f32>(0.0);
     var nrm = vec3<f32>(0.0);
     var total = 0.0;
-    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+    for(var i: u32 = 0u; i < 4u; i = i + 1u) {
         let w = weights[i];
         let layer = layers[i];
-        if (layer == 0u || w <= 0.02) {
+        if layer == 0u || w <= 0.02 {
             continue;
         }
         let l = layer - 1u;
         var near_a = vec3<f32>(0.0);
-        if (w > 0.15) {
+        if w > 0.15 {
             near_a = sample_albedo_st(l, uv_near, st_near, mip_near);
         } else {
             near_a = sample_albedo(l, uv_near + st_near.o0, mip_near);
         }
         let far_a = sample_albedo(l, uv_far + st_far.o0, mip_far);
         albedo = albedo + w * mix(near_a, far_a, far_w);
-        if (far_w < 0.99) {
+        if far_w < 0.99 {
             orm = orm + w * sample_orm_st(l, uv_near, st_near, mip_near);
             nrm = nrm + w * sample_normal_st(l, uv_near, st_near, mip_near);
         } else {
@@ -230,7 +245,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         total = total + w;
     }
 
-    if (total <= 0.0) {
+    if total <= 0.0 {
         albedo = terrain.tint.rgb;
         orm = vec3<f32>(1.0, terrain.roughness, 0.0);
         nrm = vec3<f32>(0.0, 0.0, 1.0);
@@ -246,7 +261,11 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     }
 
     let macro_tint = fbm2(world_pos.xz / terrain.macro_scale, 2);
-    albedo = albedo * mix(vec3<f32>(1.0), mix(vec3<f32>(0.82, 0.86, 0.90), vec3<f32>(1.18, 1.12, 1.00), macro_tint), 0.35);
+    albedo = albedo * mix(
+            vec3<f32>(1.0),
+            mix(vec3<f32>(0.82, 0.86, 0.90), vec3<f32>(1.18, 1.12, 1.00), macro_tint),
+            0.35,
+        );
     albedo = albedo * terrain.season_tint.rgb;
 
     let dpos_dx = dpdx(vertex_output.world_position.xyz);
@@ -255,7 +274,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     let dv = vec2<f32>(dpdx(uv_near.y), dpdy(uv_near.y));
     let det = du.x * dv.y - du.y * dv.x;
     var tangent = vec3<f32>(1.0, 0.0, 0.0);
-    if (abs(det) > 1e-8) {
+    if abs(det) > 1e-8 {
         tangent = normalize((dpos_dx * dv.y - dpos_dy * du.y) / det);
     }
     let bitangent = cross(pbr_input.N, tangent);
@@ -267,7 +286,7 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
 
     let perturbed_steep = 1.0 - abs(detail_n.y);
     let cliff_w = clamp(max(cell.z, smoothstep(0.55, 1.15, perturbed_steep)), 0.0, 1.0);
-    if (cliff_w > 0.0 && cliff_texel.x >= 1.0) {
+    if cliff_w > 0.0 && cliff_texel.x >= 1.0 {
         let cliff_l = u32(cliff_texel.x) - 1u;
         let p = vertex_output.world_position.xyz;
         let n = abs(detail_n);
@@ -275,37 +294,40 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
         let wx = n.x / wsum;
         let wy = n.y / wsum;
         let wz = n.z / wsum;
-        let ca = wx * sample_albedo(cliff_l, p.zy / terrain.tile_scale, mip_near)
+        let ca =
+            wx * sample_albedo(cliff_l, p.zy / terrain.tile_scale, mip_near)
             + wy * sample_albedo(cliff_l, p.xz / terrain.tile_scale, mip_near)
             + wz * sample_albedo(cliff_l, p.xy / terrain.tile_scale, mip_near);
         let cn_x = sample_normal(cliff_l, p.zy / terrain.tile_scale, mip_near);
         let cn_y = sample_normal(cliff_l, p.xz / terrain.tile_scale, mip_near);
         let cn_z = sample_normal(cliff_l, p.xy / terrain.tile_scale, mip_near);
         let cliff_n = normalize(
-            wx * vec3<f32>(cn_x.z, cn_x.y, cn_x.x)
-            + wy * vec3<f32>(cn_y.x, cn_y.z, cn_y.y)
-            + wz * cn_z,
-        );
+                wx * vec3<f32>(cn_x.z, cn_x.y, cn_x.x) + wy * vec3<f32>(cn_y.x, cn_y.z, cn_y.y)
+                + wz * cn_z,
+            );
         albedo = mix(albedo, ca * terrain.season_tint.rgb, cliff_w);
         detail_n = normalize(mix(detail_n, cliff_n, cliff_w));
         orm.y = mix(orm.y, 0.85, cliff_w);
     }
 
-    let flat_factor = 1.0 - smoothstep(terrain.snow_slope_limit, terrain.snow_slope_limit + 0.2, geo_steep);
+    let flat_factor = 1.0
+        - smoothstep(terrain.snow_slope_limit, terrain.snow_slope_limit + 0.2, geo_steep);
     let alt_factor = smoothstep(terrain.snow_height - 6.0, terrain.snow_height + 6.0, world_pos.y);
     let snow_w = clamp(alt_factor * flat_factor * terrain.snow_amount, 0.0, 1.0);
-    if (snow_w > 0.0) {
+    if snow_w > 0.0 {
         let snow_a = sample_albedo_st(SNOW_LAYER, uv_near, st_near, mip_near);
         albedo = mix(albedo, snow_a * terrain.season_tint.rgb, snow_w);
         orm.y = mix(orm.y, 0.62, snow_w);
         orm.z = mix(orm.z, 0.0, snow_w);
         let snow_n = sample_normal_st(SNOW_LAYER, uv_near, st_near, mip_near);
-        let snow_world = normalize(snow_n.x * tangent + snow_n.y * bitangent + snow_n.z * pbr_input.N);
+        let snow_world =
+            normalize(snow_n.x * tangent + snow_n.y * bitangent + snow_n.z * pbr_input.N);
         detail_n = normalize(mix(detail_n, snow_world, snow_w));
     }
 
     let sea_wet = 1.0 - smoothstep(terrain.sea_level, terrain.sea_level + 2.0, world_pos.y);
-    let flood_wet = 1.0 - smoothstep(terrain.flood_high - 1.0, terrain.flood_high + 1.0, world_pos.y);
+    let flood_wet = 1.0
+        - smoothstep(terrain.flood_high - 1.0, terrain.flood_high + 1.0, world_pos.y);
     let wet = clamp(max(max(sea_wet, flood_wet), cell.w), 0.0, 1.0) * terrain.wetness_gain;
     albedo = albedo * (1.0 - 0.35 * wet);
     orm.y = mix(orm.y, 0.18, wet * 0.8);

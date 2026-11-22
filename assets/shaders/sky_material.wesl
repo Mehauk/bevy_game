@@ -1,7 +1,7 @@
 import bevy_pbr::render::{
+    forward_io::{FragmentOutput, VertexOutput},
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::main_pass_post_lighting_processing,
-    forward_io::{VertexOutput, FragmentOutput},
+    pbr_functions::main_pass_post_lighting_processing
 };
 
 struct SkySurface {
@@ -13,9 +13,10 @@ struct SkySurface {
     scattering: vec2<f32>,
     snow: f32,
     exposure_gain: f32,
-};
+}
 
-@group(constants::MATERIAL_BIND_GROUP) @binding(31) var<uniform> sky: SkySurface;
+@group(constants::MATERIAL_BIND_GROUP) @binding(31)
+var<uniform> sky: SkySurface;
 
 const RAYLEIGH_BETA: f32 = 0.09;
 const MIE_BETA: f32 = 0.045;
@@ -42,7 +43,6 @@ fn fragment(vertex_output: VertexOutput, @builtin(front_facing) is_front: bool) 
     @else
     view_dir = normalize(vertex_output.world_position.xyz);
     @if(true)
-
     let sun_dir = normalize(sky.sun_direction.xyz);
     let sun_weight = sky.sun_direction.w;
     let height = clamp(view_dir.y, -1.0, 1.0);

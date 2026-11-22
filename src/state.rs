@@ -53,6 +53,17 @@ impl PauseTracker {
         }
         !self.is_paused()
     }
+
+    pub(crate) fn sync_menus(&mut self, any_open: bool, reload_gen: u64) -> bool {
+        if reload_gen != self.last_reload_gen {
+            self.last_reload_gen = reload_gen;
+            self.menu_pauses = 0;
+        }
+        if !any_open {
+            self.menu_pauses = 0;
+        }
+        !any_open && !self.is_paused()
+    }
 }
 
 pub struct StatePlugin;
@@ -131,6 +142,34 @@ mod tests {
         assert!(t.request(true), "a second menu pause stays paused");
         assert!(!t.release(true), "releasing one of two keeps it paused");
         assert!(t.release(true), "releasing the last resumes");
+    }
+
+    #[test]
+    fn sync_menus_resets_stale_counts_and_reports_resume() {
+        let mut t = PauseTracker::default();
+        t.request(true);
+        t.request(true);
+        assert!(
+            !t.sync_menus(true, 0),
+            "menus still open keeps the pause and the count"
+        );
+        assert_eq!(t.menu_pauses, 2);
+
+        assert!(
+            t.sync_menus(false, 0),
+            "all menus closed with nothing else pausing resumes"
+        );
+        assert_eq!(t.menu_pauses, 0);
+
+        let mut t = PauseTracker::default();
+        t.request(true);
+        t.request(false);
+        assert!(
+            !t.sync_menus(false, 7),
+            "a reload clears menu pauses but a manual pause holds"
+        );
+        assert_eq!(t.menu_pauses, 0);
+        assert!(t.manual_paused);
     }
 
     #[test]

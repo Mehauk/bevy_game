@@ -19,6 +19,7 @@ use crate::utils::{script_str, script_str_list};
 pub(crate) struct ModifierTracking {
     last_mods: ModKeys,
     last_pressed: Vec<String>,
+    resync: bool,
 }
 
 #[derive(Resource, Default)]
@@ -56,8 +57,26 @@ pub(crate) fn dispatch_modifier_changes(
     mut callbacks: MessageWriter<ScriptCallbackMessage>,
 ) {
     if !manager.any_open() {
+        if !tracking.resync {
+            *tracking = ModifierTracking {
+                resync: true,
+                ..default()
+            };
+        }
+        let _ = mouse_wheel.read().count();
+        let _ = mouse_motion.read().count();
         return;
     }
+
+    if !tracking.resync
+        && !keys.is_changed()
+        && !mouse_buttons.is_changed()
+        && mouse_wheel.is_empty()
+        && mouse_motion.is_empty()
+    {
+        return;
+    }
+    tracking.resync = false;
 
     let mods = current_modifier_flags(&keys);
     let mut pressed: Vec<String> = keys.get_pressed().map(|k| format!("{k:?}")).collect();

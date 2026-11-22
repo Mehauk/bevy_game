@@ -185,3 +185,121 @@ pub(crate) fn strip_menu_nav_text_edits(
             .retain(|edit| !matches!(edit, TextEdit::Up(_) | TextEdit::Down(_)));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::node::{NodeSpec, spawn_node_entity};
+    use super::*;
+    use bevy::camera::NormalizedRenderTarget;
+    use bevy::picking::backend::HitData;
+    use bevy::picking::events::Pointer;
+    use bevy::picking::pointer::{Location, PointerId};
+    use bevy::window::WindowRef;
+    use bevy_mod_scripting::asset::ScriptAsset;
+    use std::time::Duration;
+
+    fn click_app() -> App {
+        let mut app = App::new();
+        app.add_message::<ScriptCallbackMessage>();
+        app.add_observer(on_dom_click);
+        app
+    }
+
+    fn spawn_menu_root(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((
+                MenuRoot {
+                    name: "test".into(),
+                    dom_id: 1,
+                    html_path: Default::default(),
+                    html_modified: None,
+                    script: Some(Handle::<ScriptAsset>::default()),
+                    ready_sent: true,
+                },
+                DomHandlers::default(),
+                DomHandle(1),
+            ))
+            .id()
+    }
+
+    fn click(world: &mut World, target: Entity, button: PointerButton) {
+        world.trigger(PointerClick {
+            entity: target,
+            pointer: Pointer::new(
+                PointerId::Mouse,
+                Location {
+                    position: Vec2::ZERO,
+                    target: NormalizedRenderTarget::Window(
+                        WindowRef::Primary
+                            .normalize(Some(Entity::PLACEHOLDER))
+                            .unwrap(),
+                    ),
+                },
+            ),
+            button,
+            hit: HitData {
+                camera: Entity::PLACEHOLDER,
+                depth: 0.0,
+                position: None,
+                normal: None,
+                extra: None,
+            },
+            duration: Duration::ZERO,
+            count: 1,
+        });
+    }
+
+    fn callback_count(app: &App) -> usize {
+        app.world()
+            .resource::<Messages<ScriptCallbackMessage>>()
+            .len()
+    }
+
+    #[test]
+    fn a_click_dispatches_its_handler_exactly_once() {
+        let mut app = click_app();
+        let root = spawn_menu_root(&mut app);
+        let node = spawn_node_entity(
+            app.world_mut(),
+            2,
+            root,
+            NodeSpec {
+                tag: "button".into(),
+                id: Some("btn".into()),
+                ..default()
+            },
+        );
+        app.world_mut()
+            .get_mut::<DomHandlers>(node)
+            .unwrap()
+            .0
+            .insert("click".into(), "on_btn".into());
+
+        click(app.world_mut(), node, PointerButton::Primary);
+
+        assert_eq!(
+            callback_count(&app),
+            1,
+            "one click must produce exactly one script callback"
+        );
+    }
+
+    #[test]
+    fn right_click_on_the_root_reaches_its_handler() {
+        let mut app = click_app();
+        let root = spawn_menu_root(&mut app);
+        app.world_mut()
+            .get_mut::<DomHandlers>(root)
+            .unwrap()
+            .0
+            .insert("right_click".into(), "on_right".into());
+
+        click(app.world_mut(), root, PointerButton::Secondary);
+
+        assert_eq!(
+            callback_count(&app),
+            1,
+            "the root entity must receive right_click bindings"
+        );
+    }
+}

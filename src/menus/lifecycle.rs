@@ -15,7 +15,7 @@ use bevy_mod_scripting::{
 use crate::menus::OnMenuReady;
 use crate::menus::assets::resolve_menu_file;
 use crate::menus::dom::{
-    DomHandle, DomRuntime, apply_dom_ops, prune_dead_nodes, queue_xml_subtree,
+    DomHandle, DomHandlers, DomRuntime, apply_dom_ops, prune_dead_nodes, queue_xml_subtree,
 };
 use crate::menus::focus::MenuFocusState;
 use crate::menus::state::{MenuCmd, MenuManager, ToggleMenu};
@@ -177,6 +177,7 @@ pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
     if let Ok(mut e) = world.get_entity_mut(root_entity) {
         e.insert((
             DomHandle(root_dom_id),
+            DomHandlers::default(),
             MenuRoot {
                 name: name.to_string(),
                 dom_id: root_dom_id,

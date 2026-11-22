@@ -68,7 +68,10 @@ pub struct ScreenshotPlugin;
 impl Plugin for ScreenshotPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<CaptureScreenshot>()
-            .add_systems(Update, (handle_capture_requests, start_pending_captures));
+            .add_systems(
+                Update,
+                (handle_capture_requests, start_pending_captures).chain(),
+            );
 
         command!(
             app,
@@ -269,7 +272,7 @@ fn screenshot_camera(
     args: Res<CommandArgs>,
     mut output: ResMut<CommandOutput>,
     mut requests: MessageWriter<CaptureScreenshot>,
-    names: Query<&Name>,
+    names: Query<&Name, With<Camera>>,
 ) {
     let Some(camera_name) = args.args.first() else {
         output.set("Usage: screenshot_camera <camera_name> [filename]");
@@ -405,7 +408,10 @@ mod tests {
         let mut app = App::new();
         app.add_message::<CaptureScreenshot>()
             .init_resource::<Assets<Image>>()
-            .add_systems(Update, (handle_capture_requests, start_pending_captures));
+            .add_systems(
+                Update,
+                (handle_capture_requests, start_pending_captures).chain(),
+            );
         spawn_camera(&mut app, Camera::default(), None);
 
         {
@@ -445,6 +451,52 @@ mod tests {
         assert!(
             app.world().get::<PendingCapture>(capture).is_none(),
             "the pending capture is armed and consumed"
+        );
+    }
+
+    #[test]
+    fn screenshot_camera_rejects_names_that_belong_to_non_cameras() {
+        let mut app = App::new();
+        app.init_resource::<CommandArgs>()
+            .init_resource::<CommandOutput>()
+            .add_message::<CaptureScreenshot>();
+        app.world_mut().spawn((Name::new("Terrain"), GlobalTransform::default()));
+        *app.world_mut().resource_mut::<CommandArgs>() = CommandArgs {
+            args: vec!["Terrain".into()],
+        };
+
+        let system = app.world_mut().register_system(screenshot_camera);
+        app.world_mut().run_system(system).unwrap();
+
+        assert!(
+            app.world()
+                .resource::<Messages<CaptureScreenshot>>()
+                .is_empty(),
+            "a named non-camera must not queue a capture request"
+        );
+    }
+
+    #[test]
+    fn screenshot_camera_accepts_named_cameras() {
+        let mut app = App::new();
+        app.init_resource::<CommandArgs>()
+            .init_resource::<CommandOutput>()
+            .add_message::<CaptureScreenshot>();
+        app.world_mut()
+            .spawn((Camera::default(), Name::new("Main"), GlobalTransform::default()));
+        *app.world_mut().resource_mut::<CommandArgs>() = CommandArgs {
+            args: vec!["Main".into()],
+        };
+
+        let system = app.world_mut().register_system(screenshot_camera);
+        app.world_mut().run_system(system).unwrap();
+
+        assert_eq!(
+            app.world()
+                .resource::<Messages<CaptureScreenshot>>()
+                .len(),
+            1,
+            "a named camera must queue exactly one capture request"
         );
     }
 

@@ -894,3 +894,116 @@ end-to-end via `DocgenPlugin`.
 
 **None** at runtime. 32 source files lost their comments; the plugin was renamed `LuaDocsPlugin` →
 `DocgenPlugin` (module `src/lua_docs.rs` → `src/docgen/`), which changes no command or Lua name.
+
+---
+
+## Iteration 12 — correctness sweep: the user's 10-item plan
+
+### Finding
+
+The user supplied a prioritized 10-item plan (three phases) from a full codebase pass. Every item was
+verified against the code before implementing (plan-audit step); all ten were real. Summary of what
+was found and done, grouped by phase.
+
+**Phase 1 — silent-breakage bugs**
+
+1. **Stale `HotkeyRegistry` after a remap** (`input/remap.rs`, `input/mod.rs`). `handle_remap_bindings`
+   inserts the new `Binding` through deferred `Commands`, but `sync_hotkey_registry` runs later in the
+   same `Update` and never sees the insert, so `HotkeyRegistry` (and Lua `input.list_bindings`) showed
+   the old key until the next frame. The plan offered (A) a direct `&mut Binding` write or (B) an
+   `ApplyDeferred` sync point. **Plan audit rejected A**: `Binding` is an immutable component in
+   bevy_enhanced_input 0.27.2 (`Component::Mutability = Immutable` — the compiler rejects
+   `&mut Binding`), so the plan's option A was impossible. Implemented B: new
+   `InputUpdateSystems::ApplyRemap` set holding an `ApplyDeferred`, chained between `ProcessRemap` and
+   `SyncHotkeyRegistry`. Two `ApplyDeferred` instances in one schedule are distinct nodes (each gets
+   its own `SystemKey` via `new_key_type!`), verified in the bevy_ecs source. The
+   `.before(MenuUpdateSystems)` `configure_sets` in `integration/mod.rs` lists all five sets now.
+2. **Duplicate DOM pointer observers + missing root `DomHandlers`** (`menus/dom/node.rs`,
+   `menus/lifecycle.rs`, `menus/dom/mod.rs`). `MenuPlugin` registers global `on_dom_click`/
+   `on_dom_hover_enter`/`on_dom_hover_exit` observers, and `spawn_node_entity` additionally attached
+   per-entity copies on interactive nodes — both fire for the same trigger, so clicks on interactive
+   nodes dispatched their handler **twice**. Removed the per-entity observers (global ones remain; the
+   per-entity `on_dom_key_input`/`on_dom_text_change` on input nodes stay — they are not duplicated).
+   Separately, the menu root entity had no `DomHandlers`, so `dom.on` bindings targeting the root were
+   silently dropped; the root now gets `DomHandlers::default()`, and `DomOp::BindEvent` **warns**
+   instead of dropping when the target lacks the component.
+3. **`commands_docs` namespace grouping** (`docgen/commands_docs.rs`). `format_markdown` emitted a new
+   `## namespace` heading whenever the namespace changed between adjacent entries, so bare (no `>`)
+   commands interleaved with namespaced ones split the `general` section into several. Now grouped via
+   a `BTreeMap<&str, Vec<&CommandEntry>>` first.
+
+**Phase 2 — validation and architecture**
+
+4. **`screenshot_camera` validation + capture scheduling** (`screenshot.rs`). The name query was
+   `&Name` without `With<Camera>`, so `screenshot_camera Terrain` queued a doomed request; now
+   `Query<&Name, With<Camera>>` and the command reports `error: no camera named '…'` via
+   `CommandOutput`. `handle_capture_requests` and `start_pending_captures` were unordered; now
+   `.chain()`ed (plugin and test) so a capture camera is never armed the frame it spawns.
+   **Deviation:** the plan proposed a `ready: bool` flag on `PendingCapture`; kept the existing
+   `is_added()` check plus the chain — same guarantee, no new state.
+5. **No `Plugin` in `utils/` + order-independent command registration.** `utils/registry/commands.rs`
+   held `CommandRegistryPlugin`, violating the strict-kernel rule, and `register_command` required the
+   plugin to be added first (it wrote into a possibly-absent resource). New `src/commands.rs` with
+   `CommandsPlugin` (resources, `RunCommand` message, `handle_run_commands`, history, the Lua
+   `commands` namespace — **name and functions unchanged**, only the registration site moved).
+   `CommandAppExt::register_command` now lazily inits `CommandRegistry`, so registration order no
+   longer matters anywhere. `utils` keeps pure types + the `command!` macro.
+6. **Unified `GameplayInput` context creation.** `setup_gameplay_input` and `character.rs` each built
+   the `ContextActive` + `ContextActivity<GameplayInput>` tuple by hand. New
+   `GameplayContextBundle` (Default = active) used in both places.
+
+**Phase 3 — per-frame waste and consistency**
+
+7. **Polling/direct field access in `integration/`.** `attach_camera_target` polled `Added<Character>`
+   every frame → now an `On<Add<Character>>` observer. `sync_menu_pauses` reached into `PauseTracker`
+   fields (`menu_pauses`, `last_reload_gen`) from outside `state.rs` → new `PauseTracker::sync_menus(
+   any_open, reload_gen) -> bool` encapsulates the stale-count reset and resume decision; integration
+   just acts on the return value.
+8. **`dev.rs` per-frame scans + FPS coupling.** `update_debug_overlay_text` did a full
+   `iter_entities` scan every frame to find its text node → the entity is now spawned first and stored
+   in a `DebugOverlayTextEntity(Entity)` resource (root attaches it with `add_child`).
+   `sync_debug_overlay_layout` hard-required `FpsOverlayConfig` → now `Option<Res<FpsOverlayConfig>>`.
+   **Deviation:** the plan suggested dropping the FPS z-index height matching; kept it (the overlay
+   still sits below the FPS graph) and made the config optional instead.
+9. **Per-frame allocations in `dispatch_modifier_changes`** (`menus/dispatch.rs`). With no menu open
+   the system early-returned without draining the mouse-wheel/motion readers and kept stale tracking
+   state, so reopening a menu could fire a spurious or missed modifier event. Added a `resync` flag:
+   on menu close the tracking state resets and readers drain; the first open frame after that always
+   resyncs.
+10. **`profiler` `CommandOutput` consistency + `find_command` ambiguity.** All four profiler commands
+    only `info!`-logged, so command history showed nothing; they now also `output.set(...)` the same
+    text (`profiler_report` folds summary + worst spike into one output). `CommandRegistry::find_command`
+    silently picked the first suffix match when several commands shared a shorthand; it now returns
+    `None` and warns, forcing the full name.
+
+### Test-infrastructure discovery
+
+The remap regression test initially panicked with "Encountered an error in observer … Resource does
+not exist". Root cause: **`App::update()` never calls `App::finish()`** (only the default runner does),
+and `EnhancedInputPlugin::finish` is what consumes `ContextRegistry` and inits
+`ContextInstances<PreUpdate>` — the default context schedule is `PreUpdate`. Spawning `GameplayInput`
+auto-inserts its required component `ContextPriority<GameplayInput>` (required-components mechanism),
+whose `register` observer needs that resource. Fix: test apps that use `InputPlugin` must call
+`app.finish()` before the first `app.update()`.
+
+### Audit
+
+`cargo check --all-targets` clean, no warnings. `cargo test` → **87 passed** (baseline was 78; nine
+tests added: remap-same-frame, click-exactly-once, root right-click, docgen grouping, two
+screenshot_camera validation tests, lazy registry init, ambiguous shorthand, sync_menus reset/resume).
+Lua contract surface verified unchanged: no namespace, function, or callback renames anywhere; the
+`commands` namespace moved files but kept its name and members.
+
+### Behaviour changes
+
+- Ambiguous command shorthand (e.g. two `…>toggle` commands) now **fails with a warning** instead of
+  silently running the first match.
+- Profiler commands now write their messages into command history (`CommandOutput`), visible via
+  `commands.history()` in Lua.
+- `screenshot_camera <name>` rejects names that belong to non-cameras (error output, no request).
+- DOM clicks/hover on interactive nodes dispatch their handler **once** (was twice); root-level
+  `dom.on` bindings now work; a `dom.on` onto an entity without `DomHandlers` logs a warning.
+- The debug overlay text entity is spawned visible (no `Visibility::Hidden` dance).
+- Command registration order no longer matters (lazy `CommandRegistry` init).
+- Remapped bindings appear in `HotkeyRegistry`/`input.list_bindings` on the **same frame** as the
+  remap (was next frame).

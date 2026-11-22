@@ -27,8 +27,8 @@ impl Default for DebugOverlayConfig {
 #[derive(Component)]
 struct DebugOverlayRoot;
 
-#[derive(Component)]
-struct DebugOverlayText;
+#[derive(Resource)]
+struct DebugOverlayTextEntity(Entity);
 
 pub struct DevUtilsPlugin;
 
@@ -40,7 +40,7 @@ impl Plugin for DevUtilsPlugin {
             .add_systems(Startup, spawn_debug_overlay)
             .add_systems(
                 Update,
-                (sync_debug_overlay_layout, update_debug_overlay_text),
+                (update_debug_overlay_text, sync_debug_overlay_layout).chain(),
             );
         command!(app, "Toggle global wireframe rendering", toggle_wireframe);
         command!(app, "Toggle the FPS overlay", toggle_fps_overlay);
@@ -81,6 +81,14 @@ fn toggle_debug_overlay(
 }
 
 fn spawn_debug_overlay(mut commands: Commands) {
+    let text_entity = commands
+        .spawn((
+            Text::default(),
+            TextFont::from_font_size(16.0),
+            TextColor(Color::WHITE),
+            Pickable::IGNORE,
+        ))
+        .id();
     commands
         .spawn((
             DebugOverlayRoot,
@@ -95,20 +103,14 @@ fn spawn_debug_overlay(mut commands: Commands) {
             BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
             GlobalZIndex(FPS_OVERLAY_ZINDEX),
             Pickable::IGNORE,
-            Visibility::Hidden,
         ))
-        .with_child((
-            DebugOverlayText,
-            Text::default(),
-            TextFont::from_font_size(16.0),
-            TextColor(Color::WHITE),
-            Pickable::IGNORE,
-        ));
+        .add_child(text_entity);
+    commands.insert_resource(DebugOverlayTextEntity(text_entity));
 }
 
 fn sync_debug_overlay_layout(
     config: Res<DebugOverlayConfig>,
-    fps_config: Res<FpsOverlayConfig>,
+    fps_config: Option<Res<FpsOverlayConfig>>,
     overlay: Single<(&mut Node, &mut Visibility), With<DebugOverlayRoot>>,
     fps_roots: Query<(&ComputedNode, &GlobalZIndex), Without<DebugOverlayRoot>>,
 ) {
@@ -123,7 +125,8 @@ fn sync_debug_overlay_layout(
     }
 
     let fps_height = fps_config
-        .enabled
+        .as_deref()
+        .is_some_and(|config| config.enabled)
         .then(|| fps_roots.iter().find(|(_, z)| z.0 == FPS_OVERLAY_ZINDEX))
         .flatten()
         .map(|(computed, _)| computed.size().y * computed.inverse_scale_factor())
@@ -140,7 +143,7 @@ fn update_debug_overlay_text(world: &mut World) {
         return;
     }
 
-    let entries = world.resource::<DebugInfoRegistry>().entries.clone();
+    let entries = std::mem::take(&mut world.resource_mut::<DebugInfoRegistry>().entries);
     let mut text = String::new();
     let mut category_shown: Option<&str> = None;
     for entry in &entries {
@@ -158,12 +161,9 @@ fn update_debug_overlay_text(world: &mut World) {
         }
         text.push_str(&format!("  {}: {}\n", entry.label, value));
     }
+    world.resource_mut::<DebugInfoRegistry>().entries = entries;
 
-    let Some(text_entity) = world
-        .iter_entities()
-        .find(|entity| entity.contains::<DebugOverlayText>())
-        .map(|entity| entity.id())
-    else {
+    let Some(text_entity) = world.get_resource::<DebugOverlayTextEntity>().map(|e| e.0) else {
         return;
     };
     let mut text_node = world.entity_mut(text_entity);

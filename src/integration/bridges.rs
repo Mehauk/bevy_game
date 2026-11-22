@@ -21,7 +21,7 @@ pub(super) fn register(app: &mut App) {
             sync_camera_facing,
         ),
     )
-    .add_systems(Update, attach_camera_target)
+    .add_observer(attach_camera_target)
     .add_systems(PostUpdate, sync_cursor_with_menus)
     .add_systems(
         PostUpdate,
@@ -36,16 +36,8 @@ fn sync_camera_facing(rig: Single<&CameraRig>, mut facing: Single<&mut CameraFac
     facing.first_person = rig.view_mode == ViewMode::FirstPerson;
 }
 
-fn attach_camera_target(
-    mut attached: Local<bool>,
-    player: Single<Entity, With<Character>>,
-    mut commands: Commands,
-) {
-    if *attached {
-        return;
-    }
-    *attached = true;
-    commands.entity(*player).insert(CameraTarget::default());
+fn attach_camera_target(trigger: On<Add<Character>>, mut commands: Commands) {
+    commands.entity(trigger.entity).insert(CameraTarget::default());
 }
 
 fn sync_context_activity(

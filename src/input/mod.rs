@@ -18,6 +18,7 @@ pub enum InputUpdateSystems {
     SyncActionContexts,
     ApplyContextSync,
     ProcessRemap,
+    ApplyRemap,
     SyncHotkeyRegistry,
 }
 
@@ -36,6 +37,7 @@ impl Plugin for InputPlugin {
                     InputUpdateSystems::SyncActionContexts,
                     InputUpdateSystems::ApplyContextSync,
                     InputUpdateSystems::ProcessRemap,
+                    InputUpdateSystems::ApplyRemap,
                     InputUpdateSystems::SyncHotkeyRegistry,
                 )
                     .chain(),
@@ -43,7 +45,10 @@ impl Plugin for InputPlugin {
             .add_systems(PreStartup, setup_gameplay_input)
             .add_systems(
                 Update,
-                ApplyDeferred.in_set(InputUpdateSystems::ApplyContextSync),
+                (
+                    ApplyDeferred.in_set(InputUpdateSystems::ApplyContextSync),
+                    ApplyDeferred.in_set(InputUpdateSystems::ApplyRemap),
+                ),
             )
             .add_systems(
                 Update,
@@ -73,6 +78,21 @@ pub struct HotkeyLabel(pub &'static str);
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub struct ContextActive(pub bool);
 
+#[derive(Bundle)]
+pub struct GameplayContextBundle {
+    pub active: ContextActive,
+    pub activity: ContextActivity<GameplayInput>,
+}
+
+impl Default for GameplayContextBundle {
+    fn default() -> Self {
+        Self {
+            active: ContextActive(true),
+            activity: ContextActivity::<GameplayInput>::ACTIVE,
+        }
+    }
+}
+
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
 pub struct ActionContext {
     pub name: &'static str,
@@ -81,7 +101,7 @@ pub struct ActionContext {
 
 fn setup_gameplay_input(mut commands: Commands) {
     let gameplay_entity = commands
-        .spawn((GameplayInput, ContextActive(true), ContextActivity::<GameplayInput>::ACTIVE))
+        .spawn((GameplayInput, GameplayContextBundle::default()))
         .id();
     commands.insert_resource(GameplayInputEntity(gameplay_entity));
 }

@@ -1,5 +1,6 @@
 mod camera;
 mod character;
+mod commands;
 mod dev;
 mod docgen;
 mod input;
@@ -22,6 +23,7 @@ use bevy_mod_scripting::BMSPlugin;
 
 use camera::CameraPlugin;
 use character::CharacterPlugin;
+use commands::CommandsPlugin;
 use dev::DevUtilsPlugin;
 use docgen::DocgenPlugin;
 use input::InputPlugin;
@@ -31,7 +33,6 @@ use profiler::ProfilerPlugin;
 use screenshot::ScreenshotPlugin;
 use state::StatePlugin;
 use terrain::TerrainPlugin;
-use utils::registry::commands::CommandRegistryPlugin;
 
 fn main() {
     let _ = std::fs::create_dir_all("mods");
@@ -44,7 +45,7 @@ fn main() {
             FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
-            CommandRegistryPlugin,
+            CommandsPlugin,
             InputPlugin,
             MenuPlugin,
         ))

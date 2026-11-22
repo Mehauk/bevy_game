@@ -5,10 +5,7 @@ use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
-    input::{ContextActive, GameplayInput, HotkeyLabel, MovementBinding},
-    utils::SpawnGroundHeight,
-    utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
-    utils::registry::debug_info::{DebugInfoAppExt, debug_info},
+    input::{GameplayContextBundle, GameplayInput, HotkeyLabel, MovementBinding}, terrain::terrain::Terrain, utils::registry::{commands::{CommandAppExt, CommandArgs, CommandOutput, command}, debug_info::{DebugInfoAppExt, debug_info}},
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
@@ -272,7 +269,7 @@ fn setup_character(world: &mut World) {
         ..default()
     };
     let spawn_translation =
-        spawn_translation(world.get_resource::<SpawnGroundHeight>().map_or(0.0, |h| h.0));
+        spawn_translation(world.get_resource::<Terrain>().map_or(0.0, |h| h.sample_ground_height(0.0, 0.0)));
 
     let mut char_entity = world
         .spawn_scene(bsn! {
@@ -348,8 +345,7 @@ fn setup_character(world: &mut World) {
     char_entity
         .insert((
             CameraFacing::default(),
-            ContextActive(true),
-            ContextActivity::<GameplayInput>::ACTIVE,
+            GameplayContextBundle::default(),
             RigidBody::Dynamic,
             Collider::capsule(CAPSULE_RADIUS, CAPSULE_HEIGHT),
             LockedAxes::ROTATION_LOCKED,
@@ -557,7 +553,7 @@ fn sync_body_visibility(
 }
 
 fn respawn_character(
-    ground_height: Res<SpawnGroundHeight>,
+    terrain: Res<Terrain>,
     query: Single<(
         &mut Transform,
         &mut LinearVelocity,
@@ -569,7 +565,7 @@ fn respawn_character(
 ) {
     let (mut transform, mut velocity, mut ground, mut gravity, mut movement_state, character) =
         query.into_inner();
-    transform.translation = spawn_translation(ground_height.0);
+    transform.translation = spawn_translation(terrain.sample_ground_height(0.0, 0.0));
     velocity.0 = Vec3::ZERO;
     *ground = GroundState::default();
     *movement_state = MovementState::default();

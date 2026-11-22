@@ -1,10 +1,10 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::utils::SpawnGroundHeight;
-use crate::utils::registry::commands::{CommandAppExt, command};
+use crate::{terrain::terrain::Terrain, utils::registry::commands::{CommandAppExt, command}};
 
 mod atmosphere;
+pub mod terrain;
 
 pub(crate) use atmosphere::SkyBox;
 use atmosphere::{
@@ -17,7 +17,7 @@ pub struct TerrainPlugin;
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainFog>()
-            .init_resource::<SpawnGroundHeight>()
+            .init_resource::<Terrain>()
             .add_systems(Startup, (setup_terrain, setup_atmosphere))
             .add_systems(Update, sync_terrain_fog);
 
@@ -30,13 +30,15 @@ impl Plugin for TerrainPlugin {
     }
 }
 
-const GROUND_EXTENT: f32 = 400.0;
-
 fn setup_terrain(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    world: Res<Terrain>,
 ) {
+    let terrain_mesh = Mesh::from(world.into_inner());
+    let terrain_collider = Collider::trimesh_from_mesh(&terrain_mesh).expect("Failed to create terrain collider");
+
     commands
         .spawn((
             Name::new("Terrain"),
@@ -44,18 +46,13 @@ fn setup_terrain(
             Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
             Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
             Transform::default(),
-            Mesh3d(meshes.add(Mesh::from(
-                Plane3d::default().mesh().size(GROUND_EXTENT, GROUND_EXTENT),
-            ))),
+            Mesh3d(meshes.add(terrain_mesh)),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(0.28, 0.42, 0.20),
                 perceptual_roughness: 0.92,
                 reflectance: 0.15,
                 ..default()
             })),
-        ))
-        .with_child((
-            Transform::from_xyz(0.0, -0.5, 0.0),
-            Collider::cuboid(GROUND_EXTENT, 1.0, GROUND_EXTENT),
+            terrain_collider,
         ));
 }

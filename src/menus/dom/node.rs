@@ -124,7 +124,6 @@ pub(crate) fn spawn_node_entity(
     }
 
     let is_input = spec.tag == "input";
-    let is_interactive = is_input || spec.mouse_input || spec.id.is_some() || spec.tag == "button";
 
     match spec.tag.as_str() {
         "text" => {
@@ -165,12 +164,6 @@ pub(crate) fn spawn_node_entity(
         _ => {
             e.insert((Node::default(), Hovered::default()));
         }
-    }
-
-    if is_interactive {
-        e.observe(super::events::on_dom_click)
-            .observe(super::events::on_dom_hover_enter)
-            .observe(super::events::on_dom_hover_exit);
     }
 
     if is_input {

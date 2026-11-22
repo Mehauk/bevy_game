@@ -19,6 +19,7 @@ impl Plugin for IntegrationPlugin {
                 InputUpdateSystems::SyncActionContexts,
                 InputUpdateSystems::ApplyContextSync,
                 InputUpdateSystems::ProcessRemap,
+                InputUpdateSystems::ApplyRemap,
                 InputUpdateSystems::SyncHotkeyRegistry,
             )
                 .before(MenuUpdateSystems),

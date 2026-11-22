@@ -58,19 +58,10 @@ fn sync_menu_pauses(
     play_state: Res<State<PlayState>>,
     mut next_play_state: ResMut<NextState<PlayState>>,
 ) {
-    let reload_gen = menu_manager.reload_generation();
-    if reload_gen != tracker.last_reload_gen {
-        tracker.last_reload_gen = reload_gen;
-        tracker.menu_pauses = 0;
-    }
-
-    if !menu_manager.any_open() {
-        if tracker.menu_pauses > 0 {
-            tracker.menu_pauses = 0;
-        }
-        if !tracker.is_paused() && *play_state.get() == PlayState::Paused {
-            next_play_state.set(PlayState::Running);
-        }
+    let should_resume =
+        tracker.sync_menus(menu_manager.any_open(), menu_manager.reload_generation());
+    if should_resume && *play_state.get() == PlayState::Paused {
+        next_play_state.set(PlayState::Running);
     }
 }
 

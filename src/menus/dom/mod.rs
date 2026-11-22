@@ -210,11 +210,17 @@ pub(crate) fn apply_dom_ops(world: &mut World) {
                 }
             }
             DomOp::BindEvent { id, event, handler } => {
-                if let Some(entity) = entity_of(world, id)
-                    && let Some(mut handlers) = world.get_mut::<DomHandlers>(entity)
-                {
-                    let key = if event == "press" { "click" } else { &event };
-                    handlers.0.insert(key.to_string(), handler);
+                let Some(entity) = entity_of(world, id) else {
+                    continue;
+                };
+                match world.get_mut::<DomHandlers>(entity) {
+                    Some(mut handlers) => {
+                        let key = if event == "press" { "click" } else { &event };
+                        handlers.0.insert(key.to_string(), handler);
+                    }
+                    None => {
+                        warn!("dom.on: entity for dom id {id} has no DomHandlers, dropping '{event}' -> '{handler}'");
+                    }
                 }
             }
             DomOp::Focus(id) => {

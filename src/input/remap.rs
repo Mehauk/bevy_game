@@ -108,3 +108,52 @@ pub(super) fn handle_remap_bindings(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::{HotkeyRegistry, InputAppExt, InputPlugin};
+    use bevy::input::InputPlugin as BevyInputPlugin;
+
+    #[derive(InputAction)]
+    #[action_output(bool)]
+    struct RemapTestAction;
+
+    #[test]
+    fn remap_updates_hotkey_registry_on_the_same_frame() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, BevyInputPlugin, InputPlugin));
+        app.register_gameplay_hotkey::<RemapTestAction, _, _, _>(
+            "Remap Test",
+            ActionSettings::default(),
+            [KeyCode::KeyQ.into()],
+            |_ev: On<Start<RemapTestAction>>| {},
+        );
+        app.finish();
+        app.update();
+
+        {
+            let world = app.world_mut();
+            world
+                .resource_mut::<Messages<RemapBindingMessage>>()
+                .write(RemapBindingMessage {
+                    source_key: "KeyQ".into(),
+                    source_mods: ModKeys::empty(),
+                    target_key: "KeyW".into(),
+                    target_mods: ModKeys::empty(),
+                });
+        }
+        app.update();
+
+        let registry = app.world().resource::<HotkeyRegistry>();
+        let entry = registry
+            .entries
+            .iter()
+            .find(|e| e.label == "Remap Test")
+            .expect("the action's binding is registered");
+        assert_eq!(
+            entry.key, "KeyW",
+            "the registry must show the new binding on the frame the remap runs"
+        );
+    }
+}

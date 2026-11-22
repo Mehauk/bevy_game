@@ -22,17 +22,17 @@ pub(super) fn format_markdown(commands: &[CommandEntry]) -> String {
          The last `>`-separated segment of a name works as a shorthand when it is unique.\n\n",
     );
 
-    let mut current: Option<&str> = None;
+    let mut groups: std::collections::BTreeMap<&str, Vec<&CommandEntry>> = Default::default();
     for command in commands {
-        let namespace = namespace_of(&command.name);
-        if current != Some(namespace) {
-            if current.is_some() {
-                out.push('\n');
-            }
-            out.push_str(&format!("## {namespace}\n\n"));
-            current = Some(namespace);
+        groups.entry(namespace_of(&command.name)).or_default().push(command);
+    }
+
+    for (namespace, entries) in groups {
+        out.push_str(&format!("## {namespace}\n\n"));
+        for command in entries {
+            out.push_str(&format!("- `{}` — {}\n", command.name, command.description));
         }
-        out.push_str(&format!("- `{}` — {}\n", command.name, command.description));
+        out.push('\n');
     }
 
     out
@@ -82,5 +82,16 @@ mod tests {
         let registry = app.world().resource::<CommandRegistry>();
         let out = format_markdown(&registry.commands);
         assert!(out.contains("## general\n\n- `bare_command` — does nothing\n"));
+    }
+
+    #[test]
+    fn bare_commands_between_namespaces_do_not_split_the_general_section() {
+        let app = registered_app(&["alpha>cmd", "beta_bare", "zeta>cmd", "zz_bare"]);
+        let registry = app.world().resource::<CommandRegistry>();
+        let out = format_markdown(&registry.commands);
+        assert_eq!(out.matches("## general").count(), 1);
+        assert_eq!(out.matches("## alpha").count(), 1);
+        assert_eq!(out.matches("## zeta").count(), 1);
+        assert!(out.contains("- `beta_bare` — does nothing\n- `zz_bare` — does nothing\n"));
     }
 }

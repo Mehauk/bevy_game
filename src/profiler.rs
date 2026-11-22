@@ -2,7 +2,7 @@ use std::{collections::VecDeque, fmt, time::Instant};
 
 use bevy::prelude::*;
 
-use crate::utils::registry::commands::{CommandAppExt, CommandArgs, command};
+use crate::utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command};
 
 const DEFAULT_SPIKE_THRESHOLD_MS: f64 = 100.0;
 const DEFAULT_MAX_SAMPLES: usize = 300;
@@ -280,12 +280,14 @@ fn end_frame(mut state: ResMut<ProfilerState>) {
     }
 }
 
-fn profiler_report(state: Res<ProfilerState>) {
+fn profiler_report(state: Res<ProfilerState>, mut output: ResMut<CommandOutput>) {
     let Some(summary) = state.summary() else {
-        info!("Profiler: no samples recorded yet");
+        let message = "Profiler: no samples recorded yet".to_string();
+        info!("{message}");
+        output.set(message);
         return;
     };
-    info!(
+    let mut report = format!(
         "Profiler (last {} frames): avg={:.1}ms | p95={:.1}ms | p99={:.1}ms | max={:.1}ms | spikes(>={:.0}ms)={}",
         summary.count,
         summary.avg_ms,
@@ -296,36 +298,53 @@ fn profiler_report(state: Res<ProfilerState>) {
         summary.spike_count,
     );
     if let Some(worst) = state.worst_spike {
-        info!("Worst spike: {worst}");
+        report.push_str(&format!("\nWorst spike: {worst}"));
     }
+    info!("{report}");
+    output.set(report);
 }
 
-fn set_spike_threshold(args: Res<CommandArgs>, mut state: ResMut<ProfilerState>) {
+fn set_spike_threshold(
+    args: Res<CommandArgs>,
+    mut state: ResMut<ProfilerState>,
+    mut output: ResMut<CommandOutput>,
+) {
     let Some(ms) = args.get_f32(0).filter(|v| *v >= 0.0) else {
-        info!(
+        let message = format!(
             "Current spike threshold: {:.1}ms. Usage: set_spike_threshold <ms> (0 disables)",
             state.spike_threshold_ms
         );
+        info!("{message}");
+        output.set(message);
         return;
     };
     state.spike_threshold_ms = ms as f64;
-    info!("Set profiler spike threshold to {:.1}ms", state.spike_threshold_ms);
+    let message = format!(
+        "Set profiler spike threshold to {:.1}ms",
+        state.spike_threshold_ms
+    );
+    info!("{message}");
+    output.set(message);
 }
 
-fn reset_profiler(mut state: ResMut<ProfilerState>) {
+fn reset_profiler(mut state: ResMut<ProfilerState>, mut output: ResMut<CommandOutput>) {
     state.reset();
-    info!("Profiler samples and worst spike cleared");
+    let message = "Profiler samples and worst spike cleared";
+    info!("{message}");
+    output.set(message);
 }
 
-fn toggle_profiler(mut state: ResMut<ProfilerState>) {
+fn toggle_profiler(mut state: ResMut<ProfilerState>, mut output: ResMut<CommandOutput>) {
     state.enabled = !state.enabled;
     if !state.enabled {
         state.last_end = None;
     }
-    info!(
+    let message = format!(
         "Profiler {}",
         if state.enabled { "resumed" } else { "paused" }
     );
+    info!("{message}");
+    output.set(message);
 }
 
 #[cfg(test)]

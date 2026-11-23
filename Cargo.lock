@@ -8413,6 +8413,7 @@ dependencies = [
  "mesh_to_sdf",
  "meshless_voronoi",
  "noise",
+ "toml",
 ]
 
 [[package]]

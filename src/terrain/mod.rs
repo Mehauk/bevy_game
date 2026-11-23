@@ -66,7 +66,7 @@ fn setup_water(
 
     commands
         .spawn((
-            Name::new("Terrain"),
+            Name::new("Sea"),
             Transform::from_xyz(0.0, -0.1, 0.0),
             Mesh3d(meshes.add(Plane3d::default().mesh().size(world.size().0, world.size().1))),
             MeshMaterial3d(materials.add(StandardMaterial {
@@ -76,9 +76,9 @@ fn setup_water(
                 ior: 1.33,
                 perceptual_roughness: 0.04,
                 reflectance: 0.5,
-                thickness: 0.06,
+                thickness: 0.1,
                 attenuation_distance: 2.3,
-                attenuation_color: Color::srgb(0.1, 0.8, 0.4),
+                attenuation_color: Color::srgb(0.2, 0.7, 0.5),
                 ..default()
             })),
             NotShadowCaster,

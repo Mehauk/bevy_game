@@ -1007,3 +1007,117 @@ Lua contract surface verified unchanged: no namespace, function, or callback ren
 - Command registration order no longer matters (lazy `CommandRegistry` init).
 - Remapped bindings appear in `HotkeyRegistry`/`input.list_bindings` on the **same frame** as the
   remap (was next frame).
+
+---
+
+## Ticket 0001 — distance fields
+
+Original instruction (verbatim, `tickets/incomplete/0001-distance_fields.md`):
+
+> # Commands
+> Do a thorough analaysis on how this can be done optimally. use websearch as well.
+> - [ ] Add a command that enables/disables the custom distance fields for meshes.
+>     - translucent materials do not generate a signed distance field.
+>
+> # Shaders
+> Create utility wels files wherever possile. for example, the actual distance field could be a
+> utility which could be used for ripples and such in the future and then a wels for the view.
+
+### Analysis
+
+**The engine provides nothing to toggle.** Bevy 0.20.1 has *no* mesh signed-distance-field system:
+`mesh_sdf` (the per-mesh SDF atlas that `specular_transmission` materials used in 0.15/0.16) was
+removed from `bevy_pbr` — a case-insensitive search for `mesh_sdf` across every bevy crate in the
+local cargo registry returns zero hits. The ticket's sub-note "translucent materials do not
+generate a signed distance field" is therefore exactly right for 0.20: nothing generates one, for
+any material. "Custom distance fields" must mean a system this game owns end-to-end: bake → store →
+bind → sample, with a console command gating it. (WebSearch is unavailable in this environment; the
+analysis was done against the pinned bevy_pbr/bevy_render/bevy_shader/wesl 0.20.1/0.6.0 sources in
+the cargo registry, which is the ground truth for this project anyway.)
+
+**Which meshes.** The game's meshes are the terrain (a displaced `Plane3d` heightfield, 1000²
+subdivisions ≈ 2 M triangles, analytic height via `Terrain::sample_ground_height`) and the water
+plane (`specular_transmission: 1.0` — the translucent material the ticket calls out). Both are
+heightfields: a single y per (x, z).
+
+**Generation options considered:**
+
+- *GPU per-mesh SDF atlas (the old Bevy approach):* render each mesh's SDF into a 3D atlas by
+  raymarching triangles in a custom phase. General but heavy: atlas allocator, per-mesh pipeline,
+  extract/prepare phases, ~600+ lines of render code. Rejected for now — our content is heightfields,
+  where a cheaper exact method exists; revisit when arbitrary imported meshes need fields.
+- *CPU brute-force triangle distance:* O(texels × triangles) = 10⁶ × 2×10⁶ — infeasible without a
+  BVH/grid. Rejected.
+- *Heightfield bake (chosen):* rasterize the mesh triangles into a 2D height grid (O(triangles),
+  each ~1–2 grid cells), then fill a 3D texture with `sdf(x, y, z) = y − h(x, z)` (bilinear h).
+  O(triangles + texels), exact for heightfields, ~100 ms for the terrain at startup. This is the
+  standard vertical-distance SDF for heightfields: exact along vertical rays, slightly conservative
+  on steep slopes — fine for water/shore effects and raymarch utilities.
+
+**Representation:** a 3D `R32Float` texture + a bounds uniform. Matches the ticket's "distance
+fields for meshes" framing, supports 3D sampling/raymarch utilities, and generalizes to non-heightfield
+meshes later (the bake is the only part that changes). Anisotropic texel sizes (coarse horizontally,
+fine vertically) keep the waterline band accurate without a 10⁸-texel grid. `R32Float` textures are
+not filterable without the `TEXTURE_COMPONENT_…` float-filterable feature, so sampling is manual
+trilinear via `textureLoad` — which belongs in the utility wesl anyway.
+
+**Binding:** `ExtendedMaterial<StandardMaterial, E>` — the supported 0.20 path for attaching custom
+shader data to PBR materials (bevy_render 0.20 exposes no public view-bind-group injection point;
+`ViewBindGroup` no longer exists as a public type after the `combined_bind_group` overhaul). The SDF
+is one global texture shared through the extension bind group, so the shader side is still written
+as a view-wide module ("a wels for the view" per the ticket).
+
+**Placement:** `src/terrain/distance_field.rs` (terrain submodule). The meshes that feed the field
+and the material that consumes it (water) are both spawned by `TerrainPlugin`; a standalone feature
+module would force a feature→feature import (terrain's water would need the extension type) or
+integration indirection for zero current benefit. The machinery inside is mesh-generic (a
+`DistanceFieldSource` component marks any entity whose mesh feeds the field), so extracting it into
+its own module/service later is a file move, not a rewrite. Rejected: standalone `distance_field`
+feature now (import-rule friction, speculative generality).
+
+### Plan
+
+1. **`src/terrain/distance_field.rs`** — the system:
+   - `DistanceFieldConfig` resource: `enabled: bool`, texel-size constants, resolution helper.
+   - `DistanceFieldSource` component: marks an entity whose `Mesh3d` feeds the field; attached to
+     the terrain entity in `setup_terrain`.
+   - Pure bake functions (unit-tested): `height_grid_from_mesh` (triangle → 2D max-height grid),
+     `sdf_from_height_grid` (3D `y − h` fill), `bilinear_height`.
+   - Bake system: when a source mesh is ready and the field is enabled and not yet baked, bake and
+     upload into a `Handle<Image>` (3D R32Float) via `RenderWorld` `TextureData`; store bounds.
+   - `DistanceFieldWater` material extension (`AsBindGroup`: uniform {bounds_min, bounds_max,
+     enabled} + `texture_3d` + sampler) + fragment hook that modulates the water surface with
+     shore-proximity ripples derived from the field (subtle; the field is the point, the ripples
+     demonstrate consumption).
+   - `command!(app, "Toggle custom mesh distance fields", toggle_distance_field)` →
+     `terrain>toggle_distance_field`; flips `enabled`, writes `CommandOutput` ("Distance field:
+     on/off"), updates the extension uniform.
+   - `debug_info!` entry showing state + resolution.
+2. **Shaders (`assets/shaders/`):**
+   - `distance_field.wesl` — pure utility: manual trilinear `df_sample`, `df_gradient`,
+     `df_raymarch`. No bindings. Reusable by any future shader (ripples, foam, refraction).
+   - `distance_field_view.wesl` — the view module: declares the bound SDF texture/sampler/uniform
+     and provides `distance_field_world(world_pos)` on top of the utility.
+   - `water.wesl` — the extension fragment shader: imports both, applies shore ripples.
+3. **Water entity** switches from `StandardMaterial` to
+   `ExtendedMaterial<StandardMaterial, DistanceFieldWater>` (same base params).
+4. **Tests:** height-grid rasterization on a synthetic mesh, SDF fill math, bilinear sampling,
+   toggle round-trip. `cargo check --all-targets` + `cargo test` clean; game launches with no shader
+   compile errors in the log (WGSL errors are loud at pipeline build).
+
+### Plan audit
+
+- *Is the water even visible?* The water plane (y = −0.1) currently sits 0.1 m **below** the terrain
+  plateau (y = 0 across the inner rect), so it is occluded in today's build — the ripple demo will
+  not be visible until the terrain/water levels are adjusted (terrain is under active editing; not
+  this ticket's scope). Verification therefore leans on: clean shader compilation at runtime, the
+  command toggling with output, and unit tests on the bake math. Noted, not fixed.
+- *Does toggling off actually disable the field?* Yes at the sampling level (uniform flag gates the
+  shader path) and at the bake level (no (re)bake while disabled). The texture stays bound — a
+  1×1×1 placeholder before first bake keeps the bind group valid.
+- *Command name:* `terrain>toggle_distance_field` (derived from module path; user types
+  `toggle_distance_field`). No collision with existing commands.
+- *WESL import mechanics between asset-path shaders:* confirmed against bevy_shader 0.20.1 —
+  asset shaders get `ShaderImport::AssetPath("/<path>")` (absolute WESL module paths), so
+  `assets/shaders/water.wesl` can `@import` its siblings by absolute path. Exact syntax pinned
+  against the wesl 0.6 parser before writing shaders.

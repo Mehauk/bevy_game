@@ -25,8 +25,8 @@ impl Terrain {
     }
 
     pub fn sample_ground_height(&self, x: f32, z: f32) -> f32 {
-        let half_inner_x = self.width / 2.0;
-        let half_inner_z = self.height / 2.0;
+        let half_inner_x = self.width / 2.0 - 100.0;
+        let half_inner_z = self.height / 2.0 - 100.0;
 
         let over_x = (x.abs() - half_inner_x).max(0.0);
         let over_z = (z.abs() - half_inner_z).max(0.0);
@@ -43,8 +43,8 @@ impl Terrain {
 
 impl From<&Terrain> for Mesh {
     fn from(terrain: &Terrain) -> Self {
-        let total_x = terrain.width + (200.0 * 2.0);
-        let total_z = terrain.height + (200.0 * 2.0);
+        let total_x = terrain.width;
+        let total_z = terrain.height;
 
         let mut mesh: Mesh = Plane3d::default()
             .mesh()

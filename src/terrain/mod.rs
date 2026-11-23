@@ -55,6 +55,7 @@ impl Plugin for TerrainPlugin {
             toggle_fog_light_influence
         );
         command!(app, "Toggle distance field view", toggle_distance_field);
+        command!(app, "Set the water level", water::set_water_level);
         debug_info!(app, "Distance Field", distance_field_debug_info);
     }
 }

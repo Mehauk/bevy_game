@@ -58,23 +58,30 @@ fn water_field_uvw(field: WaterField, p: vec3<f32>) -> vec3<f32> {
     return (q - field.bounds_min) * field.inv_bounds_size;
 }
 
-fn water_field_inside(uvw: vec3<f32>) -> bool {
-    return all(uvw >= vec3<f32>(0.0)) && all(uvw <= vec3<f32>(1.0));
+fn water_box_distance(field: WaterField, uvw: vec3<f32>) -> f32 {
+    let size = field.bounds_max - field.bounds_min;
+    let to_box = (abs(uvw - vec3<f32>(0.5)) * 2.0 - vec3<f32>(1.0)) * size * 0.5;
+    let outside = length(max(vec3<f32>(0.0), to_box));
+    let inside = min(0.0, max(to_box.x, max(to_box.y, to_box.z)));
+    return outside + inside;
+}
+
+fn water_influence_range() -> f32 {
+    return max(water.max_depth, water.ripple_range);
 }
 
 fn water_field_distance(field: WaterField, tex: texture_3d<f32>, p: vec3<f32>) -> f32 {
     let uvw = water_field_uvw(field, p);
-    if (!water_field_inside(uvw)) {
+    let to_box = water_box_distance(field, uvw);
+    if (to_box >= water_influence_range()) {
         return WATER_OUTSIDE;
     }
-    return df_sample(tex, field.resolution, uvw);
+    let d = df_sample(tex, field.resolution, clamp(uvw, vec3<f32>(0.0), vec3<f32>(1.0)));
+    return max(d + max(0.0, to_box), to_box);
 }
 
 fn water_field_gradient(field: WaterField, tex: texture_3d<f32>, p: vec3<f32>) -> vec3<f32> {
-    let uvw = water_field_uvw(field, p);
-    if (!water_field_inside(uvw)) {
-        return vec3<f32>(0.0);
-    }
+    let uvw = clamp(water_field_uvw(field, p), vec3<f32>(0.0), vec3<f32>(1.0));
     let world_per_texel = (field.bounds_max - field.bounds_min) / field.resolution;
     return df_gradient(tex, field.resolution, uvw, world_per_texel);
 }
@@ -130,14 +137,16 @@ fn water_contact(p: vec3<f32>) -> vec4<f32> {
         }
     }
     var g = vec3<f32>(0.0);
-    if (winner == 0) {
-        g = water_field_gradient(water.fields[0], water_field0, p);
-    } else if (winner == 1) {
-        g = water_field_gradient(water.fields[1], water_field1, p);
-    } else if (winner == 2) {
-        g = water_field_gradient(water.fields[2], water_field2, p);
-    } else if (winner == 3) {
-        g = water_field_gradient(water.fields[3], water_field3, p);
+    if (d < water.ripple_range) {
+        if (winner == 0) {
+            g = water_field_gradient(water.fields[0], water_field0, p);
+        } else if (winner == 1) {
+            g = water_field_gradient(water.fields[1], water_field1, p);
+        } else if (winner == 2) {
+            g = water_field_gradient(water.fields[2], water_field2, p);
+        } else if (winner == 3) {
+            g = water_field_gradient(water.fields[3], water_field3, p);
+        }
     }
     return vec4<f32>(g, d);
 }
@@ -174,6 +183,30 @@ fn water_refract(v: vec3<f32>, n: vec3<f32>, eta: f32) -> vec3<f32> {
 fn schlick_phase(g: f32, cos_theta: f32) -> f32 {
     let d = max(1.0 + g * g - 2.0 * g * cos_theta, 1.0e-4);
     return (1.0 - g * g) / pow(d, 1.5);
+}
+
+fn foam_hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+fn foam_value(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = foam_hash(i);
+    let b = foam_hash(i + vec2<f32>(1.0, 0.0));
+    let c = foam_hash(i + vec2<f32>(0.0, 1.0));
+    let d = foam_hash(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+fn foam_pattern(p: vec2<f32>) -> f32 {
+    let t = water.time * 0.12;
+    let a = foam_value(p + vec2<f32>(t, t * 0.7));
+    let b = foam_value(p * 2.3 - vec2<f32>(t * 0.8, t));
+    let c = foam_value(p * 0.5 + vec2<f32>(-t * 0.5, t * 0.4));
+    let n = a * 0.55 + b * 0.2 + c * 0.25;
+    return clamp((n - 0.4) * 2.8, 0.0, 1.0);
 }
 
 @fragment
@@ -221,19 +254,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         pbr_input.N = normalize(pbr_input.N + vec3<f32>(outward.x, 0.0, outward.y) * (sin(phase) * amp));
     }
 
-    let foam_phase = depth * water.ripple_frequency - water.time * water.ripple_speed;
-    let foam_delta = max(abs(dpdx(foam_phase)), abs(dpdy(foam_phase)));
-    let foam_aa = 1.0 - clamp(foam_delta * 0.33, 0.0, 1.0);
-    let shallow = max(1.0 - depth / water.foam_width, 0.0);
+    let shore = max(1.0 - depth / water.foam_width, 0.0);
+    let proximity = max(1.0 - d / water.foam_width, 0.0);
+    let edge = max(shore, proximity);
+    let pattern = foam_pattern(p.xz * 2.2);
     let foam = clamp(
-        water.foam_strength * shallow * shallow * (0.7 + 0.3 * sin(foam_phase)) * foam_aa * dist_fade,
+        water.foam_strength * edge * edge * (0.15 + 0.85 * pattern) * dist_fade,
         0.0,
         1.0,
     );
     if (foam > 0.0) {
-        pbr_input.material.base_color = mix(pbr_input.material.base_color, vec4<f32>(1.0), foam);
         pbr_input.material.perceptual_roughness = clamp(
-            pbr_input.material.perceptual_roughness + 0.5 * foam,
+            pbr_input.material.perceptual_roughness + 0.6 * foam,
             0.0,
             1.0,
         );
@@ -257,6 +289,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     in_scatter = incoming * scattering_amount * (1.0 - fresnel);
 
     out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);
+
+    if (foam > 0.0) {
+        let foam_color = mix(vec3<f32>(0.45), vec3<f32>(0.9), 0.5 + 0.5 * pbr_input.N.y);
+        out.color = vec4<f32>(mix(out.color.rgb, foam_color, foam), out.color.a);
+    }
+
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

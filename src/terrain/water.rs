@@ -7,6 +7,8 @@ use bevy::{
     shader::ShaderRef,
 };
 
+use crate::utils::registry::commands::{CommandArgs, CommandOutput};
+
 use super::distance_field::{DistanceFieldSource, DistanceFieldViewHidden, PrimaryField};
 use super::terrain::Terrain;
 
@@ -55,7 +57,7 @@ impl Default for WaterParams {
             ripple_speed: 2.5,
             ripple_strength: 0.3,
             foam_width: 0.8,
-            foam_strength: 0.4,
+            foam_strength: 0.5,
             field_count: 0,
             max_depth: 8.0,
             phase_g: 0.6,
@@ -181,6 +183,23 @@ fn field_params(global: &GlobalTransform, source: &DistanceFieldSource) -> Water
         inv_bounds_size: source.params.inv_bounds_size,
         resolution: source.params.resolution,
     }
+}
+
+pub(super) fn set_water_level(
+    args: Res<CommandArgs>,
+    mut sea: Query<&mut Transform, With<Sea>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(height) = args.get_f32(0) else {
+        output.set("Usage: set_water_level <height>");
+        return;
+    };
+    let Ok(mut transform) = sea.single_mut() else {
+        output.set("error: no sea found");
+        return;
+    };
+    transform.translation.y = height;
+    output.set(format!("Water level: {height:.2}"));
 }
 
 pub fn sync_water_fields(

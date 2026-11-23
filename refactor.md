@@ -1428,3 +1428,43 @@ Verified by BRP screenshots: sea raised to y=1 submerges the capsule to the wais
 ripples radiate from its waterline with refracted sub-surface capsule visible below; at normal sea
 level the shoreline bands ripple along the terrain's waterline; DF view hides the sea and the
 terrain mesh, shows translucent terrain clay (0.35) and opaque capsule clay. 95/95 tests pass.
+
+---
+
+## 2026-11-23 — SDF/water interaction: box-edge fade + foam (UE5-sourced)
+
+Two reported defects: (1) the SDF bounding box was visible as a hard cutoff of the water
+interaction at the field boundary; (2) no visible foam.
+
+**Fix 1 — volume-edge extrapolation, ported from UE5.** Pulled the real engine source via the
+user's GitHub access (sparse clone of `EpicGames/UnrealEngine@release` into
+`%TEMP%/ue5-ref`). `Engine/Shaders/Private/MeshDistanceFieldCommon.ush`'s
+`DistanceToNearestSurfaceForObject` never hard-clips at the volume boundary: it computes the
+signed distance to the box (`length(max(0,to_box)) + min(0,max3(to_box))`), samples the SDF at
+the clamped position, adds `max(0, dist_to_box)`, and floors the result at `dist_to_box`. The
+distance is then continuous across the boundary and decays smoothly outside instead of jumping
+to the sentinel. Ported verbatim into `water.wesl` as `water_box_distance` +
+`water_field_distance` (cutoff at `max(max_depth, ripple_range)`, beyond which no effect is
+visible anyway), and `water_field_gradient` now samples at the clamped uvw so ripple direction
+is continuous too. This replaced the `water_field_inside` early-return that caused the square.
+
+**Fix 2 — foam as a lit top layer.** The old foam mixed into `base_color`, which is invisible
+under `specular_transmission: 1.0` (diffuse is zero). UE5's water blends foam over the shaded
+surface instead (the Water plugin's `WaterInfo.Foam` semantics; the blending itself now lives
+in the binary water material graph). Now: shore mask from depth **and** contact mask from the
+SDF distance (`edge = max(1−depth/foam_width, 1−d/foam_width)` — the contact term is what puts
+foam around vertical objects, which depth alone never reaches), modulated by two counter-scrolled
+value-noise layers (the foam-texture scroll analogue), roughness bumped pre-lighting, and the
+color blended post-lighting toward a hemispheric white. `foam_strength` default 0.4 → 0.5.
+
+**New command:** `terrain>water>set_water_level <height>` (`water::set_water_level`) moves the
+Sea transform; `sync_water_fields` picks it up per frame. The SDF bake is geometry-only and does
+not depend on water level, so this is a live tweak.
+
+Trap hit: WGSL redefinition of `contact` (already used for `water_contact(p)`) failed the water
+pipeline silently — the sea vanished and the terrain showed through; the log's
+`Shader '' parsing error: redefinition of 'contact'` was the only tell. Renamed to `proximity`.
+
+Verified by BRP screenshots (sea raised to 0.4 via the new command): foam ring hugs the capsule
+waterline as broken-up white patches, fading circularly with no square edge; ripples continuous
+across the old boundary. 91/91 tests pass.

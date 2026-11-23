@@ -1,6 +1,6 @@
 # Commands
 Do a thorough analaysis on how this can be done optimally. use websearch as well.
-- [ ] Add a command that enables/disables the custom distance fields for meshes.
+- [x] Add a command that enables/disables the custom distance fields for meshes.
     - translucent materials do not generate a signed distance field.
 
 # Shaders

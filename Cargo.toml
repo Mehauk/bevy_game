@@ -8,10 +8,12 @@ avian3d = "0.8"
 # Already in the tree via bevy_clipboard; used directly for synchronous clipboard access.
 arboard = "3.7"
 bevy = { version = "0.20.1", features = ["bevy_dev_tools", "render_dev_tools", "file_watcher"] }
+bevy_brp_extras = "0.23"
 bevy_enhanced_input = "0.27"
 bevy_flair = "0.9"
 bevy_mod_scripting = { version = "0.24", features = ["lua54"] }
 glam27 = { package = "glam", version = "0.27" }
+mesh_to_sdf = "0.4"
 meshless_voronoi = "0.7.2"
 noise = "0.9.0"
 roxmltree = "0.21"

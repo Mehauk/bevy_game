@@ -193,7 +193,7 @@ fn debug_position(transforms: Query<&Transform, With<Character>>) -> Option<Stri
 }
 
 #[derive(Component)]
-struct CharacterBody;
+pub(crate) struct CharacterBody;
 
 #[derive(Component, Default)]
 pub(crate) struct CameraFacing {

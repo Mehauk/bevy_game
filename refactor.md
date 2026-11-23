@@ -1121,3 +1121,310 @@ feature now (import-rule friction, speculative generality).
   asset shaders get `ShaderImport::AssetPath("/<path>")` (absolute WESL module paths), so
   `assets/shaders/water.wesl` can `@import` its siblings by absolute path. Exact syntax pinned
   against the wesl 0.6 parser before writing shaders.
+
+### Implementation
+
+Done as planned, in three new files plus wiring in `src/terrain/mod.rs`.
+
+- **`src/terrain/distance_field.rs`** — `DistanceFieldConfig` (enabled flag, on by default),
+  `DistanceFieldSource` component (on the terrain entity), `DistanceField` resource (image handle +
+  `DistanceFieldParams` uniform + baked flag), `DistanceFieldWater` material extension
+  (`AsBindGroup`: `#[uniform(100)]` params, `#[texture(101, dimension = "3d", filterable = false)]`
+  SDF), `register()` adding the `ExtendedMaterial` MaterialPlugin, `init_distance_field` (1×1×1
+  R32Float placeholder so the bind group is valid before the first bake), `bake_distance_field`
+  (startup + Update; bakes once when enabled), `animate_distance_field` (per-frame time/enabled
+  into the extension uniform), `toggle_distance_field` command, `distance_field_debug_info`
+  (`on/off WxHxD`), and the pure bake math (`FieldBounds`, `HeightGrid`,
+  `height_grid_from_mesh`, `sdf_from_height_grid`) with six unit tests.
+- **`assets/shaders/distance_field.wesl`** — pure utility: `df_texel`, manual trilinear `df_sample`,
+  `df_gradient`. No bindings, importable by any shader.
+- **`assets/shaders/distance_field_view.wesl`** — declares the material-bind-group uniform/binding
+  100/101 and wraps the utility as `distance_field_world`, `distance_field_gradient_world`,
+  `distance_field_raymarch`.
+- **`assets/shaders/water.wesl`** — extension fragment shader (forward + `@if(PREPASS_PIPELINE)`
+  deferred branches, modeled on the official 0.20.1 `extended_material` example); modulates water
+  roughness with `sin(d·6 − time·2)` weighted by `exp(−|d|·0.4)` shore proximity.
+- **`src/terrain/mod.rs`** — `distance_field::register(app)`; Startup chain
+  `setup_terrain → init_distance_field → bake_distance_field → setup_water → setup_atmosphere`
+  (bake before water material creation so the real texture handle is captured); Update gains
+  `bake_distance_field` + `animate_distance_field`; water switched to
+  `ExtendedMaterial<StandardMaterial, DistanceFieldWater>` with the user's current base params.
+
+Deviations from plan:
+
+- Upload goes through `Assets<Image>` with `MAIN_WORLD | RENDER_WORLD` usages instead of
+  `RenderWorld` `TextureData` — same result, no render-world plumbing.
+- No sampler is declared: `filterable = false` + manual trilinear `textureLoad` in the utility
+  (R32Float isn't float-filterable anyway, and the manual path is what the utility needs).
+- The uniform carries `time` and `enabled` (Bevy 0.20's `View` has no `view.time` exposed to
+  extensions), refreshed each frame by `animate_distance_field`.
+- `animate_distance_field` iterates `Assets<ExtendedMaterial<StandardMaterial, DistanceFieldWater>>`
+  — `Assets<DistanceFieldWater>` is not a resource (the MaterialPlugin registers assets for the
+  *extended* type only). Caught as a "Resource does not exist" system panic on first launch.
+- Startup `bake_distance_field` runs chained after `setup_terrain`; the Update copy covers the
+  toggle-on-later path (bake is skipped while disabled, so toggling on before a bake exists bakes
+  then).
+
+Bugs found and fixed during verification (all root-caused, none papered over):
+
+1. *System panic on launch:* `animate_distance_field` requested `ResMut<Assets<DistanceFieldWater>>`
+   — see deviation above. Now iterates the extended-material assets.
+2. *naga validation error on first pipeline build:* `textureLoad` on a `texture_3d` takes
+   `vec3<i32>` coords; the `vec4` form is for 2d-array textures. `df_texel` fixed to
+   `textureLoad(sdf, i, 0)`.
+3. *Bilinear sampling off by half a cell:* `HeightGrid::sample` indexed cell centers as
+   `(x − min)/cell`, but heights live at cell centers `min + (i + 0.5)·cell`; added the `− 0.5`.
+   Caught by `sdf_is_height_difference`.
+4. *Phantom boundary ring:* `widths/depths = ceil(span/cell) + 1` put the last column/row of cell
+   centers outside the mesh, nearest-filled with edge values (a tilted-plane test cell read 3.5
+   where the boundary height is 4.0). `ceil(span/cell)` cells already tile `[min, max]` exactly
+   under center sampling; the `+ 1` is gone.
+5. *Flat meshes rejected as degenerate:* `FieldBounds::from_mesh` used `min.cmpge(max)` so a
+   zero-y-span plane failed; changed to `cmpgt` (only inverted bounds are invalid).
+
+Verification: `cargo test` 93/93 pass (six new bake-math tests: flat/tilted height grids, SDF = y − h,
+bilinear corners, texel budget, min resolution). `cargo build` clean. Game launches on Vulkan/AMD RX
+6600 XT with a clean log — no shader validation errors, no system panics; the water pipeline
+(forward branch) compiles. The `toggle_distance_field` command and the "Distance field" debug-info
+row are registered; runtime console driving wasn't scripted here (the app has no BRP plugin), so the
+toggle path is covered by the uniform-gating logic and the Update-bake path rather than a live
+keystroke.
+
+Behaviour changes: the sea now renders through the extension shader (identical base PBR params; the
+extension only touches roughness when the field is enabled and the fragment is inside the field
+bounds), and the terrain mesh is baked into a 3D R32Float SDF at startup (~100 ms, one-off). The
+ticket file itself is left untouched in `tickets/incomplete/` per the no-md-edits rule — the work it
+describes is complete.
+
+### Rework after review — the toggle is a render view
+
+Reviewer feedback on the first cut: the water's use of the field should be **always on** (it is a
+feature, not a debug aid); the toggle was meant to be a **distance-field render view** in the Unreal
+sense — every applicable mesh shows its field, and the field reads as a volume that **extends past
+the mesh**, not a recolor of the surface. The character (an opaque mesh) had no field at all. Also:
+wire up the BRP MCP plugin and verify visually with screenshots instead of trusting logs.
+
+What changed:
+
+- **BRP MCP in the project**: `bevy_brp_extras = "0.23"` (bevy ^0.20) + `BrpExtrasPlugin` in
+  `main.rs`. Screenshots, synthetic input, and console driving now work against the running game —
+  verification below is screenshot-based, not log-based.
+- **Per-source fields.** The `DistanceField` resource is gone. `DistanceFieldSource` is now a
+  component carrying its own texel size, bake strategy, image, params, and view material;
+  `bake_distance_fields` bakes every source entity (retrying until its mesh is ready) and spawns a
+  field-volume child per source. The terrain carries `PrimaryField`; the water reads its field from
+  the primary source (chained bake-before-water at startup, refreshed per frame).
+- **Character field.** A general triangle-SDF bake (`sdf_from_triangles`: exact point-triangle
+  distance per texel, sign from the closest triangle's geometric normal) handles non-heightfield
+  meshes; the heightfield bake stays for the terrain (exact and ~100 ms at 2 M triangles, where
+  brute force would not finish). The character body is wired in through integration
+  (`attach_distance_field_source` observes `Add<CharacterBody>` and inserts
+  `DistanceFieldSource::prop()`, 0.1 m texels) — no feature→feature import. `CharacterBody` made
+  `pub` for this.
+- **The view is a raymarched volume.** Each source gets a child box (unit `Cuboid` scaled to the
+  field bounds) with `DistanceFieldViewMaterial` (`AlphaMode::Add`, prepass off, not a shadow
+  caster), hidden until the view is on. `distance_field_view_mode.wesl` sphere-traces the SDF from
+  the camera through the box and shades the 0-level set with the field gradient normal plus a rim
+  term — the field visibly extends past the mesh surface. `DistanceFieldView.active` (the
+  `toggle_distance_field` command) just flips the volumes' `Visibility`.
+- **Moving sources.** `DistanceFieldParams` gained `field_from_world: Mat4`; `animate_distance_field`
+  writes each source's inverse `GlobalTransform` per frame, so the character's field follows it.
+  The water's field (terrain, identity transform) is unaffected.
+- Removed: `DistanceFieldConfig`, the `enabled` uniform field, the material-swap system,
+  `init_distance_field`.
+
+Bugs hit and fixed this round: `Res<Assets<Mesh>>` + `ResMut<Assets<Mesh>>` in one system (b0002,
+crashed the app on startup — merged into one `ResMut`); `AlphaMode::Add` (not `Additive`); `ChildOf`
+(`Parent` is gone in 0.20); `Cuboid` comes from the prelude, not `bevy::math::primitives`.
+
+Verified with `bevy_brp_extras` screenshots: baseline (view off, debug row `off 75x30x75`), console
+driven (`Backquote` → `terrain>toggle_distance_field` → "Distance field view: on"), then a clean
+shot showing the character capsule wrapped in its field shell (extending past the surface, visor
+included) and the terrain field rendered across the landscape at its 4 m × 1 m texel quantization.
+94/94 tests pass (new: triangle-SDF sign test on a cuboid).
+
+### Rework round 3 — UE5-look attempt, then full removal
+
+Tried to match UE5's SDF view (dark background, matte clay surface, luminous halo). Changes made
+and then reverted: glow via line-integral accumulation (saturated to a grey wash on the terrain's
+3 m steps — replaced with a closest-approach `exp(-min_d/scale)` model), volume box enlarged ×1.6
+with a camera-containment winding flip (Bevy 0.20 custom materials have no cull control — the
+`cull_mode` plumbing is StandardMaterial-only), source meshes swapped out for their volumes on
+toggle, skybox/water hidden via a `DistanceFieldViewHidden` marker.
+
+Defects found by screenshotting the running game (BRP): the terrain volume rendered nothing from
+inside (winding flip unreliable), the toggle-off path left the character invisible, the halo read
+as a dark shadow over the still-bright skybox, and the clay surface was too bright. User judged
+the implementation wrong and ordered it removed.
+
+Removed: `src/terrain/distance_field.rs`, `assets/shaders/` (all four .wesl files incl. the water
+ripple extension), the terrain/atmosphere/bridges/character wiring (reverted to HEAD). Kept:
+`bevy_brp_extras` + `BrpExtrasPlugin` (MCP tooling, not DSF) and the unrelated terrain size tweak.
+
+Research for the rebuild: no crate provides an SDF view mode (view stays hand-rolled). For the
+bake, `mesh_to_sdf` 0.4.0 (MIT/Apache-2, standalone) replaces the hand-rolled triangle bake and
+fixes the sign problem properly via `SignMethod::Raycast` parity (do not enable its `glam`
+feature — pins glam 0.29 vs our 0.27). UE source itself is not reachable from this machine
+(official repo needs a linked Epic account; public mirrors are empty; no local install).
+
+### Rework round 4 — faithful UE5 SDF view port (UE source read locally)
+
+User directive: stop approximating, port UE5's actual SDF view shaders. Obtained the real source
+via a sparse blobless clone of the official repo (branch `release`) at `../ue-src` after linking
+the Epic↔GitHub accounts: `DistanceFieldVisualization.usf` (the view compute),
+`MeshDistanceFieldUtilities.cpp` (the bake), `DistanceFieldLightingShared.ush` (gradient + sparse
+sampling), `Common.ush` (`LineBoxIntersect`).
+
+Ported faithfully: slab entry + sphere-trace (`t += max(d, min_step)`, min step = half texel), UE's
+surface expansion `expand = bias·saturate(t/(2·bias))` with hit step-back `t + d − expand`,
+central-difference gradient at ±0.5 texel transformed by `transpose(WorldToVolume)`, and the exact
+shading constants (dir light color 10 × ndl + sky × hemi, albedo 0.05, light dir (0.707,0,0.707)).
+Miss = transparent (UE shows dark sky; there is no additive glow in their view).
+
+Shaders: `distance_field.wesl` (`df_texel`/`df_sample` trilinear/`df_gradient`),
+`distance_field_view.wesl` (`DistanceFieldView` uniform @100, 3D texture @101, field-space
+helpers, `line_box_intersect`), `distance_field_view_mode.wesl` (the view fragment).
+
+Rust (`src/terrain/distance_field.rs`): `DistanceFieldSource` (heightfield for terrain,
+`mesh_to_sdf` Raycast for props on a 1-voxel bordered grid aligned to the params bounds),
+`ExtendedMaterial<StandardMaterial, DistanceFieldViewExt>` with base `cull_mode: None` so volumes
+render from inside (no winding hack), volume box ×1.6 with hits gated to the real bounds,
+`animate_distance_field` (field_from_world + time), `sync_distance_field_view` (toggle plumbing),
+toggle command + debug row.
+
+Defects found by screenshotting the running game (BRP) and fixed:
+1. WGSL cannot cast `mat4x4`→`mat3x3`; build the mat3 from columns.
+2. Using the box diagonal as the ray length made the slab test miss whenever the camera was
+   outside the volume (capsule invisible); use a far point (1e4) so the slab returns true entry.
+3. The glow model washed the screen (camera sits ~2 m above a 4 m-texel field, so closest-approach
+   distance ≈ 0 everywhere); removed entirely — UE has no glow. Sky term raised to (0.9,0.95,1) so
+   up-facing clay reads dark grey instead of black.
+4. Skybox darkening was invisible because fog fully saturates the 600-unit box; while the view is
+   active the camera fog alpha is zeroed too (stored/restored via `DimmedFog`).
+5. The toggle-off restore bug from rounds 2–3, root cause: removing `Mesh3d` and re-inserting it
+   never re-renders (render-world entity lifecycle). Fixed by never touching `Mesh3d` — the source
+   entity's `MeshMaterial3d` is swapped to a shared invisible material and back. Descendant meshes
+   (visor) and water use `Visibility` markers, which propagate correctly.
+
+`mesh_to_sdf` caveat: Raycast parity flips sign when an axis ray passes exactly through a triangle
+diagonal (best-of-3 mitigates); the cuboid test samples an off-diagonal texel.
+
+Verified with BRP screenshots: view on (dark sky, voxelized clay capsule + terrain, visor and
+water hidden, fog suppressed), view off (terrain, capsule, visor, fog, skybox all restored — the
+round-2/3 regression is gone). 94/94 tests pass (7 in the distance-field module).
+
+### Rework round 5 — faithful re-port against the UE5 source, composite-driven
+
+Re-read `DistanceFieldVisualization.usf`, `DistanceFieldLightingShared.ush` and
+`DistanceFieldObjectManagement.cpp` in `../ue-src` and corrected the port against the reference
+composite (user's UE5 screenshot vs BRP screenshot, side by side, pixel-sampled with PowerShell):
+
+- `VolumeSurfaceBias` is `r.DistanceFields.SurfaceBiasExpand` (0.25) × voxel size, not 1.5 voxels —
+  the old value fattened the surface 6× and produced the capsule's doubled outline. Now 0.25 voxel.
+- `MinStepSize` is 1/(16·MaxSteps) volume units ≈ voxel/32, not voxel/2. `MaxSteps` back to 64.
+- March box is the field box + exactly the glow margin (the ×1.6 invention is gone); hits are gated
+  to the field box and clamped to its slab times, matching UE's `clamp(t + d − expand, tmin, tmax)`.
+- Gradient (±0.5 voxel central differences, normalize, transpose(WorldToVolume)) and the lighting
+  formula (dir 10 × saturate(dot(L,N)) + SkySH × sky, albedo 0.05) confirmed as already ported.
+- The reference halo is post-process bloom on the bright clay; Bevy 0.20 ships no bloom, so the
+  view shader reproduces it: on a miss, glow = clay-shading at the closest approach ×
+  saturate(1 − d/glow_range)², tracked only inside the field box and past a near-camera skip so the
+  camera's own ground proximity can't wash the sky. `glow_range` (4 voxels, clamped 0.3–1 m) is a
+  params-uniform shared with the Rust volume-box sizing so the drawn box matches the march box.
+- Prop fields bake on a `glow_range`-bordered grid at full texel resolution (`sdf_from_triangles`
+  now bakes the field bounds it is given; the border no longer silently shrinks the voxel).
+
+Liberties still taken vs UE (documented, deliberate): per-mesh box + ExtendedMaterial instead of the
+fullscreen compute pass + DF atlas; no mip chain and no narrow-band encoding (raw metres stored, so
+sphere tracing is exact without mips); `mesh_to_sdf` Raycast instead of Embree closest-point sign;
+SkySH approximated as a hemi gradient; miss renders transparent over the darkened skybox instead of
+the sky reflection; no 2× downsample + upsample; monochrome albedo (reference is monochrome).
+
+Verified by composite: black sky, dark relief terrain, clay capsule with soft round halo and no
+double outline. 94/94 tests pass.
+
+### Rework round 6 — translucency rule, single-draw gate, and the latent axis-order bug
+
+Three issues from the user's composite review: the view was jumpy when moving/looking (both box
+faces marched the same ray and disagreed), the clay read transparent-ish against the sky, and the
+visor was missing from the capsule's field. The visor requirement was generalized per the user's
+rule: **opacity decides membership** — a mesh is baked into its source's field iff its material is
+`AlphaMode::Opaque` with opaque base-color alpha; translucent meshes (water) are excluded.
+`collect_opaque_parts` walks the source entity and all descendants with accumulated transforms,
+min-combines each opaque part's field on the shared grid (UE-style union), and marks every meshed
+descendant `DistanceFieldViewHidden`. No manual per-mesh markers.
+
+The jumpiness fix is a single-draw gate in the view shader: exactly one of the box's two faces
+marches a given ray (`front == cam_inside` discards), so the two faces can no longer disagree as
+the camera moves. Clay alpha raised to 0.9.
+
+The visor bake exposed a latent bug that had been hiding since round 1: **`mesh_to_sdf` stores its
+grid z-fastest** (`get_cell_idx = x·ry·rz + y·rz + z`), while the `Image` upload and the shader's
+`textureLoad` are x-fastest (width-major, the wgpu 3D-texture convention). The capsule field was
+therefore axis-transposed in the texture — invisible while the prop was symmetric under x↔z (equal
+spans and resolutions), but the visor breaks that symmetry and the mismatched axis sizes scramble
+the field into the marbled noise of rounds 4–5. `sdf_from_triangles` now transposes the generated
+grid to x-fastest before returning. The old cube test could never catch this (axis-symmetric);
+`prop_parts_union_field_is_sane` now replicates the full prop bake (capsule + offset cuboid,
+min-combine) and asserts sign, no unfilled texels, and a Lipschitz bound on adjacent texels.
+
+Verified by BRP screenshots + composite (`sdf_composite8.png`): marbling gone, capsule is clean
+clay with a round halo, the visor shows as a bulge on the capsule front, terrain clay is solid, and
+the render is stable through walking and camera rotation. 95/95 tests pass (8 in the module).
+
+### Rework round 7 — one bake path for every mesh, per-source clay alpha
+
+Per the user's rule "every mesh should use the same logic for generating sdf", the terrain's
+heightfield bake (height grid, barycentric fill, displaced plane, 4 tests) was deleted outright.
+The terrain is now baked by the exact same `sdf_from_triangles` triangle path as props, on its
+1000×1000-subdivision mesh (335×35×335 field, ~6 s bake). The heightfield's staircase artifacts
+and the "terrain is see-through in the DF view" complaint both disappeared with it — they were
+symptoms of the second code path, not of the terrain.
+
+Clay translucency became a per-source property (`DistanceFieldSource::clay_alpha` →
+`DistanceFieldParams::clay_alpha` → shader): terrain 0.35 (the user wanted the first clay layer
+see-through on the wide landmass), props 1.0. The terrain mesh is visible in normal view and
+swapped to the invisible material only while the DF view is active (the swap in
+`sync_distance_field_view`), which is what "hide the terrain but not its distance field" actually
+meant.
+
+### Rework round 8 — UE5 water material with DF-driven ripples
+
+The sea became a real water material (`src/terrain/water.rs`, `assets/shaders/water.wesl`,
+`ExtendedMaterial<StandardMaterial, WaterMaterialExt>`) ported from UE's SingleLayerWater shading
+(`SingleLayerWaterShading.ush`, `WaterInfoTextureMerge/Blur.usf` in the local ue-src clone):
+
+- **Water depth from the DFs instead of the depth buffer.** UE's WaterInfoTexture stores
+  `float4(velocity, normalized WaterZ, normalized GroundZ)` per screen pixel and derives water
+  depth = WaterZ − GroundZ. There is no screen-capture pass here, so the fragment sphere-traces
+  downward through the bound distance fields to the ground surface instead; the marched depth
+  drives `pbr_input.material.thickness`, so Bevy's own transmission absorption becomes UE's
+  `exp(−ExtinctionCoeff · WaterVolumeDepth)` Beer-Lambert law, per pixel.
+- **In-scattering ported directly**: `WaterRefract` (UE's own refract, including the sign fix and
+  TIR branch), Schlick phase function, `ScatteringCoeff·(1−T)/Extinction` single in-scatter,
+  Fresnel-weighted — the core of `EvaluateWaterVolumeLighting`.
+- **Shoreline foam from depth** (`shallow = 1 − depth/foam_width`), UE's WaterInfoTexture-edge
+  analogue, with a derivative-based AA fade.
+- **Ripples from any mesh with a DF** (the user's ask): the fragment samples up to 4 bound fields
+  (`MAX_WATER_FIELDS`, primary first), finds the nearest surface point `q = p − d·∇DF`, and treats
+  `r = |horizontal(p,q)| + |q.y − water_height|` as distance-to-waterline, gated by
+  `exp(−4|q.y − water_height|)` so only surfaces that actually cross the water plane ripple (a flat
+  seabed shelf must not fingerprint). Waves are `sin(r·freq − t·speed)` tilted along the DF
+  gradient's horizontal component, with derivative AA and a 60 m view-distance fade. The perturbed
+  `pbr_input.N` also distorts Bevy's specular transmission, which is UE's
+  `ComputeBufferUVDistortion(WorldNormal, IorWater)` equivalent for free.
+
+The fragment wraps bevy_pbr's forward flow rather than replacing it
+(`pbr_input_from_standard_material` → modify → `apply_pbr_lighting` →
+`main_pass_post_lighting_processing`), so all PBR lighting, fog, and tonemapping stay intact.
+Bevy 0.20.1 has no shader-hook system (no `@in`/`@inject` anywhere in bevy_pbr/bevy_render), so
+this import-and-wrap pattern is the only non-duplicating extension route.
+
+Two traps hit and fixed: WGSL has no `ddx`/`ddy` (they are `dpdx`/`dpdy`; a failed pipeline made
+the whole sea vanish silently — the log line "failed to process shader error" is the only tell),
+and derivatives must be computed outside the non-uniform `if (d < range)` branch they guard.
+
+Verified by BRP screenshots: sea raised to y=1 submerges the capsule to the waist and concentric
+ripples radiate from its waterline with refracted sub-surface capsule visible below; at normal sea
+level the shoreline bands ripple along the terrain's waterline; DF view hides the sea and the
+terrain mesh, shows translucent terrain clay (0.35) and opaque capsule clay. 95/95 tests pass.

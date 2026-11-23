@@ -8,10 +8,10 @@ use bevy_enhanced_input::prelude::*;
 use crate::camera::{
     CameraRig, CameraSystems, CameraTarget, MainCamera, ViewMode, WantedCursorLock,
 };
-use crate::character::{CameraFacing, Character};
+use crate::character::{CameraFacing, Character, CharacterBody};
 use crate::input::{GameplayInput, set_context_active};
 use crate::menus::MenuManager;
-use crate::terrain::SkyBox;
+use crate::terrain::{DistanceFieldSource, SkyBox};
 
 pub(super) fn register(app: &mut App) {
     app.add_systems(
@@ -22,6 +22,7 @@ pub(super) fn register(app: &mut App) {
         ),
     )
     .add_observer(attach_camera_target)
+    .add_observer(attach_distance_field_source)
     .add_systems(PostUpdate, sync_cursor_with_menus)
     .add_systems(
         PostUpdate,
@@ -38,6 +39,12 @@ fn sync_camera_facing(rig: Single<&CameraRig>, mut facing: Single<&mut CameraFac
 
 fn attach_camera_target(trigger: On<Add<Character>>, mut commands: Commands) {
     commands.entity(trigger.entity).insert(CameraTarget::default());
+}
+
+fn attach_distance_field_source(trigger: On<Add<CharacterBody>>, mut commands: Commands) {
+    commands
+        .entity(trigger.entity)
+        .insert(DistanceFieldSource::prop());
 }
 
 fn sync_context_activity(

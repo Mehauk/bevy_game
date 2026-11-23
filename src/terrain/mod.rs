@@ -1,15 +1,26 @@
 use avian3d::prelude::*;
-use bevy::{light::NotShadowCaster, prelude::*};
+use bevy::prelude::*;
 
-use crate::{terrain::terrain::Terrain, utils::registry::commands::{CommandAppExt, command}};
+use crate::{
+    terrain::terrain::Terrain,
+    utils::registry::commands::{CommandAppExt, command},
+    utils::registry::debug_info::{DebugInfoAppExt, debug_info},
+};
 
 mod atmosphere;
+mod distance_field;
 pub mod terrain;
+mod water;
 
 pub(crate) use atmosphere::SkyBox;
 use atmosphere::{
     TerrainFog, setup_atmosphere, sync_terrain_fog, toggle_atmospheric_fog,
     toggle_fog_light_influence,
+};
+pub use distance_field::{DistanceFieldSource, PrimaryField};
+use distance_field::{
+    animate_distance_field, bake_distance_fields, distance_field_debug_info,
+    sync_distance_field_view, toggle_distance_field,
 };
 
 pub struct TerrainPlugin;
@@ -18,8 +29,24 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainFog>()
             .init_resource::<Terrain>()
-            .add_systems(Startup, (setup_terrain, setup_water, setup_atmosphere))
+            .add_systems(Startup, (setup_terrain, setup_atmosphere))
             .add_systems(Update, sync_terrain_fog);
+
+        distance_field::register(app);
+        water::register(app);
+        app.add_systems(
+            Startup,
+            water::setup_water_surface,
+        );
+        app.add_systems(
+            Update,
+            (
+                bake_distance_fields,
+                animate_distance_field,
+                sync_distance_field_view,
+                water::sync_water_fields,
+            ),
+        );
 
         command!(app, "Toggle atmospheric fog", toggle_atmospheric_fog);
         command!(
@@ -27,6 +54,8 @@ impl Plugin for TerrainPlugin {
             "Toggle directional light fog influence",
             toggle_fog_light_influence
         );
+        command!(app, "Toggle distance field view", toggle_distance_field);
+        debug_info!(app, "Distance Field", distance_field_debug_info);
     }
 }
 
@@ -54,33 +83,10 @@ fn setup_terrain(
                 ..default()
             })),
             terrain_collider,
-        ));
-}
-
-fn setup_water(    
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    world: Res<Terrain>,
-) {
-
-    commands
-        .spawn((
-            Name::new("Sea"),
-            Transform::from_xyz(0.0, -0.1, 0.0),
-            Mesh3d(meshes.add(Plane3d::default().mesh().size(world.size().0, world.size().1))),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::WHITE,
-                alpha_mode: AlphaMode::Opaque,
-                specular_transmission: 1.0,
-                ior: 1.33,
-                perceptual_roughness: 0.04,
-                reflectance: 0.5,
-                thickness: 0.1,
-                attenuation_distance: 2.3,
-                attenuation_color: Color::srgb(0.2, 0.7, 0.5),
-                ..default()
-            })),
-            NotShadowCaster,
+            PrimaryField,
+            DistanceFieldSource {
+                clay_alpha: 0.35,
+                ..DistanceFieldSource::prop()
+            },
         ));
 }

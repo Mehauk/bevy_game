@@ -12,8 +12,8 @@ pub struct Terrain {
 impl Default for Terrain {
     fn default() -> Self {
         Self {
-            height: 400.0,
-            width: 600.0,
+            height: 300.0,
+            width: 300.0,
             subdivisions: 1000,
         }
     }

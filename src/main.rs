@@ -18,6 +18,7 @@ use bevy::{
     dev_tools::fps_overlay::FpsOverlayPlugin,
     prelude::*,
 };
+use bevy_brp_extras::BrpExtrasPlugin;
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 
@@ -41,6 +42,7 @@ fn main() {
         .register_asset_source("mods", AssetSourceBuilder::platform_default("mods", None))
         .add_plugins((
             DefaultPlugins,
+            BrpExtrasPlugin::default(),
             PhysicsPlugins::default(),
             FlairPlugin,
             BMSPlugin,

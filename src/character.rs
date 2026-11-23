@@ -60,6 +60,7 @@ impl Plugin for CharacterPlugin {
 
         debug_info!(app, "Movement State", debug_movement_state);
         debug_info!(app, "Movement Speed", debug_movement_speed);
+        debug_info!(app, "Position", debug_position);
     }
 }
 
@@ -182,6 +183,13 @@ fn debug_movement_speed(velocities: Query<&LinearVelocity, With<Character>>) -> 
         .iter()
         .next()
         .map(|velocity| format!("{:.2} m/s", horizontal_speed(velocity.0)))
+}
+
+fn debug_position(transforms: Query<&Transform, With<Character>>) -> Option<String> {
+    transforms.iter().next().map(|transform| {
+        let p = transform.translation;
+        format!("({:.1}, {:.1}, {:.1})", p.x, p.y, p.z)
+    })
 }
 
 #[derive(Component)]

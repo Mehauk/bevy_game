@@ -2,6 +2,7 @@ mod assets;
 mod config;
 mod dom;
 mod focus;
+mod html;
 mod lifecycle;
 mod modifiers;
 mod script_value;
@@ -9,6 +10,7 @@ mod scripting;
 mod state;
 
 pub use config::{MenuAssetRoot, MenuConfig};
+pub use html::{HtmlAsset, HtmlLoader};
 pub use lifecycle::{MenuRoot, broadcast_menu_callback};
 pub use state::{MenuCmd, MenuManager, ToggleMenu};
 
@@ -20,9 +22,9 @@ use bevy_mod_scripting::BMSPlugin;
 use bevy_mod_scripting::core::{BMSScriptingInfrastructurePlugin, callback_labels, handler::event_handler};
 use bevy_mod_scripting::lua::LuaScriptingPlugin;
 
-use assets::{HtmlHotReloadState, reload_menus_on_asset_change};
+use assets::reload_menus_on_asset_change;
 use dom::apply_dom_ops;
-use lifecycle::{dispatch_menu_ready, handle_menu_commands};
+use lifecycle::{build_loaded_menu_doms, dispatch_menu_ready, handle_menu_commands};
 
 pub type MenuScriptingPlugin = LuaScriptingPlugin;
 
@@ -48,10 +50,11 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         install_scripting_backends(app);
 
-        app.init_resource::<MenuConfig>()
+        app.init_asset::<HtmlAsset>()
+            .register_asset_loader(HtmlLoader)
+            .init_resource::<MenuConfig>()
             .init_resource::<MenuManager>()
             .init_resource::<dom::DomRuntime>()
-            .init_resource::<HtmlHotReloadState>()
             .init_resource::<focus::MenuFocusState>()
             .add_message::<ToggleMenu>()
             .add_message::<MenuCmd>()
@@ -75,6 +78,7 @@ impl Plugin for MenuPlugin {
                     reload_menus_on_asset_change,
                     handle_menu_commands,
                     focus::track_and_maintain_menu_focus,
+                    build_loaded_menu_doms,
                     dispatch_menu_ready,
                 )
                     .chain()

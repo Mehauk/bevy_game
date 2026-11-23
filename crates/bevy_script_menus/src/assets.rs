@@ -4,13 +4,11 @@ use bevy::{asset::AssetEvent, prelude::*};
 use bevy_mod_scripting::asset::ScriptAsset;
 
 use crate::config::MenuConfig;
+use crate::html::HtmlAsset;
 use crate::lifecycle::{MenuRoot, close_top_menu, open_menu_in_world};
 use crate::state::MenuManager;
 
-pub(crate) fn resolve_menu_file(
-    config: &MenuConfig,
-    relative_path: &str,
-) -> Option<(PathBuf, String)> {
+pub(crate) fn resolve_menu_asset(config: &MenuConfig, relative_path: &str) -> Option<String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .ok()
         .map(PathBuf::from);
@@ -19,32 +17,17 @@ pub(crate) fn resolve_menu_file(
             .into_iter()
             .chain(manifest_dir.as_ref().map(|m| m.join(&root.folder)));
         for base in candidates {
-            let full = base.join(relative_path);
-            if full.is_file() {
-                return Some((full, format!("{}{relative_path}", root.prefix)));
+            if base.join(relative_path).is_file() {
+                return Some(format!("{}{relative_path}", root.prefix));
             }
         }
     }
     None
 }
 
-#[derive(Resource)]
-pub(crate) struct HtmlHotReloadState {
-    timer: Timer,
-}
-
-impl Default for HtmlHotReloadState {
-    fn default() -> Self {
-        Self {
-            timer: Timer::from_seconds(0.25, TimerMode::Repeating),
-        }
-    }
-}
-
 pub(crate) fn reload_menus_on_asset_change(
-    time: Res<Time<Real>>,
-    mut hot: ResMut<HtmlHotReloadState>,
     mut script_events: MessageReader<AssetEvent<ScriptAsset>>,
+    mut html_events: MessageReader<AssetEvent<HtmlAsset>>,
     q_roots: Query<&MenuRoot>,
     manager: Res<MenuManager>,
     mut commands: Commands,
@@ -53,22 +36,25 @@ pub(crate) fn reload_menus_on_asset_change(
         .read()
         .filter_map(|e| if let AssetEvent::Modified { id } = e { Some(*id) } else { None })
         .collect();
+    let modified_html: Vec<AssetId<HtmlAsset>> = html_events
+        .read()
+        .filter_map(|e| if let AssetEvent::Modified { id } = e { Some(*id) } else { None })
+        .collect();
 
-    let script_modified = q_roots.iter().any(|r| {
+    if modified_scripts.is_empty() && modified_html.is_empty() {
+        return;
+    }
+
+    let modified = q_roots.iter().any(|r| {
         r.script
             .as_ref()
             .is_some_and(|h| modified_scripts.contains(&h.id()))
+            || r.html
+                .as_ref()
+                .is_some_and(|h| modified_html.contains(&h.id()))
     });
 
-    let html_modified = hot.timer.tick(time.delta()).just_finished()
-        && q_roots.iter().any(|r| {
-            std::fs::metadata(&r.html_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                != r.html_modified
-        });
-
-    if (script_modified || html_modified) && manager.any_open() {
+    if modified && manager.any_open() {
         commands.queue(|world: &mut World| {
             let names: Vec<String> = world
                 .resource::<MenuManager>()

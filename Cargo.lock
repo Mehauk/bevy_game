@@ -8407,7 +8407,6 @@ dependencies = [
  "bevy",
  "bevy_brp_extras",
  "bevy_enhanced_input",
- "bevy_flair",
  "bevy_mod_scripting",
  "bevy_script_menus",
  "glam 0.27.0",

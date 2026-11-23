@@ -211,10 +211,10 @@ mod tests {
                 MenuRoot {
                     name: "test".into(),
                     dom_id: 1,
-                    html_path: Default::default(),
-                    html_modified: None,
                     script: Some(Handle::<ScriptAsset>::default()),
+                    html: None,
                     ready_sent: true,
+                    dom_built: true,
                 },
                 DomHandlers::default(),
                 DomHandle(1),

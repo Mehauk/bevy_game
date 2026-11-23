@@ -1520,6 +1520,16 @@ probing root list, and `let z = 100 + depth`. `main.rs` inserts the mods root be
 so `clipboard.get/set` still appear in the generated docs and `arboard`/`roxmltree` left the app's
 own dependency list.
 
+Follow-up: `bevy_flair` was never used by the app at all — the only two references in the whole of
+`world_generation` were `use bevy_flair::prelude::*` and `FlairPlugin` in `main.rs`, both there purely
+to serve the menus. With the crate now installing flair itself, `FlairPlugin` came out of `main.rs`
+and `bevy_flair` out of the app's `Cargo.toml`, leaving the crate as the sole depender. This is what
+first exercised `install_scripting_backends` for real (until then the guard always short-circuited);
+verified by re-running and confirming the overlay still renders fully styled. `BMSPlugin` stays in
+`main.rs` on purpose — the app registers its own `commands.*`/`input.*`/`state.*` namespaces from
+plugins added before `MenuPlugin`, so letting the crate install BMS would move BMS's build point
+after theirs for no benefit.
+
 **Trap: `FlairPlugin` and `BMSPlugin` are `plugin_group!`s, not `Plugin`s.** The obvious
 `if !app.is_plugin_added::<FlairPlugin>()` guard does not compile — plugin groups implement
 `Plugins`, and `is_plugin_added` is bounded on `Plugin`. The guard has to test a concrete member of
@@ -1535,14 +1545,49 @@ therefore self-contained for a fresh host and still safe when the host configure
   backend this project does not use. Instead the backend is named once as `pub type
   MenuScriptingPlugin = LuaScriptingPlugin;` and used everywhere (crate and host), so the swap is
   one line when a second backend is actually wanted.
-- HTML is still read with `std::fs::read_to_string` and hot-reloaded by `HtmlHotReloadState`'s
-  0.25 s metadata poll. The proper fix is an `AssetLoader` for `.html` so `index.html` loads through
-  `AssetServer` like `style.css`/`script.lua` and hot-reloads via `AssetEvent` on any `AssetSource`.
-  That is deferred deliberately, not skipped: it makes menu open two-phase (the DOM can only be
-  queued once the asset is loaded, exactly as `ready_sent` already waits for the script context),
-  which is a behaviour change that should not ride along inside a move. It is the next step before a
-  crates.io publish, and it is the only thing left that stops the crate working on WASM/embedded
-  assets.
+- No `HtmlAsset` in the initial move (done immediately after — see the follow-up section below).
+  Loading HTML through `AssetServer` turns menu-open into two phases, which is a behaviour change
+  and should not ride inside a move.
+
+**Follow-up: `.html` is now a real Bevy asset, and the poll timer is gone.**
+
+`HtmlAsset { source: String }` + `HtmlLoader` (`extensions = ["html"]`, `Settings = ()`) registered
+by `MenuPlugin`. `index.html` now loads through `AssetServer` exactly like `style.css` and
+`script.lua`, so menu content flows through any `AssetSource` — including embedded ones — instead of
+`std::fs::read_to_string`. `HtmlHotReloadState` and its 0.25 s `std::fs::metadata` poll were deleted;
+`reload_menus_on_asset_change` now watches `AssetEvent<HtmlAsset>::Modified` alongside the
+`AssetEvent<ScriptAsset>` it already watched, so HTML hot-reload is instant and uses the same
+`file_watcher` path as CSS and Lua. `MenuRoot` lost `html_path`/`html_modified` and gained
+`html: Handle<HtmlAsset>` + `dom_built: bool`.
+
+Two-phase open, as predicted. `open_menu_in_world` can no longer parse the HTML, so it spawns the
+root entity and records the handle; a new exclusive `build_loaded_menu_doms` system (in
+`MenuSystems::Lifecycle`, after `handle_menu_commands`) parses and queues the subtree for any root
+whose asset has finished loading, then calls `apply_dom_ops` itself. That last call is load-bearing,
+not tidiness: `dispatch_menu_ready` runs later in the same set, and if the subtree were left for the
+`ApplyDom` set at the end of the frame, `on_menu_ready` would fire into an empty DOM and every
+`dom.get_by_id` in a menu's Lua would silently miss. `dispatch_menu_ready` additionally requires
+`dom_built`, so a menu is only "ready" once both the script context and the DOM exist. Net cost is
+one extra frame on open for an already-cached asset — imperceptible, and it replaces a synchronous
+disk read that was on the main thread anyway.
+
+**Trap: `register_asset_loader` does not register the asset type.** A `MessageReader<AssetEvent
+<HtmlAsset>>` parameter panics at schedule build with `Message not initialized` — the message channel
+comes from `App::init_asset::<A>()`, not from the loader registration. `init_asset` also initialises
+`Assets<A>` and the asset server entry, so it must precede `register_asset_loader`. This was caught
+by actually running the app; `cargo check` and the whole test suite passed without it.
+
+**Still filesystem-bound, deliberately.** `resolve_menu_asset` probes `is_file()` across
+`MenuConfig::roots` to decide *which* root a menu lives in. That is asset *discovery*, a separate
+problem from loading: `AssetServer` has no cheap "does this path exist" for a prefixed source, so
+removing the probe means the host declaring menu names rather than the crate discovering them. It is
+the last thing standing between the crate and a WASM/embedded-only build.
+
+**Verified.** Ran the app: F1 opens the fully styled overlay through the new asset path (so
+`build_loaded_menu_doms` + the `dom_built` gate + same-frame `apply_dom_ops` all work), and editing
+`keyboard/index.html` live re-titled it to "ASSET LOADER RELOAD" with zero errors in the log —
+proving `AssetEvent<HtmlAsset>` reload replaced the poller rather than breaking reload. 91/91 tests
+still pass.
 
 **Verified.** `cargo check -p bevy_script_menus` clean both with and without `clipboard`;
 `cargo test --workspace` → 91 passed (10 in the new crate, 81 in the app), identical to the 91

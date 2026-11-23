@@ -13,8 +13,9 @@ use bevy_mod_scripting::{
 
 use crate::MenuScriptingPlugin;
 use crate::OnMenuReady;
-use crate::assets::resolve_menu_file;
+use crate::assets::resolve_menu_asset;
 use crate::config::MenuConfig;
+use crate::html::HtmlAsset;
 use crate::dom::{
     DomHandle, DomHandlers, DomRuntime, apply_dom_ops, prune_dead_nodes, queue_xml_subtree,
 };
@@ -25,10 +26,10 @@ use crate::state::{MenuCmd, MenuManager, ToggleMenu};
 pub struct MenuRoot {
     pub(crate) name: String,
     pub(crate) dom_id: i64,
-    pub(crate) html_path: std::path::PathBuf,
-    pub(crate) html_modified: Option<std::time::SystemTime>,
     pub(crate) script: Option<Handle<ScriptAsset>>,
+    pub(crate) html: Option<Handle<HtmlAsset>>,
     pub(crate) ready_sent: bool,
+    pub(crate) dom_built: bool,
 }
 
 impl MenuRoot {
@@ -99,13 +100,55 @@ pub(crate) fn handle_menu_commands(
     });
 }
 
+pub(crate) fn build_loaded_menu_doms(world: &mut World) {
+    let pending: Vec<(Entity, String, i64, Handle<HtmlAsset>)> = {
+        let mut query = world.query::<(Entity, &MenuRoot)>();
+        query
+            .iter(world)
+            .filter(|(_, root)| !root.dom_built)
+            .filter_map(|(entity, root)| {
+                root.html
+                    .clone()
+                    .map(|handle| (entity, root.name.clone(), root.dom_id, handle))
+            })
+            .collect()
+    };
+
+    let mut built_any = false;
+    for (menu_entity, name, dom_id, handle) in pending {
+        let Some(source) = world
+            .resource::<Assets<HtmlAsset>>()
+            .get(&handle)
+            .map(|asset| asset.source.clone())
+        else {
+            continue;
+        };
+
+        match roxmltree::Document::parse(&source) {
+            Ok(doc) => {
+                let mut rt = world.resource_mut::<DomRuntime>();
+                queue_xml_subtree(&mut rt, menu_entity, dom_id, doc.root_element());
+            }
+            Err(err) => error!("Failed to parse HTML for menu '{name}': {err}"),
+        }
+        if let Some(mut root) = world.get_mut::<MenuRoot>(menu_entity) {
+            root.dom_built = true;
+        }
+        built_any = true;
+    }
+
+    if built_any {
+        apply_dom_ops(world);
+    }
+}
+
 pub(crate) fn dispatch_menu_ready(
     mut q_roots: Query<(Entity, &mut MenuRoot)>,
     script_contexts: Res<ScriptContexts<MenuScriptingPlugin>>,
     mut callbacks: MessageWriter<ScriptCallbackMessage>,
 ) {
     for (menu_entity, mut root) in &mut q_roots {
-        if root.ready_sent {
+        if root.ready_sent || !root.dom_built {
             continue;
         }
         let Some(script) = root.script.clone() else {
@@ -161,24 +204,17 @@ fn close_menu_by_name(world: &mut World, name: &str) -> bool {
 
 pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
     let config = world.resource::<MenuConfig>().clone();
-    let Some((html_path, _)) = resolve_menu_file(&config, &format!("menus/{name}/index.html"))
-    else {
+    let asset_server = world.resource::<AssetServer>();
+    let html_handle = resolve_menu_asset(&config, &format!("menus/{name}/index.html"))
+        .map(|asset| asset_server.load(asset));
+    let css_handle = resolve_menu_asset(&config, &format!("menus/{name}/style.css"))
+        .map(|asset| asset_server.load(asset));
+    let script_handle = resolve_menu_asset(&config, &format!("menus/{name}/script.lua"))
+        .map(|asset| asset_server.load(asset));
+    let Some(html_handle) = html_handle else {
         warn!("Menu HTML not found for '{name}'");
         return;
     };
-    let Ok(html_source) = std::fs::read_to_string(&html_path) else {
-        warn!("Failed to read menu HTML at {}", html_path.display());
-        return;
-    };
-    let html_modified = std::fs::metadata(&html_path)
-        .ok()
-        .and_then(|m| m.modified().ok());
-
-    let asset_server = world.resource::<AssetServer>();
-    let css_handle = resolve_menu_file(&config, &format!("menus/{name}/style.css"))
-        .map(|(_, asset)| asset_server.load(asset));
-    let script_handle = resolve_menu_file(&config, &format!("menus/{name}/script.lua"))
-        .map(|(_, asset)| asset_server.load(asset));
     if script_handle.is_none() {
         warn!("Menu script not found for '{name}'");
     }
@@ -215,25 +251,15 @@ pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
             MenuRoot {
                 name: name.to_string(),
                 dom_id: root_dom_id,
-                html_path,
-                html_modified,
                 script: script_handle,
+                html: Some(html_handle),
                 ready_sent: false,
+                dom_built: false,
             },
         ));
-    }
-
-    match roxmltree::Document::parse(&html_source) {
-        Ok(doc) => {
-            let mut rt = world.resource_mut::<DomRuntime>();
-            queue_xml_subtree(&mut rt, root_entity, root_dom_id, doc.root_element());
-        }
-        Err(err) => error!("Failed to parse HTML for menu '{name}': {err}"),
     }
 
     world
         .resource_mut::<MenuManager>()
         .push(name.to_string(), root_entity);
-
-    apply_dom_ops(world);
 }

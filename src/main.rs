@@ -18,7 +18,6 @@ use bevy::{
     prelude::*,
 };
 use bevy_brp_extras::BrpExtrasPlugin;
-use bevy_flair::prelude::*;
 use bevy_mod_scripting::BMSPlugin;
 use bevy_script_menus::{MenuAssetRoot, MenuConfig, MenuPlugin};
 
@@ -50,7 +49,6 @@ fn main() {
             DefaultPlugins,
             BrpExtrasPlugin::default(),
             PhysicsPlugins::default(),
-            FlairPlugin,
             BMSPlugin,
             FpsOverlayPlugin::default(),
             CommandsPlugin,

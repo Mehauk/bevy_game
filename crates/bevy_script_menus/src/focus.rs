@@ -1,6 +1,6 @@
 use bevy::{input_focus::{AutoFocus, FocusCause, InputFocus}, prelude::*, ui_widgets::TextInput};
 
-use crate::menus::state::MenuManager;
+use crate::state::MenuManager;
 
 #[derive(Resource, Default)]
 pub(crate) struct MenuFocusState {

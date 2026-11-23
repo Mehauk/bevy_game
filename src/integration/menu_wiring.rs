@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
+use bevy_script_menus::ToggleMenu;
 
 use crate::input::InputAppExt;
-use crate::menus::ToggleMenu;
 use crate::utils::registry::commands::CommandAppExt;
 
 #[derive(InputAction)]

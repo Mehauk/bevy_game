@@ -2190,6 +2190,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_script_menus"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "bevy",
+ "bevy_flair",
+ "bevy_mod_scripting",
+ "roxmltree",
+]
+
+[[package]]
 name = "bevy_shader"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8392,18 +8403,17 @@ dependencies = [
 name = "world_generation"
 version = "0.1.0"
 dependencies = [
- "arboard",
  "avian3d",
  "bevy",
  "bevy_brp_extras",
  "bevy_enhanced_input",
  "bevy_flair",
  "bevy_mod_scripting",
+ "bevy_script_menus",
  "glam 0.27.0",
  "mesh_to_sdf",
  "meshless_voronoi",
  "noise",
- "roxmltree",
 ]
 
 [[package]]

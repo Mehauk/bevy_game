@@ -1,0 +1,26 @@
+[package]
+name = "bevy_script_menus"
+version = "0.1.0"
+edition = "2024"
+description = "HTML/CSS/Lua scriptable menus for Bevy"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bevy = { version = "0.20.1", default-features = false, features = [
+    "bevy_asset",
+    "bevy_input_focus",
+    "bevy_log",
+    "bevy_picking",
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_widgets",
+    "bevy_window",
+] }
+bevy_flair = "0.9"
+bevy_mod_scripting = { version = "0.24", features = ["lua54"] }
+roxmltree = "0.21"
+arboard = { version = "3.7", optional = true }
+
+[features]
+default = []
+clipboard = ["dep:arboard"]

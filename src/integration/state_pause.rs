@@ -3,8 +3,8 @@ use bevy_mod_scripting::bindings::{
     InteropError, WorldExtensions,
     function::{namespace::NamespaceBuilder, script_function::FunctionCallContext},
 };
+use bevy_script_menus::MenuManager;
 
-use crate::menus::MenuManager;
 use crate::state::{GameState, PauseTracker, PlayState};
 
 pub(super) fn register(app: &mut App) {

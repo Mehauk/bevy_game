@@ -4,13 +4,13 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use bevy_enhanced_input::prelude::*;
+use bevy_script_menus::MenuManager;
 
 use crate::camera::{
     CameraRig, CameraSystems, CameraTarget, MainCamera, ViewMode, WantedCursorLock,
 };
 use crate::character::{CameraFacing, Character, CharacterBody};
 use crate::input::{GameplayInput, set_context_active};
-use crate::menus::MenuManager;
 use crate::terrain::{DistanceFieldSource, SkyBox};
 
 pub(super) fn register(app: &mut App) {

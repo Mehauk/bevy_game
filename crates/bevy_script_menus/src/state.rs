@@ -28,29 +28,29 @@ impl MenuManager {
         self.reload_generation = self.reload_generation.wrapping_add(1);
     }
 
-    pub(crate) fn top_entity(&self) -> Option<Entity> {
+    pub fn top_entity(&self) -> Option<Entity> {
         self.open_menus.last().map(|(_, entity)| *entity)
     }
 
-    pub(crate) fn depth(&self) -> usize {
+    pub fn depth(&self) -> usize {
         self.open_menus.len()
     }
 
-    pub(crate) fn open_names(&self) -> impl Iterator<Item = &str> {
+    pub fn open_names(&self) -> impl Iterator<Item = &str> {
         self.open_menus.iter().map(|(name, _)| name.as_str())
     }
 
-    pub(crate) fn push(&mut self, name: String, entity: Entity) {
-        self.open_menus.push((name, entity));
-    }
-
-    pub(crate) fn index_of(&self, name: &str) -> Option<usize> {
+    pub fn index_of(&self, name: &str) -> Option<usize> {
         self.open_menus
             .iter()
             .rposition(|(n, _)| n == name)
     }
 
-    pub(crate) fn remove_at(&mut self, pos: usize) -> (String, Entity) {
+    pub fn push(&mut self, name: String, entity: Entity) {
+        self.open_menus.push((name, entity));
+    }
+
+    pub fn remove_at(&mut self, pos: usize) -> (String, Entity) {
         self.open_menus.remove(pos)
     }
 }

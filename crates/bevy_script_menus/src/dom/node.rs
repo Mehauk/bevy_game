@@ -177,7 +177,7 @@ pub(crate) fn spawn_node_entity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::{script_map, script_str};
+    use crate::script_value::{script_map, script_str};
 
     fn opts(entries: Vec<(&'static str, ScriptValue)>) -> ScriptValue {
         script_map(entries)

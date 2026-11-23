@@ -3,19 +3,25 @@ use std::path::{Path, PathBuf};
 use bevy::{asset::AssetEvent, prelude::*};
 use bevy_mod_scripting::asset::ScriptAsset;
 
-use crate::menus::lifecycle::{MenuRoot, close_top_menu, open_menu_in_world};
-use crate::menus::state::MenuManager;
+use crate::config::MenuConfig;
+use crate::lifecycle::{MenuRoot, close_top_menu, open_menu_in_world};
+use crate::state::MenuManager;
 
-pub(crate) fn resolve_menu_file(relative_path: &str) -> Option<(PathBuf, String)> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok().map(PathBuf::from);
-    for (folder, prefix) in [("mods", "mods://"), ("assets", "")] {
-        let candidates = [PathBuf::from(folder), Path::new("..").join(folder)]
+pub(crate) fn resolve_menu_file(
+    config: &MenuConfig,
+    relative_path: &str,
+) -> Option<(PathBuf, String)> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .ok()
+        .map(PathBuf::from);
+    for root in &config.roots {
+        let candidates = [PathBuf::from(&root.folder), Path::new("..").join(&root.folder)]
             .into_iter()
-            .chain(manifest_dir.as_ref().map(|m| m.join(folder)));
+            .chain(manifest_dir.as_ref().map(|m| m.join(&root.folder)));
         for base in candidates {
             let full = base.join(relative_path);
             if full.is_file() {
-                return Some((full, format!("{prefix}{relative_path}")));
+                return Some((full, format!("{}{relative_path}", root.prefix)));
             }
         }
     }

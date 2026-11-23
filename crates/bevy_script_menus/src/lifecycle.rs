@@ -5,34 +5,66 @@ use bevy_mod_scripting::{
     asset::ScriptAsset,
     bindings::script_value::ScriptValue,
     core::{
-        event::{IntoCallbackLabel, ScriptCallbackMessage},
+        event::{CallbackLabel, IntoCallbackLabel, ScriptCallbackMessage},
         script::{ScriptComponent, ScriptContexts},
     },
-    lua::LuaScriptingPlugin,
     script::ScriptAttachment,
 };
 
-use crate::menus::OnMenuReady;
-use crate::menus::assets::resolve_menu_file;
-use crate::menus::dom::{
+use crate::MenuScriptingPlugin;
+use crate::OnMenuReady;
+use crate::assets::resolve_menu_file;
+use crate::config::MenuConfig;
+use crate::dom::{
     DomHandle, DomHandlers, DomRuntime, apply_dom_ops, prune_dead_nodes, queue_xml_subtree,
 };
-use crate::menus::focus::MenuFocusState;
-use crate::menus::state::{MenuCmd, MenuManager, ToggleMenu};
+use crate::focus::MenuFocusState;
+use crate::state::{MenuCmd, MenuManager, ToggleMenu};
 
 #[derive(Component)]
 pub struct MenuRoot {
-    pub name: String,
-    pub dom_id: i64,
-    pub html_path: std::path::PathBuf,
-    pub html_modified: Option<std::time::SystemTime>,
-    pub script: Option<Handle<ScriptAsset>>,
-    pub ready_sent: bool,
+    pub(crate) name: String,
+    pub(crate) dom_id: i64,
+    pub(crate) html_path: std::path::PathBuf,
+    pub(crate) html_modified: Option<std::time::SystemTime>,
+    pub(crate) script: Option<Handle<ScriptAsset>>,
+    pub(crate) ready_sent: bool,
 }
 
 impl MenuRoot {
-    pub(crate) fn ready_script(&self) -> Option<Handle<ScriptAsset>> {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn dom_id(&self) -> i64 {
+        self.dom_id
+    }
+
+    pub fn script(&self) -> Option<Handle<ScriptAsset>> {
+        self.script.clone()
+    }
+
+    pub fn ready_script(&self) -> Option<Handle<ScriptAsset>> {
         self.ready_sent.then(|| self.script.clone()).flatten()
+    }
+}
+
+pub fn broadcast_menu_callback(
+    roots: &Query<(Entity, &MenuRoot)>,
+    callbacks: &mut MessageWriter<ScriptCallbackMessage>,
+    label: CallbackLabel,
+    payload: &[ScriptValue],
+) {
+    for (entity, root) in roots.iter() {
+        let Some(script) = root.ready_script() else {
+            continue;
+        };
+        callbacks.write(ScriptCallbackMessage::new_for_script_entity(
+            label.clone(),
+            payload.to_vec(),
+            script,
+            entity,
+        ));
     }
 }
 
@@ -69,7 +101,7 @@ pub(crate) fn handle_menu_commands(
 
 pub(crate) fn dispatch_menu_ready(
     mut q_roots: Query<(Entity, &mut MenuRoot)>,
-    script_contexts: Res<ScriptContexts<LuaScriptingPlugin>>,
+    script_contexts: Res<ScriptContexts<MenuScriptingPlugin>>,
     mut callbacks: MessageWriter<ScriptCallbackMessage>,
 ) {
     for (menu_entity, mut root) in &mut q_roots {
@@ -128,7 +160,9 @@ fn close_menu_by_name(world: &mut World, name: &str) -> bool {
 }
 
 pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
-    let Some((html_path, _)) = resolve_menu_file(&format!("menus/{name}/index.html")) else {
+    let config = world.resource::<MenuConfig>().clone();
+    let Some((html_path, _)) = resolve_menu_file(&config, &format!("menus/{name}/index.html"))
+    else {
         warn!("Menu HTML not found for '{name}'");
         return;
     };
@@ -141,15 +175,15 @@ pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
         .and_then(|m| m.modified().ok());
 
     let asset_server = world.resource::<AssetServer>();
-    let css_handle = resolve_menu_file(&format!("menus/{name}/style.css"))
+    let css_handle = resolve_menu_file(&config, &format!("menus/{name}/style.css"))
         .map(|(_, asset)| asset_server.load(asset));
-    let script_handle = resolve_menu_file(&format!("menus/{name}/script.lua"))
+    let script_handle = resolve_menu_file(&config, &format!("menus/{name}/script.lua"))
         .map(|(_, asset)| asset_server.load(asset));
     if script_handle.is_none() {
         warn!("Menu script not found for '{name}'");
     }
 
-    let z = 100 + world.resource::<MenuManager>().depth() as i32;
+    let z = config.base_z_index + world.resource::<MenuManager>().depth() as i32;
     let mut root_mut = world.spawn((
         Node {
             position_type: PositionType::Absolute,

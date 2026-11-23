@@ -2,51 +2,58 @@ use bevy::prelude::*;
 use bevy_enhanced_input::prelude::ModKeys;
 use bevy_mod_scripting::{
     bindings::script_value::ScriptValue,
-    core::event::{CallbackLabel, IntoCallbackLabel, ScriptCallbackMessage},
+    core::{
+        callback_labels,
+        event::{IntoCallbackLabel, ScriptCallbackMessage},
+        handler::event_handler,
+    },
+};
+use bevy_script_menus::{
+    MenuManager, MenuRoot, MenuScriptingPlugin, MenuSystems, broadcast_menu_callback,
 };
 
-use crate::menus::OnHistoryChanged;
-use crate::menus::OnMenuModifiersChanged;
-use crate::menus::OnMenuRemapResult;
-use crate::menus::lifecycle::MenuRoot;
-use crate::menus::state::MenuManager;
 use crate::utils::RemapStatus;
 use crate::utils::keys::{current_modifier_flags, modifier_map, mouse_button_name};
 use crate::utils::registry::commands::CommandHistory;
 use crate::utils::{script_str, script_str_list};
 
+callback_labels!(
+    OnMenuModifiersChanged => "on_modifiers_changed",
+    OnMenuRemapResult => "on_remap_result",
+    OnHistoryChanged => "on_history_changed",
+);
+
 #[derive(Resource, Default)]
-pub(crate) struct ModifierTracking {
+struct ModifierTracking {
     last_mods: ModKeys,
     last_pressed: Vec<String>,
     resync: bool,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct HistoryTracking {
+struct HistoryTracking {
     last_version: usize,
 }
 
-fn broadcast_to_menus(
-    roots: &Query<(Entity, &MenuRoot)>,
-    callbacks: &mut MessageWriter<ScriptCallbackMessage>,
-    label: CallbackLabel,
-    payload: &[ScriptValue],
-) {
-    for (entity, root) in roots.iter() {
-        let Some(script) = root.ready_script() else {
-            continue;
-        };
-        callbacks.write(ScriptCallbackMessage::new_for_script_entity(
-            label.clone(),
-            payload.to_vec(),
-            script,
-            entity,
-        ));
-    }
+pub(super) fn register(app: &mut App) {
+    app.init_resource::<ModifierTracking>()
+        .init_resource::<HistoryTracking>()
+        .add_systems(
+            Update,
+            (
+                dispatch_modifier_changes,
+                dispatch_remap_results,
+                dispatch_history_changes,
+                event_handler::<OnMenuModifiersChanged, MenuScriptingPlugin>,
+                event_handler::<OnMenuRemapResult, MenuScriptingPlugin>,
+                event_handler::<OnHistoryChanged, MenuScriptingPlugin>,
+            )
+                .chain()
+                .in_set(MenuSystems::UserCallbacks),
+        );
 }
 
-pub(crate) fn dispatch_modifier_changes(
+fn dispatch_modifier_changes(
     keys: Res<ButtonInput<KeyCode>>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut mouse_wheel: MessageReader<bevy::input::mouse::MouseWheel>,
@@ -136,7 +143,7 @@ pub(crate) fn dispatch_modifier_changes(
     }
 }
 
-pub(crate) fn dispatch_history_changes(
+fn dispatch_history_changes(
     history: Res<CommandHistory>,
     manager: Res<MenuManager>,
     mut tracking: ResMut<HistoryTracking>,
@@ -147,7 +154,7 @@ pub(crate) fn dispatch_history_changes(
         return;
     }
     tracking.last_version = history.version;
-    broadcast_to_menus(
+    broadcast_menu_callback(
         &q_roots,
         &mut callbacks,
         OnHistoryChanged::into_callback_label(),
@@ -155,7 +162,7 @@ pub(crate) fn dispatch_history_changes(
     );
 }
 
-pub(crate) fn dispatch_remap_results(
+fn dispatch_remap_results(
     remap_status: Res<RemapStatus>,
     manager: Res<MenuManager>,
     q_roots: Query<(Entity, &MenuRoot)>,
@@ -164,7 +171,7 @@ pub(crate) fn dispatch_remap_results(
     if !remap_status.is_changed() || !manager.any_open() || remap_status.version == 0 {
         return;
     }
-    broadcast_to_menus(
+    broadcast_menu_callback(
         &q_roots,
         &mut callbacks,
         OnMenuRemapResult::into_callback_label(),

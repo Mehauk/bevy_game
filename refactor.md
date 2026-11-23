@@ -1468,3 +1468,91 @@ pipeline silently — the sea vanished and the terrain showed through; the log's
 Verified by BRP screenshots (sea raised to 0.4 via the new command): foam ring hugs the capsule
 waterline as broken-up white patches, fading circularly with no square edge; ripples continuous
 across the old boundary. 91/91 tests pass.
+
+---
+
+## 2026-11-23 — `src/menus/` extracted into the `bevy_script_menus` workspace crate
+
+`src/menus/` already imported no peer feature module; every external tie went through `integration/`
+or `utils/`. What still bound it to `world_generation` were four things, and none of them were
+accidental — each had to be replaced by an explicit seam rather than just deleted.
+
+**1. Game-specific callback dispatchers → `src/integration/menu_callbacks.rs`.**
+`OnMenuRemapResult`/`OnHistoryChanged`/`OnMenuModifiersChanged` and their dispatchers depend on
+`RemapStatus`, `CommandHistory`, and `utils::keys` (which is `bevy_enhanced_input`-flavoured:
+`ModKeys`, `mouse_button_name` aligned to BEI binding names). Those are game concepts, not menu
+concepts, so the whole of the old `menus/dispatch.rs` moved to `integration/` and the three
+`callback_labels!` moved with it (`callback_labels!` only defines types + an `IntoCallbackLabel`
+impl — no registration step, so splitting them across crates is free). `bevy_enhanced_input` is now
+completely absent from the crate's dependency tree.
+
+The crate keeps `OnMenuReady` and `OnDomEvent`, and gained `broadcast_menu_callback` in its public
+API — that helper already existed twice as `dispatch::broadcast_to_menus`, so promoting it is both
+the seam and a DRY win. `MenuRoot` switched from public fields to `name()` / `dom_id()` /
+`script()` / `ready_script()` accessors (`html_path`, `html_modified`, `ready_sent` stay
+`pub(crate)`), and `MenuManager`'s stack operations went `pub` so a host can drive menus from Rust
+without going through `ToggleMenu`.
+
+**2. Same-frame DOM apply, without the callbacks.** The old single `MenuUpdateSystems` chain ended
+with `apply_dom_ops` precisely so DOM writes from `OnHistoryChanged` landed that frame. That
+guarantee is now expressed as ordered sub-sets, so the crate can promise it without knowing what
+runs in the middle:
+
+```
+MenuSystems::{Lifecycle, DispatchEvents, UserCallbacks, ApplyDom}.chain().in_set(MenuUpdateSystems)
+```
+
+`UserCallbacks` is empty in the crate and is where `IntegrationPlugin` schedules the three moved
+dispatchers plus their `event_handler`s. `MenuUpdateSystems` survives as the umbrella set, so
+`integration/mod.rs`'s `.before(MenuUpdateSystems)` input ordering is untouched.
+
+**3. `crate::utils` inside the DOM.** `on_dom_key_input` only ever needed four booleans, so the
+crate got a 17-line `modifiers.rs` reading `ctrl/shift/alt/super` straight off
+`ButtonInput<KeyCode>` — no `ModKeys` round-trip. `script_map`/`script_str` were duplicated into a
+private `script_value.rs` rather than shared: 10 trivial lines is a cheaper boundary than making
+`utils` (a strict kernel) or `input`/`commands` depend on a menu crate.
+
+**4. Hardcoded paths, z-index, clipboard.** New `MenuConfig` resource (`roots: Vec<MenuAssetRoot>`,
+`base_z_index`) replaces the `("mods", "mods://")`/`("assets", "")` table, the `CARGO_MANIFEST_DIR`
+probing root list, and `let z = 100 + depth`. `main.rs` inserts the mods root before adding
+`MenuPlugin`; `init_resource` does not overwrite, so the host's config wins. `arboard` and the
+`clipboard` Lua namespace went behind `#[cfg(feature = "clipboard")]`; `world_generation` opts in,
+so `clipboard.get/set` still appear in the generated docs and `arboard`/`roxmltree` left the app's
+own dependency list.
+
+**Trap: `FlairPlugin` and `BMSPlugin` are `plugin_group!`s, not `Plugin`s.** The obvious
+`if !app.is_plugin_added::<FlairPlugin>()` guard does not compile — plugin groups implement
+`Plugins`, and `is_plugin_added` is bounded on `Plugin`. The guard has to test a concrete member of
+each group (`bevy_flair::core::PropertyRegistryPlugin`, `bevy_mod_scripting::core::
+BMSScriptingInfrastructurePlugin`), which is what `install_scripting_backends` does. The crate is
+therefore self-contained for a fresh host and still safe when the host configures both itself, as
+`main.rs` does.
+
+**Two deliberate deviations from the plan.**
+- No `lua` Cargo feature. Gating `LuaScriptingPlugin` behind one would have been a lie: with the
+  feature off there is no other backend, so the crate simply would not compile. A real switch needs
+  `MenuPlugin<S: ScriptPlugin>` generifying every `ScriptContexts`/`event_handler` site for a second
+  backend this project does not use. Instead the backend is named once as `pub type
+  MenuScriptingPlugin = LuaScriptingPlugin;` and used everywhere (crate and host), so the swap is
+  one line when a second backend is actually wanted.
+- HTML is still read with `std::fs::read_to_string` and hot-reloaded by `HtmlHotReloadState`'s
+  0.25 s metadata poll. The proper fix is an `AssetLoader` for `.html` so `index.html` loads through
+  `AssetServer` like `style.css`/`script.lua` and hot-reloads via `AssetEvent` on any `AssetSource`.
+  That is deferred deliberately, not skipped: it makes menu open two-phase (the DOM can only be
+  queued once the asset is loaded, exactly as `ready_sent` already waits for the script context),
+  which is a behaviour change that should not ride along inside a move. It is the next step before a
+  crates.io publish, and it is the only thing left that stops the crate working on WASM/embedded
+  assets.
+
+**Verified.** `cargo check -p bevy_script_menus` clean both with and without `clipboard`;
+`cargo test --workspace` → 91 passed (10 in the new crate, 81 in the app), identical to the 91
+`#[test]` functions on `HEAD` — nothing lost in the move. `docs/.compiled/lua-only-hooks.md`
+regenerated with `menus`, `dom`, `clipboard`, `state`, `commands`, `input` intact, so the Lua
+contract is unchanged. Runtime via BRP: F1 opens the keyboard overlay fully styled (HTML + CSS +
+Lua, `MenuConfig` root resolution and same-frame apply working); typing `menu>keyboard` into the
+command palette and pressing Enter both opened the keyboard menu on top of the palette (menu
+stacking and `base_z_index + depth` correct) and printed the executed command into the palette's
+history list — that line is rendered only by `on_history_changed`, so it proves the dispatcher moved
+into `MenuSystems::UserCallbacks` still fires and still applies in the same frame. Touching
+`assets/menus/keyboard/index.html` and swapping its title to "HOT RELOAD OK" reloaded the live menu
+through the relocated `assets.rs`; the asset was reverted afterwards.

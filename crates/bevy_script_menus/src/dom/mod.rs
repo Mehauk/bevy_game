@@ -9,7 +9,7 @@ use bevy::{
 };
 use bevy_flair::prelude::*;
 
-use crate::menus::focus::MenuFocusState;
+use crate::focus::MenuFocusState;
 use node::{NodeSpec, spawn_node_entity};
 
 #[derive(Component)]

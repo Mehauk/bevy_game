@@ -17,10 +17,10 @@ use bevy_mod_scripting::{
 
 use super::node::MenuTextInput;
 use super::{DomHandle, DomHandlers};
-use crate::menus::OnDomEvent;
-use crate::menus::lifecycle::MenuRoot;
-use crate::utils::keys::{current_modifier_flags, modifier_entries};
-use crate::utils::{script_map, script_str};
+use crate::OnDomEvent;
+use crate::lifecycle::MenuRoot;
+use crate::modifiers::modifier_entries;
+use crate::script_value::{script_map, script_str};
 
 #[derive(SystemParam)]
 pub(crate) struct DomEventCtx<'w, 's> {
@@ -151,7 +151,7 @@ pub(crate) fn on_dom_key_input(
     }
 
     let payload = script_map(
-        modifier_entries(current_modifier_flags(&keys)).chain([
+        modifier_entries(&keys).chain([
             ("key", script_str(&format!("{key:?}"))),
             ("repeat", ScriptValue::Bool(event.input.repeat)),
         ]),

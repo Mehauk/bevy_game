@@ -5,9 +5,9 @@ use bevy_mod_scripting::bindings::{
     script_value::ScriptValue,
 };
 
-use crate::menus::dom::node::NodeSpec;
-use crate::menus::dom::{DomOp, DomRuntime, queue_xml_subtree};
-use crate::menus::state::MenuCmd;
+use crate::dom::node::NodeSpec;
+use crate::dom::{DomOp, DomRuntime, queue_xml_subtree};
+use crate::state::MenuCmd;
 
 fn push_menu_cmd(ctx: &FunctionCallContext, cmd: MenuCmd) -> Result<(), InteropError> {
     ctx.world()?
@@ -121,6 +121,12 @@ pub(crate) fn register_menu_namespaces(app: &mut App) {
             push_dom_op(&ctx, DomOp::Blur)
         });
 
+    #[cfg(feature = "clipboard")]
+    register_clipboard_namespace(app);
+}
+
+#[cfg(feature = "clipboard")]
+fn register_clipboard_namespace(app: &mut App) {
     NamespaceBuilder::in_namespace(app.world_mut(), "clipboard")
         .register("get", |_ctx: FunctionCallContext| -> ScriptValue {
             match arboard::Clipboard::new().and_then(|mut c| c.get_text()) {

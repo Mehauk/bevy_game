@@ -10,9 +10,11 @@ pub mod field;
 pub mod post_process;
 pub mod underwater;
 pub mod water;
+pub mod wet;
 
 pub use post_process::{PostProcessEffect, PostProcessPlugin};
 pub use underwater::UnderwaterPostProcess;
+pub use wet::{WetSandExt, WetSandMaterial, Wetness};
 pub use field::{
     DistanceFieldViewExt, DistanceFieldViewMaterial, DistanceFieldViewUniform, SdfVolume,
 };
@@ -22,8 +24,9 @@ pub use compose::{
     water_blueprint,
 };
 pub use water::{
-    MAX_RIPPLES, RippleSet, RippleWave, WaterMaterial, WaterMaterialExt, WaterMaterialKey,
-    WaterParams, water_shader_defs,
+    CoastField, MAX_RIPPLES, MAX_SWELLS, REFRACTION_STRENGTH, RippleSet, RippleWave, ShoreContext,
+    SHORE_ZONE, SHOAL_DEPTH, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WaterMaterialKey,
+    WaterParams, shore_factor, shore_horiz_damp, shore_vert_damp, water_shader_defs,
 };
 
 pub struct ShaderKitPlugin;
@@ -46,9 +49,14 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/foam.wesl");
         load_shader_library!(app, "shaders/water/ripples.wesl");
         load_shader_library!(app, "shaders/water/optics.wesl");
+        load_shader_library!(app, "shaders/water/swells.wesl");
+        load_shader_library!(app, "shaders/water/coast.wesl");
+        load_shader_library!(app, "shaders/water/body.wesl");
         load_shader_library!(app, "shaders/post_process/bindings.wesl");
         embedded_asset!(app, "shaders/sdf/view_mode.wesl");
         embedded_asset!(app, "shaders/water/water.wesl");
+        embedded_asset!(app, "shaders/water/water_vertex.wesl");
+        embedded_asset!(app, "shaders/wet/wet_sand.wesl");
         embedded_asset!(app, "shaders/post_process/underwater.wesl");
 
         app.add_plugins(MaterialPlugin::<WaterMaterial>::default())

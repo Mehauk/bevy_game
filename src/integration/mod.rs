@@ -5,7 +5,9 @@ use crate::character::CharacterSystems;
 use crate::input::InputUpdateSystems;
 use crate::state::PlayState;
 
+mod body_foam;
 mod bridges;
+mod currents;
 mod distance_field;
 mod menu_callbacks;
 mod menu_wiring;
@@ -39,6 +41,8 @@ impl Plugin for IntegrationPlugin {
             CharacterSystems::Playing.run_if(in_state(PlayState::Running)),
         );
 
+        body_foam::register(app);
+        currents::register(app);
         menu_callbacks::register(app);
         menu_wiring::register(app);
         post_process::register(app);

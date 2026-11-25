@@ -8,6 +8,13 @@ fn foam_noise_mask(edge: f32, pattern: f32, strength: f32, view_fade: f32) -> f3
     return clamp(strength * edge * edge * (0.15 + 0.85 * pattern) * view_fade, 0.0, 1.0);
 }
 
+const BODY_CONTACT_BAND: f32 = 0.25;
+
+fn body_contact_mask(distance: f32, surface_proximity: f32) -> f32 {
+    let collar = 1.0 - smoothstep(0.0, BODY_CONTACT_BAND, abs(distance));
+    return clamp(collar * surface_proximity, 0.0, 1.0);
+}
+
 fn apply_foam_roughness(roughness: f32, foam: f32) -> f32 {
     return clamp(roughness + 0.6 * foam, 0.0, 1.0);
 }

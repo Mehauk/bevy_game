@@ -9,6 +9,7 @@ use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
 use crate::utils::registry::debug_info::{DebugInfoAppExt, debug_info};
 
 const SUBMERGENCE_MARGIN: f32 = 0.5;
+const SURFACE_EXIT_MARGIN: f32 = 1.0;
 
 #[derive(Resource)]
 struct UnderwaterToggle {
@@ -29,6 +30,15 @@ fn submersion_state(camera_y: f32, water_height: f32) -> &'static str {
         "submerged"
     } else {
         "partial"
+    }
+}
+
+fn lens_submerged(camera_y: f32, water_height: f32, was_submerged: bool) -> bool {
+    let delta = camera_y - water_height;
+    if was_submerged {
+        delta < SURFACE_EXIT_MARGIN
+    } else {
+        delta < SUBMERGENCE_MARGIN
     }
 }
 
@@ -74,6 +84,7 @@ fn sync_underwater_post_process(
     water_materials: Res<Assets<WaterMaterial>>,
     cameras: Query<&GlobalTransform, With<MainCamera>>,
     mut post_processes: Query<&mut UnderwaterPostProcess, With<MainCamera>>,
+    mut was_submerged: Local<bool>,
 ) {
     let Ok(mut post_process) = post_processes.single_mut() else {
         return;
@@ -102,7 +113,8 @@ fn sync_underwater_post_process(
         settings.ambient_illuminance = params.ambient_illuminance;
     }
 
-    let lens_in_water = camera.translation().y < water_height + SUBMERGENCE_MARGIN;
+    let lens_in_water = lens_submerged(camera.translation().y, water_height, *was_submerged);
+    *was_submerged = lens_in_water;
     settings.enabled = u32::from(toggle.enabled && lens_in_water && !field_view.active);
     *post_process = settings;
 }
@@ -138,5 +150,16 @@ mod tests {
         assert_eq!(submersion_state(2.0, 0.0), "above");
         assert_eq!(submersion_state(0.2, 0.0), "partial");
         assert_eq!(submersion_state(-2.0, 0.0), "submerged");
+    }
+
+    #[test]
+    fn the_lens_hysteresis_holds_the_effect_across_a_bob() {
+        assert!(!lens_submerged(2.0, 0.0, false));
+        assert!(lens_submerged(0.2, 0.0, false));
+        assert!(!lens_submerged(0.7, 0.0, false));
+
+        assert!(lens_submerged(0.7, 0.0, true));
+        assert!(lens_submerged(-3.0, 0.0, true));
+        assert!(!lens_submerged(1.2, 0.0, true));
     }
 }

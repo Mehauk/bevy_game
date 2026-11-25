@@ -6,8 +6,15 @@ import bevy_pbr::render::view_transformations::depth_ndc_to_view_z;
 import bevy_pbr::prepass::utils::prepass_depth;
 import package::shaders::math::falloff::view_distance_fade;
 import package::shaders::noise::fbm2d::scrolling_fbm_2d;
+import package::shaders::sdf::volume::volume_sample_world;
+import package::shaders::water::body::{body_sdf, body_volume};
+import package::shaders::water::coast::{
+    COAST_SWASH_BLEND, COAST_SWASH_RUNUP, coastal_wash_mask, shore_context_at, spill_height_at,
+    terrain_height_at,
+};
+import package::shaders::water::swells::swell_height_shored;
 import package::shaders::water::foam::{
-    apply_foam_roughness, blend_foam_color, foam_noise_mask, shore_edge_mask,
+    apply_foam_roughness, blend_foam_color, body_contact_mask, foam_noise_mask, shore_edge_mask,
 };
 import package::shaders::water::optics::water_volume_in_scatter;
 import package::shaders::water::ripples::{ripple_foam_edge, ripple_normal, ripple_slope};
@@ -35,6 +42,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));
         ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.max_depth);
     }
+    var coast_rest_depth: f32 = 1.0e6;
+    @if(WATER_COAST) {
+        let terrain_y = terrain_height_at(ctx.p.xz);
+        if (water.water_height + COAST_SWASH_RUNUP < spill_height_at(ctx.p.xz)) {
+            discard;
+        }
+        coast_rest_depth = water.water_height - terrain_y;
+        ctx.depth = min(ctx.depth, clamp(coast_rest_depth, 0.0, water.max_depth));
+    }
+    var body_distance: f32 = 1.0e6;
+    @if(WATER_BODY_FOAM) {
+        body_distance = volume_sample_world(body_volume, body_sdf, ctx.p);
+        ctx.depth = min(ctx.depth, max(body_distance, 0.0));
+    }
     pbr_input.material.thickness = ctx.depth;
 
     ctx.ripple = vec2<f32>(0.0);
@@ -45,6 +66,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
 
     @if(WATER_FOAM) {
         ctx.edge = max(shore_edge_mask(ctx.depth, water.foam_width), ripple_foam_edge(length(ctx.ripple), water.ripple_foam));
+        @if(WATER_BODY_FOAM) {
+            let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));
+            ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));
+        }
+        @if(WATER_COAST) {
+            let coast_shore = shore_context_at(ctx.p.xz);
+            let surf_zone = smoothstep(3.0, 1.0, coast_rest_depth) * smoothstep(0.0, 0.5, coast_rest_depth) * water.wave_energy;
+            let wash_line = (1.0 - smoothstep(0.0, COAST_SWASH_BLEND, coast_rest_depth)) * coastal_wash_mask(coast_shore, swell_height_shored(ctx.p.xz, water.time, coast_shore)) * water.wave_energy;
+            ctx.edge = max(ctx.edge, max(surf_zone, wash_line));
+        }
         ctx.pattern = scrolling_fbm_2d(ctx.p.xz * 2.2, water.time);
         ctx.foam = foam_noise_mask(ctx.edge, ctx.pattern, water.foam_strength, ctx.view_fade);
         if (ctx.foam > 0.0) {

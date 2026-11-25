@@ -1,3 +1,5 @@
+use std::f32::consts::TAU;
+
 use bevy::{
     asset::{AssetId, uuid::Uuid},
     mesh::MeshVertexBufferLayoutRef,
@@ -12,7 +14,14 @@ use bevy::{
     shader::{Shader, ShaderDefVal, ShaderRef},
 };
 
+use crate::field::SdfVolume;
+
 pub const MAX_RIPPLES: usize = 32;
+pub const MAX_SWELLS: usize = 4;
+pub const SHOAL_DEPTH: f32 = 4.0;
+pub const SHORE_ZONE: f32 = 6.0;
+pub const REFRACTION_STRENGTH: f32 = 0.8;
+pub const CREST_SKEW: f32 = 0.5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
@@ -50,6 +59,7 @@ pub struct WaterParams {
     pub phase_g: f32,
     pub ripple_normal: f32,
     pub ripple_foam: f32,
+    pub wave_energy: f32,
     pub scattering: Vec3,
     pub absorption: Vec3,
     pub sun_direction: Vec3,
@@ -68,6 +78,7 @@ impl Default for WaterParams {
             phase_g: 0.6,
             ripple_normal: 0.55,
             ripple_foam: 0.9,
+            wave_energy: 0.35,
             scattering: Vec3::new(0.03, 0.045, 0.05),
             absorption: Vec3::new(0.35, 0.12, 0.06),
             sun_direction: Vec3::new(0.707, 0.0, 0.707),
@@ -77,11 +88,159 @@ impl Default for WaterParams {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
+pub struct SwellWave {
+    pub direction: Vec2,
+    pub amplitude: f32,
+    pub wavelength: f32,
+    pub speed: f32,
+    pub steepness: f32,
+    pub pad0: f32,
+    pub pad1: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
+pub struct SwellSet {
+    pub count: u32,
+    pub pad0: u32,
+    pub pad1: u32,
+    pub pad2: u32,
+    pub waves: [SwellWave; MAX_SWELLS],
+}
+
+impl SwellSet {
+    pub fn offset_at(&self, x: f32, z: f32, time: f32) -> Vec3 {
+        let point = Vec2::new(x, z);
+        let mut offset = Vec3::ZERO;
+        for wave in self.waves.iter().take(self.count as usize) {
+            let phase = (TAU / wave.wavelength) * (wave.direction.dot(point) - wave.speed * time);
+            let (s, c) = phase.sin_cos();
+            let horizontal = wave.steepness * wave.amplitude * c;
+            offset += Vec3::new(
+                wave.direction.x * horizontal,
+                wave.amplitude * s,
+                wave.direction.y * horizontal,
+            );
+        }
+        offset
+    }
+
+    pub fn height_at(&self, x: f32, z: f32, time: f32) -> f32 {
+        let drift = self.offset_at(x, z, time);
+        self.offset_at(x - drift.x, z - drift.z, time).y
+    }
+
+    pub fn offset_at_shored(&self, x: f32, z: f32, time: f32, shore: ShoreContext) -> Vec3 {
+        let point = Vec2::new(x, z);
+        let mut offset = Vec3::ZERO;
+        let vert = shore_vert_damp(shore.rest_depth);
+        let horiz = shore_horiz_damp(shore.rest_depth);
+        for wave in self.waves.iter().take(self.count as usize) {
+            let shaped = shore.shaped_wave(wave);
+            let k = TAU / shaped.wavelength;
+            let phase = k * (shaped.direction.dot(point) - wave.speed * time);
+            let (s, c) = phase.sin_cos();
+            let horizontal = wave.steepness * shaped.amplitude * c * horiz;
+            offset += Vec3::new(
+                shaped.direction.x * horizontal,
+                shaped.amplitude * s * vert,
+                shaped.direction.y * horizontal,
+            );
+            if shore.shore_factor > 0.0 {
+                let skew = shore.shore_factor * wave.steepness * shaped.amplitude * c * CREST_SKEW * horiz;
+                offset += Vec3::new(shore.shore_dir.x * skew, 0.0, shore.shore_dir.y * skew);
+            }
+        }
+        offset
+    }
+
+    pub fn height_at_shored(&self, x: f32, z: f32, time: f32, shore: ShoreContext) -> f32 {
+        let drift = self.offset_at_shored(x, z, time, shore);
+        self.offset_at_shored(x - drift.x, z - drift.z, time, shore).y
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShoreContext {
+    pub rest_depth: f32,
+    pub shore_dir: Vec2,
+    pub shore_factor: f32,
+    pub energy: f32,
+}
+
+impl Default for ShoreContext {
+    fn default() -> Self {
+        Self {
+            rest_depth: f32::INFINITY,
+            shore_dir: Vec2::ZERO,
+            shore_factor: 0.0,
+            energy: 0.35,
+        }
+    }
+}
+
+impl ShoreContext {
+    fn shaped_wave(&self, wave: &SwellWave) -> ShapedWave {
+        let mut direction = wave.direction;
+        if self.shore_factor > 0.0 {
+            let bent = direction.lerp(self.shore_dir, self.shore_factor * REFRACTION_STRENGTH);
+            if bent.length_squared() > 1.0e-6 {
+                direction = bent.normalize();
+            }
+        }
+        let depth = self.rest_depth.max(0.25);
+        let shoal = (SHOAL_DEPTH / depth).powf(0.25).clamp(1.0, 2.5);
+        let squeeze = (depth / SHOAL_DEPTH).sqrt().clamp(0.4, 1.0);
+        ShapedWave {
+            direction,
+            amplitude: wave.amplitude * shoal * (0.5 + self.energy),
+            wavelength: wave.wavelength * squeeze,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ShapedWave {
+    direction: Vec2,
+    amplitude: f32,
+    wavelength: f32,
+}
+
+pub fn shore_vert_damp(rest_depth: f32) -> f32 {
+    smoothstep(0.0, SHOAL_DEPTH, rest_depth)
+}
+
+pub fn shore_horiz_damp(rest_depth: f32) -> f32 {
+    smoothstep(0.5, SHOAL_DEPTH, rest_depth)
+}
+
+pub fn shore_factor(rest_depth: f32) -> f32 {
+    1.0 - smoothstep(0.0, SHORE_ZONE, rest_depth)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
+pub struct CoastField {
+    pub bounds_min: Vec2,
+    pub texel: Vec2,
+    pub inv_size: Vec2,
+    pub resolution: Vec2,
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct WaterMaterialKey {
     pub foam: bool,
     pub optics: bool,
     pub ripples: bool,
+    pub body_foam: bool,
+    pub coastal: bool,
     pub override_shader: Option<Uuid>,
 }
 
@@ -91,6 +250,8 @@ impl From<&WaterMaterialExt> for WaterMaterialKey {
             foam: ext.foam,
             optics: ext.optics,
             ripples: ext.ripples,
+            body_foam: ext.body_foam,
+            coastal: ext.coastal,
             override_shader: ext.override_shader.as_ref().and_then(|shader| match shader.id() {
                 AssetId::Uuid { uuid } => Some(uuid),
                 AssetId::Index { .. } => None,
@@ -104,6 +265,8 @@ pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
         ShaderDefVal::Bool("WATER_FOAM".into(), key.foam),
         ShaderDefVal::Bool("WATER_OPTICS".into(), key.optics),
         ShaderDefVal::Bool("WATER_RIPPLES".into(), key.ripples),
+        ShaderDefVal::Bool("WATER_BODY_FOAM".into(), key.body_foam),
+        ShaderDefVal::Bool("WATER_COAST".into(), key.coastal),
     ]
 }
 
@@ -114,9 +277,21 @@ pub struct WaterMaterialExt {
     pub params: WaterParams,
     #[uniform(101)]
     pub waves: RippleSet,
+    #[uniform(102)]
+    pub swells: SwellSet,
+    #[uniform(103)]
+    pub body_volume: SdfVolume,
+    #[texture(104, dimension = "3d", sample_type = "float", filterable = false)]
+    pub body_sdf: Handle<Image>,
+    #[uniform(105)]
+    pub coast: CoastField,
+    #[texture(106, dimension = "2d", sample_type = "float", filterable = false)]
+    pub coast_map: Handle<Image>,
     pub foam: bool,
     pub optics: bool,
     pub ripples: bool,
+    pub body_foam: bool,
+    pub coastal: bool,
     pub override_shader: Option<Handle<Shader>>,
 }
 
@@ -125,15 +300,26 @@ impl Default for WaterMaterialExt {
         Self {
             params: default(),
             waves: default(),
+            swells: default(),
+            body_volume: default(),
+            body_sdf: default(),
+            coast: default(),
+            coast_map: default(),
             foam: true,
             optics: true,
             ripples: true,
+            body_foam: false,
+            coastal: false,
             override_shader: None,
         }
     }
 }
 
 impl MaterialExtension for WaterMaterialExt {
+    fn vertex_shader() -> ShaderRef {
+        "embedded://bevy_shader_kit/shaders/water/water_vertex.wesl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "embedded://bevy_shader_kit/shaders/water/water.wesl".into()
     }
@@ -192,6 +378,166 @@ mod tests {
         assert!(source.contains(&format!("array<RippleWave, {MAX_RIPPLES}>")));
         assert!(source.contains(&format!("min(ripples.count, {MAX_RIPPLES}u)")));
         assert!(source.contains("@binding(101)"));
+    }
+
+    #[test]
+    fn swell_uniform_matches_the_shader_layout() {
+        assert_eq!(SwellWave::min_size().get(), 32);
+        assert_eq!(SwellSet::min_size().get(), 16 + 32 * MAX_SWELLS as u64);
+        let source = include_str!("shaders/water/swells.wesl");
+        assert!(source.contains(&format!("array<SwellWave, {MAX_SWELLS}>")));
+        assert!(source.contains(&format!("min(swells.count, {MAX_SWELLS}u)")));
+        assert!(source.contains("@binding(102)"));
+    }
+
+    #[test]
+    fn flat_set_rests_on_the_surface() {
+        assert_eq!(SwellSet::default().height_at(3.0, -7.0, 2.0), 0.0);
+    }
+
+    #[test]
+    fn a_single_wave_traces_its_swell_profile() {
+        let set = SwellSet {
+            count: 1,
+            waves: [
+                SwellWave {
+                    direction: Vec2::X,
+                    amplitude: 0.2,
+                    wavelength: 8.0,
+                    speed: 0.0,
+                    steepness: 0.0,
+                    pad0: 0.0,
+                    pad1: 0.0,
+                },
+                default(),
+                default(),
+                default(),
+            ],
+            ..default()
+        };
+        assert!(set.height_at(0.0, 0.0, 0.0).abs() < 1e-6, "phase zero sits flat");
+        let crest = set.height_at(2.0, 0.0, 0.0);
+        assert!((crest - 0.2).abs() < 1e-5, "quarter wavelength is the crest, got {crest}");
+        assert!((set.height_at(-2.0, 0.0, 0.0) + 0.2).abs() < 1e-5, "opposite side is the trough");
+    }
+
+    #[test]
+    fn coast_uniform_matches_the_shader_layout() {
+        assert_eq!(CoastField::min_size().get(), 32);
+        let source = include_str!("shaders/water/coast.wesl");
+        assert!(source.contains("@binding(105)"));
+        assert!(source.contains("@binding(106)"));
+    }
+
+    #[test]
+    fn deep_water_keeps_the_full_swell() {
+        let set = SwellSet {
+            count: 1,
+            waves: [
+                SwellWave {
+                    direction: Vec2::X,
+                    amplitude: 0.2,
+                    wavelength: 8.0,
+                    speed: 0.0,
+                    steepness: 0.0,
+                    pad0: 0.0,
+                    pad1: 0.0,
+                },
+                default(),
+                default(),
+                default(),
+            ],
+            ..default()
+        };
+        let deep = ShoreContext {
+            energy: 0.5,
+            ..default()
+        };
+        let parity = set.height_at_shored(2.0, 0.0, 0.0, deep);
+        assert!((parity - set.height_at(2.0, 0.0, 0.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shallow_water_damps_the_swell_away() {
+        let set = SwellSet {
+            count: 1,
+            waves: [
+                SwellWave {
+                    direction: Vec2::X,
+                    amplitude: 0.2,
+                    wavelength: 8.0,
+                    speed: 0.0,
+                    steepness: 0.0,
+                    pad0: 0.0,
+                    pad1: 0.0,
+                },
+                default(),
+                default(),
+                default(),
+            ],
+            ..default()
+        };
+        let beach = ShoreContext {
+            rest_depth: 0.0,
+            energy: 0.5,
+            ..default()
+        };
+        assert!(set.height_at_shored(2.0, 0.0, 0.0, beach).abs() < 1e-6);
+        assert!(shore_vert_damp(0.0) < shore_vert_damp(2.0));
+        assert!(shore_vert_damp(2.0) < shore_vert_damp(8.0));
+        assert!(shore_factor(0.0) > shore_factor(8.0));
+    }
+
+    #[test]
+    fn refraction_bends_waves_toward_the_shore() {
+        let set = SwellSet {
+            count: 1,
+            waves: [
+                SwellWave {
+                    direction: Vec2::X,
+                    amplitude: 0.2,
+                    wavelength: 8.0,
+                    speed: 0.0,
+                    steepness: 0.0,
+                    pad0: 0.0,
+                    pad1: 0.0,
+                },
+                default(),
+                default(),
+                default(),
+            ],
+            ..default()
+        };
+        let onshore = ShoreContext {
+            rest_depth: 2.0,
+            shore_dir: Vec2::NEG_X,
+            shore_factor: 1.0,
+            energy: 0.5,
+        };
+        let bent = set.height_at_shored(2.0, 0.0, 0.0, onshore);
+        let straight = set.height_at_shored(2.0, 0.0, 0.0, ShoreContext { rest_depth: 2.0, energy: 0.5, ..default() });
+        assert!(bent * straight < 0.0, "a fully refracted wave runs back the way it came");
+    }
+
+    #[test]
+    fn steep_waves_drift_the_surface_horizontally() {
+        let steep = SwellWave {
+            direction: Vec2::X,
+            amplitude: 0.3,
+            wavelength: 6.0,
+            speed: 1.0,
+            steepness: 0.8,
+            pad0: 0.0,
+            pad1: 0.0,
+        };
+        let set = SwellSet {
+            count: 1,
+            waves: [steep, default(), default(), default()],
+            ..default()
+        };
+        let offset = set.offset_at(1.0, 0.0, 0.0);
+        assert!(offset.x.abs() > 1e-3, "steepness slides the surface along the wave");
+        assert!(offset.z.abs() < 1e-6, "a x-direction swell never slides sideways");
     }
 
     #[test]

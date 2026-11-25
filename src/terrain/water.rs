@@ -1,10 +1,22 @@
-use bevy::{light::NotShadowCaster, pbr::StandardMaterial, prelude::*};
-use bevy_shader_kit::{WaterMaterial, WaterMaterialExt};
+use std::f32::consts::TAU;
 
+use bevy::{
+    asset::RenderAssetUsages,
+    light::NotShadowCaster,
+    pbr::StandardMaterial,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+};
+use bevy_shader_kit::{
+    ShoreContext, SdfVolume, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WetSandMaterial,
+    shore_factor,
+};
+
+use super::coast::bake_coast_maps;
+use super::terrain::Terrain;
+use super::TerrainSurface;
 use crate::distance_field::DistanceFieldViewHidden;
 use crate::utils::registry::commands::{CommandArgs, CommandOutput};
-
-use super::terrain::Terrain;
 
 #[derive(Component)]
 pub struct Sea;
@@ -17,12 +29,138 @@ pub struct WaterSurface {
     pub material: Handle<WaterMaterial>,
 }
 
+#[derive(Resource)]
+pub struct SeaState {
+    pub base_level: f32,
+    pub tide_amplitude: f32,
+    pub tide_period: f32,
+    pub wave_energy: f32,
+    pub sea_level: f32,
+    pub level_rate: f32,
+    pub wetness_height: f32,
+}
+
+impl Default for SeaState {
+    fn default() -> Self {
+        Self {
+            base_level: -0.1,
+            tide_amplitude: 0.6,
+            tide_period: 240.0,
+            wave_energy: 0.35,
+            sea_level: -0.1,
+            level_rate: 0.0,
+            wetness_height: f32::MIN,
+        }
+    }
+}
+
+const SEA_SUBDIVISIONS: u32 = 256;
+const EMPTY_SDF: f32 = 1.0e6;
+const SWASH_RUNUP: f32 = 0.15;
+const WETNESS_DECAY: f32 = 0.01;
+
+const SWELLS: SwellSet = SwellSet {
+    count: 3,
+    pad0: 0,
+    pad1: 0,
+    pad2: 0,
+    waves: [
+        SwellWave {
+            direction: Vec2::new(0.943, 0.330),
+            amplitude: 0.11,
+            wavelength: 17.0,
+            speed: 2.6,
+            steepness: 0.22,
+            pad0: 0.0,
+            pad1: 0.0,
+        },
+        SwellWave {
+            direction: Vec2::new(-0.371, 0.928),
+            amplitude: 0.07,
+            wavelength: 11.0,
+            speed: 2.0,
+            steepness: 0.18,
+            pad0: 0.0,
+            pad1: 0.0,
+        },
+        SwellWave {
+            direction: Vec2::new(0.658, -0.752),
+            amplitude: 0.045,
+            wavelength: 6.5,
+            speed: 1.5,
+            steepness: 0.12,
+            pad0: 0.0,
+            pad1: 0.0,
+        },
+        SwellWave {
+            direction: Vec2::ZERO,
+            amplitude: 0.0,
+            wavelength: 1.0,
+            speed: 0.0,
+            steepness: 0.0,
+            pad0: 0.0,
+            pad1: 0.0,
+        },
+    ],
+};
+
+pub fn terrain_gradient(terrain: &Terrain, x: f32, z: f32) -> Vec2 {
+    let step = 1.0;
+    Vec2::new(
+        (terrain.sample_ground_height(x + step, z) - terrain.sample_ground_height(x - step, z))
+            / (2.0 * step),
+        (terrain.sample_ground_height(x, z + step) - terrain.sample_ground_height(x, z - step))
+            / (2.0 * step),
+    )
+}
+
+pub fn shore_context(terrain: &Terrain, sea: &SeaState, x: f32, z: f32) -> ShoreContext {
+    let rest_depth = sea.sea_level - terrain.sample_ground_height(x, z);
+    let gradient = terrain_gradient(terrain, x, z);
+    let length = gradient.length();
+    ShoreContext {
+        rest_depth,
+        shore_dir: if length > 1.0e-4 {
+            gradient / length
+        } else {
+            Vec2::ZERO
+        },
+        shore_factor: shore_factor(rest_depth),
+        energy: sea.wave_energy,
+    }
+}
+
+pub fn sea_swell_height(terrain: &Terrain, sea: &SeaState, x: f32, z: f32, time: f32) -> f32 {
+    SWELLS.height_at_shored(x, z, time, shore_context(terrain, sea, x, z))
+}
+
+fn empty_sdf_image(images: &mut Assets<Image>) -> Handle<Image> {
+    let bytes: Vec<u8> = [EMPTY_SDF; 8]
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    images.add(Image::new(
+        Extent3d {
+            width: 2,
+            height: 2,
+            depth_or_array_layers: 2,
+        },
+        TextureDimension::D3,
+        bytes,
+        TextureFormat::R32Float,
+        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
+    ))
+}
+
 pub fn setup_water_surface(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
-    world: Res<Terrain>,
+    terrain: Res<Terrain>,
+    sea_state: Res<SeaState>,
 ) {
+    let coast = bake_coast_maps(&terrain, &mut images);
     let material = water_materials.add(WaterMaterial {
         base: StandardMaterial {
             base_color: Color::srgb(0.6, 0.75, 0.72),
@@ -37,21 +175,35 @@ pub fn setup_water_surface(
             attenuation_color: Color::srgb(0.2, 0.7, 0.5),
             ..default()
         },
-        extension: WaterMaterialExt::default(),
+        extension: WaterMaterialExt {
+            swells: SWELLS,
+            body_volume: SdfVolume::from_bounds(
+                Vec3::splat(-0.5),
+                Vec3::splat(0.5),
+                Vec3::splat(2.0),
+            ),
+            body_sdf: empty_sdf_image(&mut images),
+            coast: coast.field,
+            coast_map: coast.image.clone(),
+            coastal: true,
+            ..default()
+        },
     });
     commands.insert_resource(WaterSurface {
         material: material.clone(),
     });
+    commands.insert_resource(coast);
     commands.spawn((
         Name::new("Sea"),
         Sea,
         WaterHeightSource,
-        Transform::from_xyz(0.0, -0.1, 0.0),
+        Transform::from_xyz(0.0, sea_state.sea_level, 0.0),
         Mesh3d(
             meshes.add(
                 Plane3d::default()
                     .mesh()
-                    .size(world.size().0, world.size().1),
+                    .size(terrain.size().0, terrain.size().1)
+                    .subdivisions(SEA_SUBDIVISIONS),
             ),
         ),
         MeshMaterial3d(material),
@@ -60,16 +212,30 @@ pub fn setup_water_surface(
     ));
 }
 
+pub(super) fn drive_sea_level(
+    time: Res<Time>,
+    mut sea_state: ResMut<SeaState>,
+    mut sea: Query<&mut Transform, With<Sea>>,
+) {
+    let phase = TAU * time.elapsed_secs() / sea_state.tide_period;
+    sea_state.sea_level = sea_state.base_level + sea_state.tide_amplitude * phase.sin();
+    sea_state.level_rate =
+        sea_state.tide_amplitude * (TAU / sea_state.tide_period) * phase.cos();
+    let wet_target = sea_state.sea_level + SWASH_RUNUP;
+    sea_state.wetness_height =
+        wet_target.max(sea_state.wetness_height - WETNESS_DECAY * time.delta_secs());
+    for mut transform in &mut sea {
+        transform.translation.y = sea_state.sea_level;
+    }
+}
+
 pub(super) fn sync_water_params(
     time: Res<Time>,
-    heights: Query<&Transform, With<WaterHeightSource>>,
+    sea_state: Res<SeaState>,
     surface: Option<Res<WaterSurface>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
 ) {
     let Some(surface) = surface else {
-        return;
-    };
-    let Some(transform) = heights.iter().next() else {
         return;
     };
     let Some(mut material) = materials.get_mut(&surface.material) else {
@@ -77,23 +243,47 @@ pub(super) fn sync_water_params(
     };
     let mut params = material.extension.params;
     params.time = time.elapsed_secs();
-    params.water_height = transform.translation.y;
+    params.water_height = sea_state.sea_level;
+    params.wave_energy = sea_state.wave_energy;
     material.extension.params = params;
+}
+
+pub(super) fn sync_wetness(
+    sea_state: Res<SeaState>,
+    terrain: Query<&MeshMaterial3d<WetSandMaterial>, With<TerrainSurface>>,
+    mut materials: ResMut<Assets<WetSandMaterial>>,
+) {
+    let Some(handle) = terrain.iter().next().map(|material| material.0.clone()) else {
+        return;
+    };
+    let Some(mut material) = materials.get_mut(&handle) else {
+        return;
+    };
+    material.extension.wetness.height = sea_state.wetness_height;
 }
 
 pub(super) fn set_water_level(
     args: Res<CommandArgs>,
-    mut sea: Query<&mut Transform, With<Sea>>,
+    mut sea_state: ResMut<SeaState>,
     mut output: ResMut<CommandOutput>,
 ) {
     let Some(height) = args.get_f32(0) else {
         output.set("Usage: set_water_level <height>");
         return;
     };
-    let Ok(mut transform) = sea.single_mut() else {
-        output.set("error: no sea found");
+    sea_state.base_level = height;
+    output.set(format!("Water level: {height:.2}"));
+}
+
+pub(super) fn set_wave_energy(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(energy) = args.get_f32(0) else {
+        output.set("Usage: set_wave_energy <0..1>");
         return;
     };
-    transform.translation.y = height;
-    output.set(format!("Water level: {height:.2}"));
+    sea_state.wave_energy = energy.clamp(0.0, 1.0);
+    output.set(format!("Wave energy: {:.2}", sea_state.wave_energy));
 }

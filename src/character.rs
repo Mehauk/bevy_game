@@ -151,6 +151,7 @@ pub struct WaterPhysics {
     pub buoy_max_accel: f32,
     pub sink_accel: f32,
     pub dive_accel: f32,
+    pub current: Vec3,
 }
 
 impl Default for WaterPhysics {
@@ -164,6 +165,7 @@ impl Default for WaterPhysics {
             buoy_max_accel: 24.0,
             sink_accel: 0.8,
             dive_accel: 3.0,
+            current: Vec3::ZERO,
         }
     }
 }
@@ -437,6 +439,16 @@ fn drag_toward_zero(value: f32, drag: f32, dt: f32) -> f32 {
         0.0
     } else {
         value - value.signum() * loss
+    }
+}
+
+fn drag_toward(value: f32, target: f32, drag: f32, dt: f32) -> f32 {
+    let relative = value - target;
+    let loss = drag * relative * relative * dt;
+    if loss >= relative.abs() {
+        target
+    } else {
+        value - relative.signum() * loss
     }
 }
 
@@ -839,9 +851,9 @@ fn move_in_water(
     }
 
     velocity.0 = Vec3::new(
-        drag_toward_zero(velocity.x, water.drag, dt),
+        drag_toward(velocity.x, water.current.x, water.drag, dt),
         drag_toward_zero(velocity.y, water.drag, dt),
-        drag_toward_zero(velocity.z, water.drag, dt),
+        drag_toward(velocity.z, water.current.z, water.drag, dt),
     );
 
     if ground.is_grounded && !input.jumping && velocity.y < 0.0 {

@@ -7,6 +7,7 @@ struct WaterParams {
     phase_g: f32,
     ripple_normal: f32,
     ripple_foam: f32,
+    wave_energy: f32,
     scattering: vec3<f32>,
     absorption: vec3<f32>,
     sun_direction: vec3<f32>,

@@ -87,6 +87,7 @@ fn setup_terrain(
             PrimaryField,
             DistanceFieldSource {
                 clay_alpha: 0.35,
+                water_margin: 0.0,
                 ..DistanceFieldSource::prop()
             },
         ));

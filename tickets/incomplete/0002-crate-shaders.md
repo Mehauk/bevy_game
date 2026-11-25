@@ -1,0 +1,1 @@
+extract the shaders wesl files and logic to a new crate.

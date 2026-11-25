@@ -66,18 +66,21 @@ fn water_box_distance(field: WaterField, uvw: vec3<f32>) -> f32 {
     return outside + inside;
 }
 
-fn water_influence_range() -> f32 {
-    return max(water.max_depth, water.ripple_range);
+fn water_field_distance_at(
+    field: WaterField,
+    tex: texture_3d<f32>,
+    uvw: vec3<f32>,
+    to_box: f32,
+) -> f32 {
+    if (to_box > 0.0) {
+        return WATER_OUTSIDE;
+    }
+    return df_sample(tex, field.resolution, clamp(uvw, vec3<f32>(0.0), vec3<f32>(1.0)));
 }
 
 fn water_field_distance(field: WaterField, tex: texture_3d<f32>, p: vec3<f32>) -> f32 {
     let uvw = water_field_uvw(field, p);
-    let to_box = water_box_distance(field, uvw);
-    if (to_box >= water_influence_range()) {
-        return WATER_OUTSIDE;
-    }
-    let d = df_sample(tex, field.resolution, clamp(uvw, vec3<f32>(0.0), vec3<f32>(1.0)));
-    return max(d + max(0.0, to_box), to_box);
+    return water_field_distance_at(field, tex, uvw, water_box_distance(field, uvw));
 }
 
 fn water_field_gradient(field: WaterField, tex: texture_3d<f32>, p: vec3<f32>) -> vec3<f32> {
@@ -104,39 +107,59 @@ fn water_min_distance(p: vec3<f32>) -> f32 {
     return d;
 }
 
-fn water_contact(p: vec3<f32>) -> vec4<f32> {
+struct WaterContact {
+    gradient: vec3<f32>,
+    distance: f32,
+    boundary: f32,
+}
+
+fn water_contact(p: vec3<f32>) -> WaterContact {
     let count = i32(water.field_count);
     var d = WATER_OUTSIDE;
     var winner = -1;
+    var winner_to_box = 0.0;
     if (count > 0) {
-        let d0 = water_field_distance(water.fields[0], water_field0, p);
+        let uvw0 = water_field_uvw(water.fields[0], p);
+        let tb0 = water_box_distance(water.fields[0], uvw0);
+        let d0 = water_field_distance_at(water.fields[0], water_field0, uvw0, tb0);
         if (d0 < d) {
             d = d0;
             winner = 0;
+            winner_to_box = tb0;
         }
     }
     if (count > 1) {
-        let d1 = water_field_distance(water.fields[1], water_field1, p);
+        let uvw1 = water_field_uvw(water.fields[1], p);
+        let tb1 = water_box_distance(water.fields[1], uvw1);
+        let d1 = water_field_distance_at(water.fields[1], water_field1, uvw1, tb1);
         if (d1 < d) {
             d = d1;
             winner = 1;
+            winner_to_box = tb1;
         }
     }
     if (count > 2) {
-        let d2 = water_field_distance(water.fields[2], water_field2, p);
+        let uvw2 = water_field_uvw(water.fields[2], p);
+        let tb2 = water_box_distance(water.fields[2], uvw2);
+        let d2 = water_field_distance_at(water.fields[2], water_field2, uvw2, tb2);
         if (d2 < d) {
             d = d2;
             winner = 2;
+            winner_to_box = tb2;
         }
     }
     if (count > 3) {
-        let d3 = water_field_distance(water.fields[3], water_field3, p);
+        let uvw3 = water_field_uvw(water.fields[3], p);
+        let tb3 = water_box_distance(water.fields[3], uvw3);
+        let d3 = water_field_distance_at(water.fields[3], water_field3, uvw3, tb3);
         if (d3 < d) {
             d = d3;
             winner = 3;
+            winner_to_box = tb3;
         }
     }
     var g = vec3<f32>(0.0);
+    var boundary = 0.0;
     if (d < water.ripple_range) {
         if (winner == 0) {
             g = water_field_gradient(water.fields[0], water_field0, p);
@@ -147,8 +170,9 @@ fn water_contact(p: vec3<f32>) -> vec4<f32> {
         } else if (winner == 3) {
             g = water_field_gradient(water.fields[3], water_field3, p);
         }
+        boundary = smoothstep(0.0, 1.0, -winner_to_box);
     }
-    return vec4<f32>(g, d);
+    return WaterContact(g, d, boundary);
 }
 
 fn water_depth(p: vec3<f32>) -> f32 {
@@ -221,28 +245,29 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
 
     let p = pbr_input.world_position.xyz;
     let contact = water_contact(p);
-    let d = contact.w;
-    let grad = contact.xyz;
+    let d = contact.distance;
+    let grad = contact.gradient;
+    let boundary = contact.boundary;
 
     let depth = water_depth(vec3<f32>(p.x, water.water_height, p.z));
     pbr_input.material.thickness = depth;
 
-    let dc = min(d, water.ripple_range);
     var q = p;
     var outward = vec2<f32>(0.0);
+    var emerged = 0.0;
     if (d < water.ripple_range) {
         let grad_len = length(grad);
         if (grad_len > 0.0) {
             let nrm = grad / grad_len;
             let xz_len = max(length(vec2<f32>(nrm.x, nrm.z)), 1.0e-4);
             outward = vec2<f32>(nrm.x, nrm.z) / xz_len;
-            q = p - nrm * dc;
+            q = p - nrm * min(d, water.ripple_range);
         }
+        emerged = 1.0 - smoothstep(0.0, 1.2, max(water.water_height - q.y, 0.0));
     }
     let vertical = q.y - water.water_height;
     let hd = length(vec2<f32>(p.x - q.x, p.z - q.z));
     let r = hd + abs(vertical);
-    let emerged = exp(-abs(vertical) * 4.0);
     let phase = r * water.ripple_frequency - water.time * water.ripple_speed;
     let phase_delta = max(abs(dpdx(phase)), abs(dpdy(phase)));
     let ripple_aa = 1.0 - clamp(phase_delta * 0.33, 0.0, 1.0);
@@ -250,12 +275,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     let view_dist = length(p - view.world_position);
     let dist_fade = clamp(1.0 - view_dist / 60.0, 0.0, 1.0);
     if (d < water.ripple_range) {
-        let amp = water.ripple_strength * emerged * falloff * falloff * ripple_aa * dist_fade;
+        let amp = water.ripple_strength
+            * emerged
+            * boundary
+            * falloff
+            * falloff
+            * ripple_aa
+            * dist_fade;
         pbr_input.N = normalize(pbr_input.N + vec3<f32>(outward.x, 0.0, outward.y) * (sin(phase) * amp));
     }
 
     let shore = max(1.0 - depth / water.foam_width, 0.0);
-    let proximity = max(1.0 - d / water.foam_width, 0.0);
+    let proximity = max(1.0 - d / water.foam_width, 0.0) * emerged;
     let edge = max(shore, proximity);
     let pattern = foam_pattern(p.xz * 2.2);
     let foam = clamp(

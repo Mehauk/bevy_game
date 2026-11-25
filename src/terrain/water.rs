@@ -55,9 +55,9 @@ impl Default for WaterParams {
             ripple_range: 6.0,
             ripple_frequency: 3.0,
             ripple_speed: 2.5,
-            ripple_strength: 0.3,
+            ripple_strength: 0.55,
             foam_width: 0.8,
-            foam_strength: 0.5,
+            foam_strength: 0.25,
             field_count: 0,
             max_depth: 8.0,
             phase_g: 0.6,
@@ -137,6 +137,7 @@ pub fn setup_water_surface(
         base: StandardMaterial {
             base_color: Color::srgb(0.6, 0.75, 0.72),
             alpha_mode: AlphaMode::Opaque,
+            cull_mode: None,
             specular_transmission: 1.0,
             ior: 1.333,
             perceptual_roughness: 0.04,
@@ -222,12 +223,16 @@ pub fn sync_water_fields(
     }
     let mut chosen: Vec<(Handle<Image>, WaterFieldParams)> = Vec::with_capacity(MAX_WATER_FIELDS);
     for (global, source, primary) in sources.iter() {
-        if source.baked && primary && chosen.len() < MAX_WATER_FIELDS {
+        if source.baked && source.surface_top >= params.water_height && primary
+            && chosen.len() < MAX_WATER_FIELDS
+        {
             chosen.push((source.image.clone(), field_params(global, source)));
         }
     }
     for (global, source, primary) in sources.iter() {
-        if source.baked && !primary && chosen.len() < MAX_WATER_FIELDS {
+        if source.baked && source.surface_top >= params.water_height && !primary
+            && chosen.len() < MAX_WATER_FIELDS
+        {
             chosen.push((source.image.clone(), field_params(global, source)));
         }
     }

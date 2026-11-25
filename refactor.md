@@ -1601,3 +1601,60 @@ history list — that line is rendered only by `on_history_changed`, so it prove
 into `MenuSystems::UserCallbacks` still fires and still applies in the same frame. Touching
 `assets/menus/keyboard/index.html` and swapping its title to "HOT RELOAD OK" reloaded the live menu
 through the relocated `assets.rs`; the asset was reverted afterwards.
+
+## 2026-11-24 — water ripples: submerged gate, box clamp, underside
+
+**Symptoms.** (1) A fully submerged character still produced ripples on the surface above it.
+(2) Ripples extended past the SDF box in a cross/plus shape. (3) The sea plane was invisible from
+below (back-face culled). Foam was too strong relative to the ripples.
+
+**Root causes.** (1) `emerged = exp(-abs(vertical) * 4.0)` decays too slowly — a head 0.5 m under
+still carried ~13% ripple amplitude — and foam `proximity` was not gated by submersion at all.
+(2) `water_field_distance` extrapolated the field past the box with `max(d + to_box, to_box)` out to
+`ripple_range` (6 m); that extension is only a valid distance field for convex shapes, and
+`water_field_gradient` samples with clamped `uvw`, which zeroes the gradient component normal to
+each box face — so the extension continued along the box axis directions and died at edges/corners:
+the cross. (3) `StandardMaterial` default `cull_mode: Some(Back)` on a +Y plane.
+
+**Fix.**
+- `water.wesl`: influence is now strictly inside the box (`to_box > 0` → `WATER_OUTSIDE`); the
+  extension is gone. `water_contact` returns a `WaterContact` struct that also carries a `boundary`
+  smoothstep fade over the outer 1 m of the box, multiplied into ripple amplitude, so the box edge
+  is invisible instead of a hard cut. `emerged` is now `1 - smoothstep(0, 0.35, depth-below-surface)`:
+  ripples require the object to actually pierce the surface; foam `proximity` is multiplied by
+  `emerged` too.
+- `distance_field.rs`: new `DistanceFieldSource::water_margin` (prop: 3.0, terrain: 0.0) added to the
+  bake border. The character box grows ~3 m per side so the ripple field lives inside the box; the
+  terrain keeps its texel budget (it already spans the map, its surface is inside its own box).
+- `water.rs`: sea `cull_mode: None` — Bevy sets the double-sided flag and
+  `pbr_input_from_standard_material` flips `N` for back faces itself (verified in bevy_pbr 0.20.1
+  `prepare_world_normal`), so the underside lights correctly with no shader change. Defaults:
+  `ripple_strength` 0.3 → 0.55, `foam_strength` 0.5 → 0.25.
+
+**Verified.** `cargo check` clean; `cargo test` 82/82. Ran via BRP: wading at 0.4 shows a circular
+ripple/foam collar with no cross arms; at 2.5 (character top 1.8) the surface above the submerged
+character is completely calm — no ripples, no foam disc. The faint static moire rings visible on the
+open sea in every shot (including the pre-change baseline) are a reflection/terrain-grid artifact, not
+SDF ripples. Underside rendering is enabled via double-sided + Bevy normal flip; the third-person
+camera sat above the raised water level in every screenshot, so the from-below view was not captured
+on camera — worth a quick eyeball in play.
+
+### Follow-up: terrain shore ripples were dead
+
+The `emerged` gate above also killed terrain ripples: the ground offshore is always below the
+waterline, so a 0.35 m band left only a razor-thin line at the waterline. Also, the terrain source
+is built with `..DistanceFieldSource::prop()`, so it silently inherited the new 3.0 water margin
+(visible as 335x35x335 -> 318x39x318) — pointless there (its box already spans the map) and it cost
+texel resolution.
+
+**Fix.** The real distinction between "shore" and "submerged object" is whether the object surface
+crosses the water plane at all — a per-field CPU test, not a per-fragment one. `DistanceFieldSource`
+gains `surface_top` (mesh bounds max y, set at bake); `sync_water_fields` now skips any field with
+`surface_top < water_height` (falls back to the dummy slot), so a fully submerged character drops out
+of the slots entirely while the terrain stays in unless fully flooded. The per-fragment `emerged`
+band widened 0.35 -> 1.2 m so shore ripples extend a believable distance offshore. Terrain
+`water_margin` set to 0.0 explicitly.
+
+**Verified.** 82/82 tests; ran via BRP: terrain resolution back to 335x35x335; at water 0.2 the
+character shows strong circular ripples with no cross; submerged-at-2.5 behavior unchanged (field
+drops out of the slots, surface stays calm).

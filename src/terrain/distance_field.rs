@@ -22,6 +22,8 @@ pub struct DistanceFieldView {
 #[derive(Component, Default)]
 pub struct DistanceFieldSource {
     pub texel: Vec3,
+    pub water_margin: f32,
+    pub surface_top: f32,
     pub clay_alpha: f32,
     pub image: Handle<Image>,
     pub view_material: Handle<ExtendedMaterial<StandardMaterial, DistanceFieldViewExt>>,
@@ -35,6 +37,7 @@ impl DistanceFieldSource {
     pub fn prop() -> Self {
         Self {
             texel: Vec3::splat(0.1),
+            water_margin: 3.0,
             clay_alpha: 1.0,
             ..default()
         }
@@ -237,7 +240,7 @@ pub fn bake_distance_fields(
         let base_resolution = bounds.resolution(source.texel);
         let voxel = (bounds.max - bounds.min) / base_resolution.as_vec3();
         let glow_range = (voxel.max_element() * 4.0).clamp(0.3, 1.0);
-        let border = voxel.max(Vec3::splat(glow_range));
+        let border = voxel.max(Vec3::splat(glow_range)) + Vec3::splat(source.water_margin);
         let field_bounds = FieldBounds {
             min: bounds.min - border,
             max: bounds.max + border,
@@ -300,6 +303,7 @@ pub fn bake_distance_fields(
             .id();
         source.image = image;
         source.view_material = view_material;
+        source.surface_top = bounds.max.y;
         source.params = params;
         source.volume = Some(volume);
         source.baked = true;

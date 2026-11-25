@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, PrimitiveTopology},
+    light::NotShadowCaster,
     prelude::*,
 };
 use bevy_shader_kit::{
@@ -145,7 +146,12 @@ fn sync_debug_curtains(
         None => {
             state.entity = Some(
                 commands
-                    .spawn((Name::new("Debug Curtains"), Mesh3d(mesh), MeshMaterial3d(material)))
+                    .spawn((
+                        Name::new("Debug Curtains"),
+                        Mesh3d(mesh),
+                        MeshMaterial3d(material),
+                        NotShadowCaster,
+                    ))
                     .id(),
             );
         }

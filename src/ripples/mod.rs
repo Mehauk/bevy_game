@@ -13,6 +13,7 @@ pub enum RippleSystems {
 
 const MAX_STRENGTH: f32 = 0.3;
 const DEFAULT_SPLASH: f32 = 0.12;
+const DEFAULT_RADIUS: f32 = 0.4;
 
 #[derive(Resource)]
 pub struct RippleField {
@@ -33,14 +34,23 @@ impl Default for RippleField {
             frequency: 5.0,
             speed: 1.6,
             decay: 0.9,
-            spread: 0.2,
-            lifetime: 8.0,
+            spread: 0.25,
+            lifetime: 6.0,
         }
     }
 }
 
 impl RippleField {
-    pub fn splash(&mut self, at: Vec3, strength: f32) {
+    pub fn splash(&mut self, at: Vec3, strength: f32, radius: f32) {
+        let birth = self.time;
+        self.push(at, at, birth, strength, radius);
+    }
+
+    pub fn wake(&mut self, from: Vec3, to: Vec3, birth: f32, strength: f32, radius: f32) {
+        self.push(from, to, birth, strength, radius);
+    }
+
+    fn push(&mut self, from: Vec3, to: Vec3, birth: f32, strength: f32, radius: f32) {
         let strength = strength.clamp(0.0, MAX_STRENGTH);
         if strength <= 0.0 {
             return;
@@ -49,13 +59,16 @@ impl RippleField {
             self.waves.remove(0);
         }
         self.waves.push(RippleWave {
-            origin: Vec2::new(at.x, at.z),
-            birth: self.time,
+            origin: Vec2::new(from.x, from.z),
+            delta: Vec2::new(to.x - from.x, to.z - from.z),
+            birth,
+            birth_span: (self.time - birth).max(0.0),
             strength,
             frequency: self.frequency,
             speed: self.speed,
             decay: self.decay,
             spread: self.spread,
+            radius: radius.max(0.0),
         });
     }
 
@@ -93,7 +106,7 @@ impl Plugin for RipplePlugin {
 
         command!(
             app,
-            "Splash the water surface at <x> <z> [strength]",
+            "Splash the water surface at <x> <z> [strength] [radius]",
             splash
         );
         debug_info!(app, "Ripples", ripple_debug_info);
@@ -110,13 +123,14 @@ fn splash(
     mut output: ResMut<CommandOutput>,
 ) {
     let (Some(x), Some(z)) = (args.get_f32(0), args.get_f32(1)) else {
-        output.set("Usage: splash <x> <z> [strength]");
+        output.set("Usage: splash <x> <z> [strength] [radius]");
         return;
     };
     let strength = args.get_f32(2).unwrap_or(DEFAULT_SPLASH);
-    field.splash(Vec3::new(x, 0.0, z), strength);
+    let radius = args.get_f32(3).unwrap_or(DEFAULT_RADIUS);
+    field.splash(Vec3::new(x, 0.0, z), strength, radius);
     output.set(format!(
-        "splash at ({x:.1}, {z:.1}), strength {strength:.2}"
+        "splash at ({x:.1}, {z:.1}), strength {strength:.2}, radius {radius:.2}"
     ));
 }
 
@@ -132,23 +146,41 @@ mod tests {
     fn splash_stamps_position_birth_and_tuning() {
         let mut field = RippleField::default();
         field.age(4.0);
-        field.splash(Vec3::new(2.0, 9.0, -3.0), 0.1);
+        field.splash(Vec3::new(2.0, 9.0, -3.0), 0.1, 0.5);
 
         let wave = field.waves.first().unwrap();
         assert_eq!(wave.origin, Vec2::new(2.0, -3.0));
+        assert_eq!(wave.delta, Vec2::ZERO);
         assert_eq!(wave.birth, 4.0);
+        assert_eq!(wave.birth_span, 0.0);
         assert_eq!(wave.strength, 0.1);
+        assert_eq!(wave.radius, 0.5);
         assert_eq!(wave.frequency, field.frequency);
+    }
+
+    #[test]
+    fn wake_spans_the_path_and_its_emission_window() {
+        let mut field = RippleField::default();
+        field.age(10.0);
+        field.wake(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.5), 8.0, 0.1, 1.2);
+
+        let wave = field.waves.first().unwrap();
+        assert_eq!(wave.origin, Vec2::ZERO);
+        assert_eq!(wave.delta, Vec2::new(0.0, -1.5));
+        assert_eq!(wave.birth, 8.0);
+        assert_eq!(wave.birth_span, 2.0);
+        assert_eq!(wave.radius, 1.2);
     }
 
     #[test]
     fn splash_ignores_zero_and_clamps_strong_impacts() {
         let mut field = RippleField::default();
-        field.splash(Vec3::ZERO, 0.0);
+        field.splash(Vec3::ZERO, 0.0, 0.4);
         assert!(field.waves.is_empty());
 
-        field.splash(Vec3::ZERO, 100.0);
+        field.splash(Vec3::ZERO, 100.0, -2.0);
         assert_eq!(field.waves.first().unwrap().strength, MAX_STRENGTH);
+        assert_eq!(field.waves.first().unwrap().radius, 0.0);
     }
 
     #[test]
@@ -156,7 +188,7 @@ mod tests {
         let mut field = RippleField::default();
         for index in 0..=MAX_RIPPLES {
             field.time = index as f32;
-            field.splash(Vec3::X * index as f32, 0.1);
+            field.splash(Vec3::X * index as f32, 0.1, 0.4);
         }
 
         assert_eq!(field.waves.len(), MAX_RIPPLES);
@@ -167,7 +199,7 @@ mod tests {
     #[test]
     fn age_retires_waves_past_their_lifetime() {
         let mut field = RippleField::default();
-        field.splash(Vec3::ZERO, 0.1);
+        field.splash(Vec3::ZERO, 0.1, 0.4);
         let lifetime = field.lifetime;
 
         field.age(lifetime * 0.5);
@@ -180,8 +212,8 @@ mod tests {
     #[test]
     fn set_packs_waves_from_the_front_and_counts_them() {
         let mut field = RippleField::default();
-        field.splash(Vec3::ZERO, 0.1);
-        field.splash(Vec3::X, 0.2);
+        field.splash(Vec3::ZERO, 0.1, 0.4);
+        field.splash(Vec3::X, 0.2, 0.4);
 
         let set = field.set();
         assert_eq!(set.count, 2);

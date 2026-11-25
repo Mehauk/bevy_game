@@ -7,17 +7,18 @@ use crate::ripples::{RippleField, RippleSystems};
 use crate::terrain::{WaterHeightSource, WaterSurface};
 
 const FEET_OFFSET: f32 = CAPSULE_HEIGHT * 0.5 + CAPSULE_RADIUS;
+const HULL_RADIUS: f32 = CAPSULE_RADIUS + 0.15;
 const SUBMERGE_MARGIN: f32 = 0.05;
 const WAKE_MIN_SPEED: f32 = 1.2;
-const WAKE_SPACING: f32 = 0.7;
+const WAKE_SPACING: f32 = 1.0;
 const IMPACT_BASE: f32 = 0.06;
 const IMPACT_GAIN: f32 = 0.02;
-const WAKE_GAIN: f32 = 0.015;
+const WAKE_GAIN: f32 = 0.02;
 
 #[derive(Resource, Default)]
 struct SplashMemory {
     submerged: bool,
-    last_wake: Option<Vec3>,
+    last_wake: Option<(Vec3, f32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -58,6 +59,7 @@ pub(super) fn register(app: &mut App) {
 }
 
 fn emit_character_splashes(
+    time: Res<Time>,
     sea: Query<&Transform, With<WaterHeightSource>>,
     characters: Query<(&Transform, &LinearVelocity), With<Character>>,
     mut memory: ResMut<SplashMemory>,
@@ -70,12 +72,13 @@ fn emit_character_splashes(
         return;
     };
 
+    let now = time.elapsed_secs();
     let submerged = transform.translation.y - FEET_OFFSET < water.translation.y + SUBMERGE_MARGIN;
     let horizontal_speed = Vec2::new(velocity.x, velocity.z).length();
     let here = Vec3::new(transform.translation.x, 0.0, transform.translation.z);
     let moved_since_wake = memory
         .last_wake
-        .map(|last| here.distance(last))
+        .map(|(last, _)| here.distance(last))
         .unwrap_or(f32::MAX);
 
     match plan_splash(
@@ -86,10 +89,15 @@ fn emit_character_splashes(
         moved_since_wake,
     ) {
         Splash::None => {}
-        Splash::Impact(strength) => field.splash(transform.translation, strength),
+        Splash::Impact(strength) => {
+            field.splash(transform.translation, strength, HULL_RADIUS);
+            memory.last_wake = Some((here, now));
+        }
         Splash::Wake(strength) => {
-            memory.last_wake = Some(here);
-            field.splash(transform.translation, strength);
+            if let Some((from, birth)) = memory.last_wake {
+                field.wake(from, here, birth, strength, HULL_RADIUS);
+            }
+            memory.last_wake = Some((here, now));
         }
     }
     memory.submerged = submerged;

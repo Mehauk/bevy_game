@@ -12,18 +12,21 @@ use bevy::{
     shader::{Shader, ShaderDefVal, ShaderRef},
 };
 
-pub const MAX_RIPPLES: usize = 16;
+pub const MAX_RIPPLES: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
 pub struct RippleWave {
     pub origin: Vec2,
+    pub delta: Vec2,
     pub birth: f32,
+    pub birth_span: f32,
     pub strength: f32,
     pub frequency: f32,
     pub speed: f32,
     pub decay: f32,
     pub spread: f32,
+    pub radius: f32,
 }
 
 #[repr(C)]
@@ -179,8 +182,8 @@ mod tests {
 
     #[test]
     fn ripple_uniform_matches_the_shader_layout() {
-        assert_eq!(RippleWave::min_size().get(), 32);
-        assert_eq!(RippleSet::min_size().get(), 16 + 32 * MAX_RIPPLES as u64);
+        assert_eq!(RippleWave::min_size().get(), 48);
+        assert_eq!(RippleSet::min_size().get(), 16 + 48 * MAX_RIPPLES as u64);
     }
 
     #[test]

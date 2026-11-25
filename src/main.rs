@@ -20,6 +20,7 @@ use bevy::{
 use bevy_brp_extras::BrpExtrasPlugin;
 use bevy_mod_scripting::BMSPlugin;
 use bevy_script_menus::{MenuAssetRoot, MenuConfig, MenuPlugin};
+use bevy_shader_kit::ShaderKitPlugin;
 
 use camera::CameraPlugin;
 use character::CharacterPlugin;
@@ -57,6 +58,7 @@ fn main() {
         ))
         .add_plugins((
             StatePlugin,
+            ShaderKitPlugin,
             DevUtilsPlugin,
             ProfilerPlugin,
             CameraPlugin,

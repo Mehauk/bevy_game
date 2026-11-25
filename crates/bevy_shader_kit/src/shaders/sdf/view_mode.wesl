@@ -1,9 +1,11 @@
 import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
 import bevy_pbr::render::mesh_view_bindings::view;
-import package::shaders::distance_field_view::{
-    distance_field_view, distance_field_field, distance_field_field_extended,
-    distance_field_gradient_field, line_box_intersect,
+import package::shaders::sdf::view_bindings::{
+    distance_field_texture, distance_field_view, view_field_distance,
+    view_field_distance_extended, view_field_gradient,
 };
+import package::shaders::sdf::volume::line_box_intersect;
+import package::shaders::shading::hemisphere::hemisphere_factor;
 
 const SDF_DIR_LIGHT_COLOR: vec3<f32> = vec3<f32>(10.0, 10.0, 10.0);
 const SDF_DIR_LIGHT_DIR: vec3<f32> = vec3<f32>(0.707, 0.0, 0.707);
@@ -16,8 +18,8 @@ const SDF_MIN_STEP_VOXELS: f32 = 0.03125;
 const SDF_GLOW_STRENGTH: f32 = 0.35;
 
 fn sdf_surface_normal(p: vec3<f32>) -> vec3<f32> {
-    let w2v = distance_field_view.field_from_world;
-    let grad = distance_field_gradient_field(p);
+    let w2v = distance_field_view.volume.field_from_world;
+    let grad = view_field_gradient(p);
     let grad_len = length(grad);
     var n_vol = vec3<f32>(0.0, 1.0, 0.0);
     if (grad_len > 0.0) {
@@ -35,7 +37,7 @@ fn sdf_surface_normal(p: vec3<f32>) -> vec3<f32> {
 
 fn sdf_clay(n: vec3<f32>) -> vec3<f32> {
     let ndl = max(dot(normalize(SDF_DIR_LIGHT_DIR), n), 0.0);
-    let hemi = 0.5 + 0.5 * n.y;
+    let hemi = hemisphere_factor(n);
     return (SDF_DIR_LIGHT_COLOR * ndl + SDF_SKY_COLOR * hemi) * SDF_ALBEDO;
 }
 
@@ -43,7 +45,7 @@ fn sdf_clay(n: vec3<f32>) -> vec3<f32> {
 fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOutput {
     var out: FragmentOutput;
 
-    let w2v = distance_field_view.field_from_world;
+    let w2v = distance_field_view.volume.field_from_world;
     let cam = (w2v * vec4<f32>(view.world_position, 1.0)).xyz;
     let frag = (w2v * vec4<f32>(in.world_position.xyz, 1.0)).xyz;
     let ray = frag - cam;
@@ -54,10 +56,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     }
     let dir = ray / ray_len;
 
-    let center = 0.5 * (distance_field_view.bounds_min + distance_field_view.bounds_max);
-    let extent = (distance_field_view.bounds_max - distance_field_view.bounds_min) * 0.5;
+    let center = 0.5 * (distance_field_view.volume.bounds_min + distance_field_view.volume.bounds_max);
+    let extent = (distance_field_view.volume.bounds_max - distance_field_view.volume.bounds_min) * 0.5;
     let span = extent * 2.0;
-    let texel = span / distance_field_view.resolution;
+    let texel = span / distance_field_view.volume.resolution;
     let texel_max = max(max(texel.x, texel.y), texel.z);
 
     let min_step = texel_max * SDF_MIN_STEP_VOXELS;
@@ -85,8 +87,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     var p_min = cam_v;
     for (var i: i32 = 0; i < SDF_MAX_STEPS; i = i + 1) {
         let p = cam_v + center + dir * t;
-        let d_ext = distance_field_field_extended(p);
-        let d = distance_field_field(p);
+        let d_ext = view_field_distance_extended(p);
+        let d = view_field_distance(p);
         if (t > glow_range && t >= field_times.x && t <= field_times.y && d < min_d) {
             min_d = d;
             p_min = p;

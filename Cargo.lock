@@ -2218,6 +2218,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_shader_kit"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "mesh_to_sdf",
+]
+
+[[package]]
 name = "bevy_shape"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8409,8 +8417,8 @@ dependencies = [
  "bevy_enhanced_input",
  "bevy_mod_scripting",
  "bevy_script_menus",
+ "bevy_shader_kit",
  "glam 0.27.0",
- "mesh_to_sdf",
  "meshless_voronoi",
  "noise",
  "toml",

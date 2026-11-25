@@ -1,0 +1,18 @@
+[package]
+name = "bevy_shader_kit"
+version = "0.1.0"
+edition = "2024"
+description = "Composable WESL shader kit: distance fields and water materials for Bevy"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bevy = { version = "0.20.1", default-features = false, features = [
+    "bevy_asset",
+    "bevy_image",
+    "bevy_light",
+    "bevy_mesh",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_shader",
+] }
+mesh_to_sdf = "0.4"

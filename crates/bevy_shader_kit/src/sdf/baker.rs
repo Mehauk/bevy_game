@@ -2,117 +2,97 @@ use bevy::{
     asset::RenderAssetUsages,
     light::NotShadowCaster,
     mesh::VertexAttributeValues,
-    pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin, StandardMaterial},
+    pbr::StandardMaterial,
     prelude::*,
-    render::render_resource::{AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat},
-    shader::ShaderRef,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
-use crate::utils::registry::commands::CommandOutput;
-use super::atmosphere::SkyBox;
+use super::{
+    DistanceFieldParams, DistanceFieldSource, DistanceFieldUnitCube, DistanceFieldViewExt,
+    DistanceFieldViewHidden, DistanceFieldViewMaterial, DistanceFieldVolume, InvisibleMaterial,
+    MAX_TEXELS,
+};
 
-pub const MAX_TEXELS: usize = 4_000_000;
-const SKYBOX_VIEW_COLOR: Color = Color::srgb(0.015, 0.015, 0.018);
-
-#[derive(Resource, Default)]
-pub struct DistanceFieldView {
-    pub active: bool,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldBounds {
+    pub min: Vec3,
+    pub max: Vec3,
 }
 
-#[derive(Component, Default)]
-pub struct DistanceFieldSource {
-    pub texel: Vec3,
-    pub water_margin: f32,
-    pub surface_top: f32,
-    pub clay_alpha: f32,
-    pub image: Handle<Image>,
-    pub view_material: Handle<ExtendedMaterial<StandardMaterial, DistanceFieldViewExt>>,
-    pub params: DistanceFieldParams,
-    pub baked: bool,
-    pub volume: Option<Entity>,
-    pub hidden_material: Option<Handle<StandardMaterial>>,
+impl FieldBounds {
+    pub fn resolution(&self, texel: Vec3) -> UVec3 {
+        let span = self.max - self.min;
+        let raw = UVec3::new(
+            (span.x / texel.x).ceil().max(2.0) as u32,
+            (span.y / texel.y).ceil().max(2.0) as u32,
+            (span.z / texel.z).ceil().max(2.0) as u32,
+        );
+        let total = raw.x as usize * raw.y as usize * raw.z as usize;
+        if total <= MAX_TEXELS {
+            return raw;
+        }
+        let shrink = (MAX_TEXELS as f32 / total as f32).cbrt();
+        UVec3::new(
+            ((raw.x as f32 * shrink) as u32).max(2),
+            ((raw.y as f32 * shrink) as u32).max(2),
+            ((raw.z as f32 * shrink) as u32).max(2),
+        )
+    }
 }
 
-impl DistanceFieldSource {
-    pub fn prop() -> Self {
-        Self {
-            texel: Vec3::splat(0.1),
-            water_margin: 3.0,
-            clay_alpha: 1.0,
-            ..default()
+pub fn sdf_from_triangles(
+    bounds: &FieldBounds,
+    resolution: UVec3,
+    positions: &[[f32; 3]],
+    indices: &[usize],
+) -> Vec<f32> {
+    let min = bounds.min;
+    let max = bounds.max;
+    let grid = mesh_to_sdf::Grid::from_bounding_box(
+        &[min.x, min.y, min.z],
+        &[max.x, max.y, max.z],
+        [
+            resolution.x as usize,
+            resolution.y as usize,
+            resolution.z as usize,
+        ],
+    );
+    let indices: Vec<u32> = indices.iter().map(|i| *i as u32).collect();
+    let generated = mesh_to_sdf::generate_grid_sdf(
+        positions,
+        mesh_to_sdf::Topology::TriangleList(Some(&indices)),
+        &grid,
+        mesh_to_sdf::SignMethod::Raycast,
+    );
+    let (rx, ry, rz) = (
+        resolution.x as usize,
+        resolution.y as usize,
+        resolution.z as usize,
+    );
+    let mut data = vec![0.0f32; generated.len()];
+    for z in 0..rz {
+        for y in 0..ry {
+            for x in 0..rx {
+                data[x + y * rx + z * rx * ry] = generated[x * ry * rz + y * rz + z];
+            }
         }
     }
+    data
 }
 
-#[derive(Component)]
-pub struct PrimaryField;
-
-#[derive(Component)]
-pub struct DistanceFieldVolume;
-
-#[derive(Component)]
-pub struct DistanceFieldViewHidden;
-
-#[derive(Component)]
-pub struct DimmedSkybox(pub Color);
-
-#[derive(Component)]
-pub struct DimmedFog(pub f32);
-
-#[derive(Resource)]
-pub struct InvisibleMaterial(pub Handle<StandardMaterial>);
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, ShaderType, Reflect)]
-pub struct DistanceFieldParams {
-    pub field_from_world: Mat4,
-    pub bounds_min: Vec3,
-    pub bounds_max: Vec3,
-    pub inv_bounds_size: Vec3,
-    pub resolution: Vec3,
-    pub time: f32,
-    pub glow_range: f32,
-    pub clay_alpha: f32,
-}
-
-impl Default for DistanceFieldParams {
-    fn default() -> Self {
-        Self {
-            field_from_world: Mat4::IDENTITY,
-            bounds_min: Vec3::ZERO,
-            bounds_max: Vec3::ZERO,
-            inv_bounds_size: Vec3::ZERO,
-            resolution: Vec3::ZERO,
-            time: 0.0,
-            glow_range: 0.0,
-            clay_alpha: 1.0,
-        }
+fn mesh_positions(mesh: &Mesh) -> Option<&Vec<[f32; 3]>> {
+    match mesh.attribute(Mesh::ATTRIBUTE_POSITION)? {
+        VertexAttributeValues::Float32x3(positions) => Some(positions),
+        _ => None,
     }
 }
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-pub struct DistanceFieldViewExt {
-    #[texture(101, dimension = "3d", sample_type = "float", filterable = false)]
-    pub sdf: Handle<Image>,
-    #[uniform(100)]
-    pub params: DistanceFieldParams,
-}
-
-impl MaterialExtension for DistanceFieldViewExt {
-    fn fragment_shader() -> ShaderRef {
-        "shaders/distance_field_view_mode.wesl".into()
+fn f32_bytes(data: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(data.len() * 4);
+    for value in data {
+        bytes.extend_from_slice(&value.to_le_bytes());
     }
-
-    fn deferred_fragment_shader() -> ShaderRef {
-        "shaders/distance_field_view_mode.wesl".into()
-    }
-}
-
-pub type DistanceFieldViewMaterial = ExtendedMaterial<StandardMaterial, DistanceFieldViewExt>;
-
-pub fn register(app: &mut App) {
-    app.add_plugins(MaterialPlugin::<DistanceFieldViewMaterial>::default());
-    app.init_resource::<DistanceFieldView>();
+    bytes
 }
 
 fn opaque_material(materials: &Assets<StandardMaterial>, handle: &Handle<StandardMaterial>) -> bool {
@@ -202,7 +182,8 @@ pub fn bake_distance_fields(
     children: Query<&Children>,
     transforms: Query<&Transform>,
     meshed: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    meshes: Res<Assets<Mesh>>,
+    unit_cube: Res<DistanceFieldUnitCube>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut view_materials: ResMut<Assets<DistanceFieldViewMaterial>>,
@@ -219,7 +200,6 @@ pub fn bake_distance_fields(
     if sources.iter().all(|(_, _, _, source)| source.baked) {
         return;
     }
-    let volume_mesh = meshes.add(Mesh::from(Cuboid::default()));
     for (entity, mesh3d, own_material, mut source) in sources.iter_mut() {
         if source.baked {
             continue;
@@ -296,7 +276,7 @@ pub fn bake_distance_fields(
                 ChildOf(entity),
                 Visibility::Hidden,
                 Transform::from_translation(center).with_scale(span + Vec3::splat(2.0 * glow_range)),
-                Mesh3d(volume_mesh.clone()),
+                Mesh3d(unit_cube.0.clone()),
                 MeshMaterial3d(view_material.clone()),
                 NotShadowCaster,
             ))
@@ -310,226 +290,10 @@ pub fn bake_distance_fields(
     }
 }
 
-pub fn animate_distance_field(
-    time: Res<Time>,
-    sources: Query<(&GlobalTransform, &DistanceFieldSource)>,
-    mut view_materials: ResMut<Assets<DistanceFieldViewMaterial>>,
-) {
-    for (global, source) in sources.iter() {
-        if !source.baked {
-            continue;
-        }
-        let params = DistanceFieldParams {
-            field_from_world: global.to_matrix().inverse(),
-            time: time.elapsed_secs(),
-            ..source.params
-        };
-        if let Some(mut material) = view_materials.get_mut(&source.view_material) {
-            material.extension.params = params;
-            material.extension.sdf = source.image.clone();
-        }
-    }
-}
-
-pub fn sync_distance_field_view(
-    view: Res<DistanceFieldView>,
-    mut commands: Commands,
-    invisible: Option<Res<InvisibleMaterial>>,
-    mut sources: Query<(
-        Entity,
-        &mut DistanceFieldSource,
-        Option<&MeshMaterial3d<StandardMaterial>>,
-    )>,
-    mut marked: Query<(
-        Entity,
-        &mut Visibility,
-        Has<DistanceFieldVolume>,
-        Has<DistanceFieldViewHidden>,
-    )>,
-    skyboxes: Query<
-        (
-            Entity,
-            &MeshMaterial3d<StandardMaterial>,
-            Option<&DimmedSkybox>,
-        ),
-        With<SkyBox>,
-    >,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut fogs: Query<(Entity, &mut DistanceFog, Option<&DimmedFog>)>,
-) {
-    if !view.is_changed() {
-        return;
-    }
-    for (entity, mut source, material) in sources.iter_mut() {
-        if view.active {
-            if let (Some(invisible), Some(material)) = (invisible.as_deref(), material) {
-                source.hidden_material = Some(material.0.clone());
-                commands
-                    .entity(entity)
-                    .insert(MeshMaterial3d(invisible.0.clone()));
-            }
-        } else if let Some(handle) = source.hidden_material.take() {
-            commands.entity(entity).insert(MeshMaterial3d(handle));
-        }
-    }
-    for (_, mut visibility, is_volume, is_hidden) in marked.iter_mut() {
-        if is_volume {
-            *visibility = if view.active {
-                Visibility::Visible
-            } else {
-                Visibility::Hidden
-            };
-        } else if is_hidden {
-            *visibility = if view.active {
-                Visibility::Hidden
-            } else {
-                Visibility::Visible
-            };
-        }
-    }
-    for (entity, material_handle, dimmed) in skyboxes.iter() {
-        let Some(mut material) = materials.get_mut(material_handle) else {
-            continue;
-        };
-        if view.active {
-            if dimmed.is_none() {
-                commands
-                    .entity(entity)
-                    .insert(DimmedSkybox(material.base_color));
-            }
-            material.base_color = SKYBOX_VIEW_COLOR;
-        } else if let Some(DimmedSkybox(original)) = dimmed {
-            material.base_color = *original;
-            commands.entity(entity).remove::<DimmedSkybox>();
-        }
-    }
-    for (entity, mut fog, stored) in fogs.iter_mut() {
-        if view.active {
-            if stored.is_none() {
-                commands
-                    .entity(entity)
-                    .insert(DimmedFog(fog.color.alpha()));
-            }
-            fog.color.set_alpha(0.0);
-        } else if let Some(DimmedFog(original)) = stored {
-            fog.color.set_alpha(*original);
-            commands.entity(entity).remove::<DimmedFog>();
-        }
-    }
-}
-
-pub fn toggle_distance_field(
-    mut view: ResMut<DistanceFieldView>,
-    mut output: ResMut<CommandOutput>,
-) {
-    view.active = !view.active;
-    output.set(if view.active {
-        "Distance field view: on"
-    } else {
-        "Distance field view: off"
-    });
-}
-
-pub fn distance_field_debug_info(
-    view: Res<DistanceFieldView>,
-    primary: Query<&DistanceFieldSource, With<PrimaryField>>,
-) -> Option<String> {
-    let source = primary.iter().next()?;
-    let r = source.params.resolution;
-    Some(format!(
-        "{} {}x{}x{}",
-        if view.active { "on" } else { "off" },
-        r.x as i32,
-        r.y as i32,
-        r.z as i32,
-    ))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FieldBounds {
-    pub min: Vec3,
-    pub max: Vec3,
-}
-
-impl FieldBounds {
-    pub fn resolution(&self, texel: Vec3) -> UVec3 {
-        let span = self.max - self.min;
-        let raw = UVec3::new(
-            (span.x / texel.x).ceil().max(2.0) as u32,
-            (span.y / texel.y).ceil().max(2.0) as u32,
-            (span.z / texel.z).ceil().max(2.0) as u32,
-        );
-        let total = raw.x as usize * raw.y as usize * raw.z as usize;
-        if total <= MAX_TEXELS {
-            return raw;
-        }
-        let shrink = (MAX_TEXELS as f32 / total as f32).cbrt();
-        UVec3::new(
-            ((raw.x as f32 * shrink) as u32).max(2),
-            ((raw.y as f32 * shrink) as u32).max(2),
-            ((raw.z as f32 * shrink) as u32).max(2),
-        )
-    }
-}
-
-fn mesh_positions(mesh: &Mesh) -> Option<&Vec<[f32; 3]>> {
-    match mesh.attribute(Mesh::ATTRIBUTE_POSITION)? {
-        VertexAttributeValues::Float32x3(positions) => Some(positions),
-        _ => None,
-    }
-}
-
-pub fn sdf_from_triangles(
-    bounds: &FieldBounds,
-    resolution: UVec3,
-    positions: &[[f32; 3]],
-    indices: &[usize],
-) -> Vec<f32> {
-    let min = bounds.min;
-    let max = bounds.max;
-    let grid = mesh_to_sdf::Grid::from_bounding_box(
-        &[min.x, min.y, min.z],
-        &[max.x, max.y, max.z],
-        [
-            resolution.x as usize,
-            resolution.y as usize,
-            resolution.z as usize,
-        ],
-    );
-    let indices: Vec<u32> = indices.iter().map(|i| *i as u32).collect();
-    let generated = mesh_to_sdf::generate_grid_sdf(
-        positions,
-        mesh_to_sdf::Topology::TriangleList(Some(&indices)),
-        &grid,
-        mesh_to_sdf::SignMethod::Raycast,
-    );
-    let (rx, ry, rz) = (
-        resolution.x as usize,
-        resolution.y as usize,
-        resolution.z as usize,
-    );
-    let mut data = vec![0.0f32; generated.len()];
-    for z in 0..rz {
-        for y in 0..ry {
-            for x in 0..rx {
-                data[x + y * rx + z * rx * ry] = generated[x * ry * rz + y * rz + z];
-            }
-        }
-    }
-    data
-}
-
-fn f32_bytes(data: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 4);
-    for value in data {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn triangle_sdf_signs_a_cube_correctly() {
         let mesh: Mesh = Cuboid::new(1.0, 1.0, 1.0).mesh().into();

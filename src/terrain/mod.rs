@@ -1,14 +1,14 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use bevy_shader_kit::DistanceFieldView;
 
 use crate::{
     terrain::terrain::Terrain,
-    utils::registry::commands::{CommandAppExt, command},
+    utils::registry::commands::{CommandAppExt, CommandOutput, command},
     utils::registry::debug_info::{DebugInfoAppExt, debug_info},
 };
 
 mod atmosphere;
-mod distance_field;
 pub mod terrain;
 mod water;
 
@@ -17,11 +17,7 @@ use atmosphere::{
     TerrainFog, setup_atmosphere, sync_terrain_fog, toggle_atmospheric_fog,
     toggle_fog_light_influence,
 };
-pub use distance_field::{DistanceFieldSource, PrimaryField};
-use distance_field::{
-    animate_distance_field, bake_distance_fields, distance_field_debug_info,
-    sync_distance_field_view, toggle_distance_field,
-};
+pub use bevy_shader_kit::{DistanceFieldSource, PrimaryField};
 
 pub struct TerrainPlugin;
 
@@ -32,21 +28,7 @@ impl Plugin for TerrainPlugin {
             .add_systems(Startup, (setup_terrain, setup_atmosphere))
             .add_systems(Update, sync_terrain_fog);
 
-        distance_field::register(app);
-        water::register(app);
-        app.add_systems(
-            Startup,
-            water::setup_water_surface,
-        );
-        app.add_systems(
-            Update,
-            (
-                bake_distance_fields,
-                animate_distance_field,
-                sync_distance_field_view,
-                water::sync_water_fields,
-            ),
-        );
+        app.add_systems(Startup, water::setup_water_surface);
 
         command!(app, "Toggle atmospheric fog", toggle_atmospheric_fog);
         command!(
@@ -91,4 +73,30 @@ fn setup_terrain(
                 ..DistanceFieldSource::prop()
             },
         ));
+}
+
+fn toggle_distance_field(
+    mut view: ResMut<DistanceFieldView>,
+    mut output: ResMut<CommandOutput>,
+) {
+    output.set(if view.toggle() {
+        "Distance field view: on"
+    } else {
+        "Distance field view: off"
+    });
+}
+
+fn distance_field_debug_info(
+    view: Res<DistanceFieldView>,
+    primary: Query<&DistanceFieldSource, With<PrimaryField>>,
+) -> Option<String> {
+    let source = primary.iter().next()?;
+    let r = source.params.resolution;
+    Some(format!(
+        "{} {}x{}x{}",
+        if view.active { "on" } else { "off" },
+        r.x as i32,
+        r.y as i32,
+        r.z as i32,
+    ))
 }

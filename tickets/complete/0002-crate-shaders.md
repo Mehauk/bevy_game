@@ -1,6 +1,6 @@
-- [ ] extract the shaders wesl files and logic to a new crate.
-- [ ] extract the water implementation into multiple smaller utility wesl files.
-- [ ] allow for composition with modifications for dynamic shader.
+- [x] extract the shaders wesl files and logic to a new crate.
+- [x] extract the water implementation into multiple smaller utility wesl files.
+- [x] allow for composition with modifications for dynamic shader.
 
 ---
 

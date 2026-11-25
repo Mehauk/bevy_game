@@ -293,7 +293,12 @@ mod tests {
     fn the_chunk_grid_curtain_draws_every_grid_line() {
         let terrain = Terrain::default();
         let segments = chunk_grid_segments(&terrain);
-        assert_eq!(segments.len(), 6 + 6, "five chunks make six lines per axis");
+        let count = terrain.chunk_count();
+        assert_eq!(
+            segments.len(),
+            (count.x + count.y + 2) as usize,
+            "one line per chunk border, per axis"
+        );
         let origin = terrain.chunk_origin(IVec2::ZERO);
         let far = origin + terrain.config().world;
         for segment in &segments {

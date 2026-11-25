@@ -6,7 +6,8 @@ use bevy::{
 };
 
 const CRATER_DEPTH: f32 = 30.0;
-const CRATER_RIM: f32 = 30.0;
+const CRATER_RIM_X: f32 = 30.0;
+const CRATER_RIM_Z: f32 = 60.0;
 const CRATER_INSET: f32 = 100.0;
 const NORMAL_SAMPLE_STEP: f32 = 0.5;
 const LOD_HYSTERESIS: f32 = 0.15;
@@ -24,7 +25,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            world: Vec2::splat(300.0),
+            world: Vec2::splat(1000.0),
             chunk_size: 60.0,
             mesh_subdivisions: 64,
             collider_subdivisions: 60,
@@ -34,7 +35,7 @@ impl Default for TerrainConfig {
 }
 
 #[derive(Resource, Clone, Copy)]
-pub struct Terrain(TerrainConfig);
+pub struct Terrain(pub(crate) TerrainConfig);
 
 impl Default for Terrain {
     fn default() -> Self {
@@ -66,21 +67,23 @@ impl Terrain {
 
     pub fn chunk_coords(&self) -> impl Iterator<Item = IVec2> {
         let count = self.chunk_count();
-        (0..count.y).flat_map(move |iz| (0..count.x).map(move |ix| IVec2::new(ix as i32, iz as i32)))
+        (0..count.y)
+            .flat_map(move |iz| (0..count.x).map(move |ix| IVec2::new(ix as i32, iz as i32)))
     }
 
     pub fn sample_ground_height(&self, x: f32, z: f32) -> f32 {
-        let over_x = (x.abs() - (self.0.world.x / 2.0 - CRATER_INSET)).max(0.0);
-        let over_z = (z.abs() - (self.0.world.y / 2.0 - CRATER_INSET)).max(0.0);
-        let distance = over_x.hypot(over_z);
-        let t = (distance / CRATER_RIM).clamp(0.0, 1.0);
+        let over_x = (x.abs() - (self.0.world.x / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_X;
+        let over_z = (z.abs() - (self.0.world.y / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_Z;
+        let t = over_x.hypot(over_z).clamp(0.0, 1.0);
         -CRATER_DEPTH * t * t * (3.0 - 2.0 * t)
     }
 
     pub fn ground_normal(&self, x: f32, z: f32) -> Vec3 {
         let step = NORMAL_SAMPLE_STEP;
-        let slope_x = self.sample_ground_height(x + step, z) - self.sample_ground_height(x - step, z);
-        let slope_z = self.sample_ground_height(x, z + step) - self.sample_ground_height(x, z - step);
+        let slope_x =
+            self.sample_ground_height(x + step, z) - self.sample_ground_height(x - step, z);
+        let slope_z =
+            self.sample_ground_height(x, z + step) - self.sample_ground_height(x, z - step);
         Vec3::new(-slope_x, 2.0 * step, -slope_z).normalize()
     }
 
@@ -409,17 +412,9 @@ impl IndexGrid {
             self.v(1, last - 1),
             self.v(1, last - 2),
         );
-        self.tri(
-            self.v(0, last - 2),
-            self.v(0, last),
-            self.v(1, last - 1),
-        );
+        self.tri(self.v(0, last - 2), self.v(0, last), self.v(1, last - 1));
         self.tri(self.v(1, last - 1), self.v(0, last), self.v(2, last));
-        self.tri(
-            self.v(2, last - 1),
-            self.v(1, last - 1),
-            self.v(2, last),
-        );
+        self.tri(self.v(2, last - 1), self.v(1, last - 1), self.v(2, last));
     }
 
     fn south_east_corner(&mut self) {
@@ -428,9 +423,21 @@ impl IndexGrid {
         self.claim(last - 1, 0);
         self.claim(last - 2, 1);
         self.claim(last - 1, 1);
-        self.tri(self.v(last - 2, 1), self.v(last - 2, 2), self.v(last - 1, 1));
-        self.tri(self.v(last - 1, 1), self.v(last - 2, 2), self.v(last - 1, 2));
-        self.tri(self.v(last - 2, 0), self.v(last - 2, 1), self.v(last - 1, 1));
+        self.tri(
+            self.v(last - 2, 1),
+            self.v(last - 2, 2),
+            self.v(last - 1, 1),
+        );
+        self.tri(
+            self.v(last - 1, 1),
+            self.v(last - 2, 2),
+            self.v(last - 1, 2),
+        );
+        self.tri(
+            self.v(last - 2, 0),
+            self.v(last - 2, 1),
+            self.v(last - 1, 1),
+        );
         self.tri(self.v(last - 2, 0), self.v(last - 1, 1), self.v(last, 0));
         self.tri(self.v(last - 1, 1), self.v(last, 2), self.v(last, 0));
         self.tri(self.v(last - 2, 1), self.v(last, 2), self.v(last - 1, 1));
@@ -502,7 +509,10 @@ pub fn build_chunk_mesh(terrain: &Terrain, coord: IVec2, lod: u8, flags: StitchF
 
     let indices = chunk_indices(grid.lines, flags);
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_indices(Indices::U32(indices));
@@ -548,21 +558,22 @@ mod tests {
     #[test]
     fn chunks_tile_the_world_exactly() {
         let terrain = Terrain::default();
-        assert_eq!(terrain.chunk_count(), UVec2::new(5, 5));
+        assert_eq!(terrain.chunk_count(), UVec2::new(50, 50));
         assert_eq!(terrain.chunk_extent(), Vec2::splat(60.0));
-        assert_eq!(terrain.chunk_origin(IVec2::ZERO), Vec2::splat(-150.0));
+        assert_eq!(terrain.chunk_origin(IVec2::ZERO), Vec2::splat(-1500.0));
         assert_eq!(
-            terrain.chunk_origin(IVec2::new(4, 4)) + terrain.chunk_extent(),
-            Vec2::splat(150.0)
+            terrain.chunk_origin(IVec2::new(49, 49)) + terrain.chunk_extent(),
+            Vec2::splat(1500.0)
         );
-        assert_eq!(terrain.chunk_coords().count(), 25);
+        assert_eq!(terrain.chunk_coords().count(), 2500);
     }
 
     #[test]
     fn the_plain_is_flat_and_the_rim_sinks() {
         let terrain = Terrain::default();
+        let edge = terrain.config().world.y * 0.5;
         assert_eq!(terrain.sample_ground_height(0.0, 0.0), 0.0);
-        assert_eq!(terrain.sample_ground_height(0.0, 150.0), -CRATER_DEPTH);
+        assert_eq!(terrain.sample_ground_height(0.0, edge), -CRATER_DEPTH);
         assert_eq!(terrain.ground_normal(0.0, 0.0), Vec3::Y);
     }
 
@@ -609,7 +620,10 @@ mod tests {
                     let pb = grid_point(b % lines, b / lines);
                     let pc = grid_point(c % lines, c / lines);
                     let cross = cross_y(pa, pb, pc);
-                    assert!(cross > 0.0, "{flags:?} at {lines} has a flipped or degenerate triangle");
+                    assert!(
+                        cross > 0.0,
+                        "{flags:?} at {lines} has a flipped or degenerate triangle"
+                    );
                     area += cross * 0.5;
                 }
                 assert_eq!(
@@ -645,8 +659,14 @@ mod tests {
     fn a_stitched_fine_edge_meets_the_coarse_neighbour_exactly() {
         let terrain = Terrain::default();
         for (fine_lod, coarse_lod) in [(0u8, 1u8), (1, 2), (2, 3)] {
-            let fine = build_chunk_mesh(&terrain, IVec2::new(0, 0), fine_lod, StitchFlags::NONE.with_east());
-            let coarse = build_chunk_mesh(&terrain, IVec2::new(1, 0), coarse_lod, StitchFlags::NONE);
+            let fine = build_chunk_mesh(
+                &terrain,
+                IVec2::new(0, 0),
+                fine_lod,
+                StitchFlags::NONE.with_east(),
+            );
+            let coarse =
+                build_chunk_mesh(&terrain, IVec2::new(1, 0), coarse_lod, StitchFlags::NONE);
             let fine_lines = terrain.lod_subdivisions(fine_lod) as usize + 1;
             let coarse_lines = terrain.lod_subdivisions(coarse_lod) as usize + 1;
             let fine_positions = mesh_positions(&fine);
@@ -690,11 +710,31 @@ mod tests {
         let terrain = Terrain::default();
         assert_eq!(terrain.lod_for_distance(0.0, 3), 0);
         assert_eq!(terrain.lod_for_distance(299.0, 0), 3);
-        assert_eq!(terrain.lod_for_distance(61.0, 0), 0, "hysteresis holds the finer lod");
-        assert_eq!(terrain.lod_for_distance(71.0, 0), 1, "clearly outside coarsens");
-        assert_eq!(terrain.lod_for_distance(59.0, 1), 1, "hysteresis holds the finer lod");
-        assert_eq!(terrain.lod_for_distance(50.0, 1), 0, "clearly inside refines");
-        assert_eq!(terrain.lod_for_distance(119.0, 1), 1, "hysteresis holds the finer lod");
+        assert_eq!(
+            terrain.lod_for_distance(61.0, 0),
+            0,
+            "hysteresis holds the finer lod"
+        );
+        assert_eq!(
+            terrain.lod_for_distance(71.0, 0),
+            1,
+            "clearly outside coarsens"
+        );
+        assert_eq!(
+            terrain.lod_for_distance(59.0, 1),
+            1,
+            "hysteresis holds the finer lod"
+        );
+        assert_eq!(
+            terrain.lod_for_distance(50.0, 1),
+            0,
+            "clearly inside refines"
+        );
+        assert_eq!(
+            terrain.lod_for_distance(119.0, 1),
+            1,
+            "hysteresis holds the finer lod"
+        );
     }
 
     #[test]
@@ -717,7 +757,10 @@ mod tests {
             let right_world = terrain.chunk_center(IVec2::new(1, 0)) + Vec2::new(rx, rz);
             assert_eq!(left_world, right_world, "the seam positions line up");
             assert_eq!(ly, ry, "the seam heights line up");
-            assert_eq!(left_normals[edge], right_normals[seam], "the seam shading line up");
+            assert_eq!(
+                left_normals[edge], right_normals[seam],
+                "the seam shading line up"
+            );
         }
     }
 
@@ -742,16 +785,21 @@ mod tests {
     #[test]
     fn the_collider_fills_its_chunk_and_its_depth() {
         let terrain = coarse_collider_terrain();
-        let coord = IVec2::new(2, 3);
+        let coord = terrain.chunk_count().as_ivec2() - IVec2::splat(2);
         let extent = terrain.chunk_extent();
-        let aabb = build_chunk_collider(&terrain, coord).shape().compute_local_aabb();
+        let aabb = build_chunk_collider(&terrain, coord)
+            .shape()
+            .compute_local_aabb();
 
         assert_eq!(aabb.mins.x, -extent.x * 0.5);
         assert_eq!(aabb.maxs.x, extent.x * 0.5);
         assert_eq!(aabb.mins.z, -extent.y * 0.5);
         assert_eq!(aabb.maxs.z, extent.y * 0.5);
         assert_eq!(aabb.maxs.y, 0.0, "the chunk starts inside the plain");
-        assert_eq!(aabb.mins.y, -CRATER_DEPTH, "the chunk reaches the crater floor");
+        assert_eq!(
+            aabb.mins.y, -CRATER_DEPTH,
+            "the chunk reaches the crater floor"
+        );
     }
 
     #[test]

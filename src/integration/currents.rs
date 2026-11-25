@@ -41,12 +41,17 @@ fn sync_tidal_currents(
 mod tests {
     use super::*;
     use crate::character::FEET_OFFSET;
+    use crate::terrain::terrain::TerrainConfig;
     use bevy::time::TimeUpdateStrategy;
 
     fn current_at(sea_level: f32, rate: f32, position: Vec3) -> Vec3 {
+        let terrain = Terrain(TerrainConfig {
+            world: Vec2::splat(300.0),
+            ..default()
+        });
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Terrain>()
+            .insert_resource(terrain)
             .insert_resource(TimeUpdateStrategy::ManualDuration(
                 std::time::Duration::from_millis(20),
             ))

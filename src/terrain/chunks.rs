@@ -258,6 +258,7 @@ pub(super) fn chunk_debug_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::terrain::TerrainConfig;
 
     fn count<T: Component>(world: &World) -> usize {
         world
@@ -267,9 +268,13 @@ mod tests {
     }
 
     fn lod_app() -> App {
+        let terrain = Terrain(TerrainConfig {
+            world: Vec2::splat(300.0),
+            ..default()
+        });
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Terrain>()
+            .insert_resource(terrain)
             .init_resource::<TerrainViewer>()
             .init_resource::<Assets<Mesh>>()
             .init_resource::<Assets<WetSandMaterial>>()

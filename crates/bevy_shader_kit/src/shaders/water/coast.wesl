@@ -1,10 +1,11 @@
-import package::shaders::water::swell_types::{ShoreContext, shore_factor, swell_amplitude_span, swell_height_shored};
+import package::shaders::water::swell_types::{ShoreContext, shore_factor, swell_amplitude_span, swell_height, swell_height_shored};
 import package::shaders::water::swells::swells;
 import package::shaders::water::types::water;
 
 const COAST_SWASH_RUNUP: f32 = 0.15;
 const COAST_SWASH_TUCK: f32 = -0.15;
 const COAST_SWASH_BLEND: f32 = 1.5;
+const COAST_WET_DEPTH: f32 = 0.25;
 const COAST_BLUR_TEXELS: f32 = 4.0;
 
 struct CoastField {
@@ -33,8 +34,24 @@ fn coast_sample_at(texel: vec2<i32>) -> vec2<f32> {
     return textureLoad(coast_map, coast_clamp(texel), 0).rg;
 }
 
+fn coast_weight_of(world_xz: vec2<f32>) -> vec2<f32> {
+    let uv = (world_xz - coast.bounds_min) * coast.inv_size;
+    return clamp(
+        uv * coast.resolution - vec2<f32>(0.5),
+        vec2<f32>(0.0),
+        coast.resolution - vec2<f32>(1.0),
+    );
+}
+
 fn terrain_height_at(world_xz: vec2<f32>) -> f32 {
-    return coast_sample_at(coast_texel_of(world_xz)).x;
+    let origin = floor(coast_weight_of(world_xz));
+    let weight = coast_weight_of(world_xz) - origin;
+    let corner = vec2<i32>(i32(origin.x), i32(origin.y));
+    let west = coast_sample_at(corner).x;
+    let east = coast_sample_at(corner + vec2<i32>(1, 0)).x;
+    let north = coast_sample_at(corner + vec2<i32>(0, 1)).x;
+    let south = coast_sample_at(corner + vec2<i32>(1, 1)).x;
+    return mix(mix(west, east, weight.x), mix(north, south, weight.x), weight.y);
 }
 
 fn spill_height_at(world_xz: vec2<f32>) -> f32 {
@@ -73,9 +90,15 @@ fn coastal_surface_y(rest_xz: vec2<f32>, time: f32) -> f32 {
     let terrain_y = water.water_height - shore.rest_depth;
     let swell = swell_height_shored(swells, rest_xz, time, shore);
     let offshore_y = water.water_height + swell;
-    let wash = mix(COAST_SWASH_TUCK, COAST_SWASH_RUNUP, coastal_wash_mask(shore, swell));
+    let wet = smoothstep(0.0, COAST_WET_DEPTH, shore.rest_depth);
+    let wash = mix(
+        COAST_SWASH_TUCK,
+        COAST_SWASH_RUNUP,
+        coastal_wash_mask(shore, swell_height(swells, rest_xz, time)) * wet,
+    );
     let near_land = 1.0 - smoothstep(0.0, COAST_SWASH_BLEND, shore.rest_depth);
-    return mix(offshore_y, terrain_y + wash, near_land);
+    let sheet = mix(offshore_y, terrain_y + wash, near_land);
+    return mix(sheet, offshore_y, wet);
 }
 
 fn coastal_normal(rest_xz: vec2<f32>, time: f32) -> vec3<f32> {

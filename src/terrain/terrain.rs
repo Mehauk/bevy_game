@@ -123,6 +123,19 @@ fn chunk_heights(terrain: &Terrain, grid: &ChunkGrid) -> Vec<Vec<f32>> {
         .collect()
 }
 
+fn chunk_collider_heights(terrain: &Terrain, grid: &ChunkGrid) -> Vec<Vec<f32>> {
+    (0..grid.lines)
+        .map(|ix| {
+            (0..grid.lines)
+                .map(|iz| {
+                    let world = grid.world(ix, iz);
+                    terrain.sample_ground_height(world.x, world.y)
+                })
+                .collect()
+        })
+        .collect()
+}
+
 pub fn build_chunk_mesh(terrain: &Terrain, coord: IVec2) -> Mesh {
     let grid = ChunkGrid::new(terrain, coord, terrain.config().mesh_subdivisions);
     let heights = chunk_heights(terrain, &grid);
@@ -160,7 +173,7 @@ pub fn build_chunk_collider(terrain: &Terrain, coord: IVec2) -> Collider {
     let grid = ChunkGrid::new(terrain, coord, config.collider_subdivisions);
     let extent = terrain.chunk_extent();
     Collider::heightfield(
-        chunk_heights(terrain, &grid),
+        chunk_collider_heights(terrain, &grid),
         Vec3::new(extent.x, 1.0, extent.y),
     )
 }
@@ -271,20 +284,33 @@ mod tests {
 
     #[test]
     fn collider_rows_run_along_z() {
-        let terrain = coarse_collider_terrain();
+        let terrain = Terrain::default();
         let coord = IVec2::new(2, 3);
-        let grid = ChunkGrid::new(&terrain, coord, terrain.config().collider_subdivisions);
-        let heights = chunk_heights(&terrain, &grid);
+        let center = terrain.chunk_center(coord);
+        let field = build_chunk_collider(&terrain, coord)
+            .shape()
+            .as_heightfield()
+            .expect("chunk colliders are heightfields")
+            .clone();
+        let heights = field.heights();
+        let mut off_diagonal = 0;
 
-        for row in heights.iter() {
-            assert!(
-                row.windows(2).all(|pair| pair[0] == pair[1]),
-                "one row is one line of constant z"
-            );
+        for i in 0..heights.nrows() {
+            for j in 0..heights.ncols() {
+                let x = center.x + field.x_at(j);
+                let z = center.y + field.z_at(i);
+                if x.round() != z.round() {
+                    off_diagonal += 1;
+                }
+                let stored = heights[(i, j)] * field.scale().y;
+                let expected = terrain.sample_ground_height(x, z);
+                assert!(
+                    (stored - expected).abs() < 1e-3,
+                    "row {i} column {j} sits at ({x}, {z}) and stores {stored}, expected {expected}"
+                );
+            }
         }
-        assert!(
-            heights[0][0] > heights[grid.lines - 1][0],
-            "the far row has sunk into the rim"
-        );
+
+        assert!(off_diagonal > 0, "the probe must leave the x == z diagonal");
     }
 }

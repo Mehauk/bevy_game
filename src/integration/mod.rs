@@ -6,6 +6,7 @@ use crate::input::InputUpdateSystems;
 use crate::state::PlayState;
 
 mod bridges;
+mod distance_field;
 mod menu_callbacks;
 mod menu_wiring;
 mod state_pause;
@@ -38,6 +39,7 @@ impl Plugin for IntegrationPlugin {
         menu_callbacks::register(app);
         menu_wiring::register(app);
         bridges::register(app);
+        distance_field::register(app);
         state_pause::register(app);
     }
 }

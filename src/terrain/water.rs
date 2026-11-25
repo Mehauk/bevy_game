@@ -1,15 +1,22 @@
 use bevy::{light::NotShadowCaster, pbr::StandardMaterial, prelude::*};
-use bevy_shader_kit::{
-    DistanceFieldViewHidden, WaterHeightSource, WaterMaterial, WaterMaterialExt, WaterSurface,
-    dummy_field_image,
-};
+use bevy_shader_kit::{WaterMaterial, WaterMaterialExt, dummy_field_image};
 
+use crate::distance_field::DistanceFieldViewHidden;
 use crate::utils::registry::commands::{CommandArgs, CommandOutput};
 
 use super::terrain::Terrain;
 
 #[derive(Component)]
 pub struct Sea;
+
+#[derive(Component)]
+pub struct WaterHeightSource;
+
+#[derive(Resource)]
+pub struct WaterSurface {
+    pub material: Handle<WaterMaterial>,
+    pub dummy: Handle<Image>,
+}
 
 pub fn setup_water_surface(
     mut commands: Commands,

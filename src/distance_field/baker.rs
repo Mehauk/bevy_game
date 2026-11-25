@@ -6,11 +6,11 @@ use bevy::{
     prelude::*,
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
+use bevy_shader_kit::{DistanceFieldViewExt, DistanceFieldViewMaterial, DistanceFieldViewUniform, SdfVolume};
 
 use super::{
-    DistanceFieldParams, DistanceFieldSource, DistanceFieldUnitCube, DistanceFieldViewExt,
-    DistanceFieldViewHidden, DistanceFieldViewMaterial, DistanceFieldVolume, InvisibleMaterial,
-    MAX_TEXELS,
+    DistanceFieldSource, DistanceFieldUnitCube, DistanceFieldViewHidden, DistanceFieldVolume,
+    InvisibleMaterial, MAX_TEXELS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -246,15 +246,16 @@ pub fn bake_distance_fields(
             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         ));
         let span = (field_bounds.max - field_bounds.min).max(Vec3::splat(1e-3));
-        let params = DistanceFieldParams {
-            field_from_world: Mat4::IDENTITY,
-            bounds_min: field_bounds.min,
-            bounds_max: field_bounds.max,
-            inv_bounds_size: Vec3::new(1.0 / span.x, 1.0 / span.y, 1.0 / span.z),
-            resolution: resolution.as_vec3(),
-            time: 0.0,
+        let volume = SdfVolume::from_bounds(
+            field_bounds.min,
+            field_bounds.max,
+            resolution.as_vec3(),
+        );
+        let view = DistanceFieldViewUniform {
+            volume,
             glow_range,
             clay_alpha: source.clay_alpha,
+            ..default()
         };
         let view_material = view_materials.add(DistanceFieldViewMaterial {
             base: StandardMaterial {
@@ -266,11 +267,11 @@ pub fn bake_distance_fields(
             },
             extension: DistanceFieldViewExt {
                 sdf: image.clone(),
-                params,
+                view,
             },
         });
         let center = (bounds.max + bounds.min) * 0.5;
-        let volume = commands
+        let view_entity = commands
             .spawn((
                 DistanceFieldVolume,
                 ChildOf(entity),
@@ -284,8 +285,9 @@ pub fn bake_distance_fields(
         source.image = image;
         source.view_material = view_material;
         source.surface_top = bounds.max.y;
-        source.params = params;
-        source.volume = Some(volume);
+        source.glow_range = glow_range;
+        source.volume = volume;
+        source.view_entity = Some(view_entity);
         source.baked = true;
     }
 }

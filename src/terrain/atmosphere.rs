@@ -2,7 +2,7 @@ use bevy::{
     light::{CascadeShadowConfigBuilder, NotShadowCaster},
     prelude::*,
 };
-use bevy_shader_kit::DistanceFieldDimmedColor;
+use crate::distance_field::DistanceFieldDimmedColor;
 
 const SKYBOX_VIEW_COLOR: Color = Color::srgb(0.015, 0.015, 0.018);
 

@@ -6,30 +6,21 @@ use bevy::{
 };
 
 pub mod compose;
-pub mod sdf;
+pub mod field;
 pub mod water;
 
+pub use field::{
+    DistanceFieldViewExt, DistanceFieldViewMaterial, DistanceFieldViewUniform, SdfVolume,
+};
 pub use compose::{
     BlueprintSegment, ComposedShader, DynamicShader, DynamicShaderRegistry, HookMode, ShaderBlueprint,
     ShaderHook, ShaderHookPoint, ShaderModification, compose_wesl, rebuild_dynamic_shaders,
     water_blueprint,
 };
-pub use sdf::{
-    DistanceFieldDimmedColor, DistanceFieldParams, DistanceFieldSource, DistanceFieldUnitCube,
-    DistanceFieldView, DistanceFieldViewExt, DistanceFieldViewHidden, DistanceFieldViewMaterial,
-    DistanceFieldVolume, DimmedColorRestore, DimmedFog, FieldBounds, InvisibleMaterial,
-    MAX_TEXELS, PrimaryField, animate_distance_field, bake_distance_fields, sdf_from_triangles,
-    sync_distance_field_view,
-};
 pub use water::{
-    MAX_WATER_FIELDS, WaterFieldParams, WaterHeightSource, WaterMaterial, WaterMaterialExt,
-    WaterMaterialKey, WaterParams, WaterSurface, dummy_field_image, sync_water_fields,
-    water_shader_defs,
+    MAX_WATER_FIELDS, WaterMaterial, WaterMaterialExt, WaterMaterialKey, WaterParams,
+    dummy_field_image, water_shader_defs,
 };
-
-fn setup_unit_cube(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
-    commands.insert_resource(DistanceFieldUnitCube(meshes.add(Cuboid::default())));
-}
 
 pub struct ShaderKitPlugin;
 
@@ -56,20 +47,8 @@ impl Plugin for ShaderKitPlugin {
         embedded_asset!(app, "shaders/sdf/view_mode.wesl");
         embedded_asset!(app, "shaders/water/water.wesl");
 
-        app.add_plugins(MaterialPlugin::<DistanceFieldViewMaterial>::default())
-            .add_plugins(MaterialPlugin::<WaterMaterial>::default())
-            .init_resource::<DistanceFieldView>()
+        app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
             .init_resource::<DynamicShaderRegistry>()
-            .add_systems(Startup, setup_unit_cube)
-            .add_systems(
-                Update,
-                (
-                    bake_distance_fields,
-                    animate_distance_field,
-                    sync_distance_field_view,
-                    sync_water_fields,
-                    rebuild_dynamic_shaders,
-                ),
-            );
+            .add_systems(Update, rebuild_dynamic_shaders);
     }
 }

@@ -13,19 +13,9 @@ use bevy::{
     shader::{Shader, ShaderDefVal, ShaderRef},
 };
 
-use crate::sdf::{DistanceFieldSource, PrimaryField};
+use crate::field::SdfVolume;
 
 pub const MAX_WATER_FIELDS: usize = 4;
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, ShaderType, Reflect)]
-pub struct WaterFieldParams {
-    pub field_from_world: Mat4,
-    pub bounds_min: Vec3,
-    pub bounds_max: Vec3,
-    pub inv_bounds_size: Vec3,
-    pub resolution: Vec3,
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, ShaderType, Reflect)]
@@ -47,7 +37,7 @@ pub struct WaterParams {
     pub sun_direction: Vec3,
     pub sun_illuminance: Vec3,
     pub ambient_illuminance: Vec3,
-    pub fields: [WaterFieldParams; MAX_WATER_FIELDS],
+    pub fields: [SdfVolume; MAX_WATER_FIELDS],
 }
 
 impl Default for WaterParams {
@@ -70,7 +60,7 @@ impl Default for WaterParams {
             sun_direction: Vec3::new(0.707, 0.0, 0.707),
             sun_illuminance: Vec3::splat(3.0),
             ambient_illuminance: Vec3::new(0.15, 0.2, 0.25),
-            fields: [WaterFieldParams::default(); MAX_WATER_FIELDS],
+            fields: [SdfVolume::default(); MAX_WATER_FIELDS],
         }
     }
 }
@@ -172,15 +162,6 @@ impl MaterialExtension for WaterMaterialExt {
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterMaterialExt>;
 
-#[derive(Component)]
-pub struct WaterHeightSource;
-
-#[derive(Resource)]
-pub struct WaterSurface {
-    pub material: Handle<WaterMaterial>,
-    pub dummy: Handle<Image>,
-}
-
 pub fn dummy_field_image(images: &mut Assets<Image>) -> Handle<Image> {
     images.add(Image::new(
         Extent3d {
@@ -193,72 +174,6 @@ pub fn dummy_field_image(images: &mut Assets<Image>) -> Handle<Image> {
         TextureFormat::R32Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     ))
-}
-
-fn field_params(global: &GlobalTransform, source: &DistanceFieldSource) -> WaterFieldParams {
-    WaterFieldParams {
-        field_from_world: global.to_matrix().inverse(),
-        bounds_min: source.params.bounds_min,
-        bounds_max: source.params.bounds_max,
-        inv_bounds_size: source.params.inv_bounds_size,
-        resolution: source.params.resolution,
-    }
-}
-
-pub fn sync_water_fields(
-    time: Res<Time>,
-    heights: Query<&Transform, With<WaterHeightSource>>,
-    sources: Query<(&GlobalTransform, &DistanceFieldSource, Has<PrimaryField>)>,
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-) {
-    let Some(surface) = surface else {
-        return;
-    };
-    let Some(mut material) = materials.get_mut(&surface.material) else {
-        return;
-    };
-    let mut params = material.extension.params;
-    params.time = time.elapsed_secs();
-    if let Some(transform) = heights.iter().next() {
-        params.water_height = transform.translation.y;
-    }
-    let mut chosen: Vec<(Handle<Image>, WaterFieldParams)> = Vec::with_capacity(MAX_WATER_FIELDS);
-    for (global, source, primary) in sources.iter() {
-        if source.baked && source.surface_top >= params.water_height && primary
-            && chosen.len() < MAX_WATER_FIELDS
-        {
-            chosen.push((source.image.clone(), field_params(global, source)));
-        }
-    }
-    for (global, source, primary) in sources.iter() {
-        if source.baked && source.surface_top >= params.water_height && !primary
-            && chosen.len() < MAX_WATER_FIELDS
-        {
-            chosen.push((source.image.clone(), field_params(global, source)));
-        }
-    }
-    let ext = &mut material.extension;
-    let slots = [
-        &mut ext.field0,
-        &mut ext.field1,
-        &mut ext.field2,
-        &mut ext.field3,
-    ];
-    for (index, slot) in slots.into_iter().enumerate() {
-        match chosen.get(index) {
-            Some((image, field)) => {
-                *slot = image.clone();
-                params.fields[index] = *field;
-            }
-            None => {
-                *slot = surface.dummy.clone();
-                params.fields[index] = WaterFieldParams::default();
-            }
-        }
-    }
-    params.field_count = chosen.len() as u32;
-    ext.params = params;
 }
 
 #[cfg(test)]

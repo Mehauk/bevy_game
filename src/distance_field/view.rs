@@ -1,9 +1,9 @@
 use bevy::{pbr::StandardMaterial, prelude::*};
+use bevy_shader_kit::{DistanceFieldViewMaterial, DistanceFieldViewUniform, SdfVolume};
 
 use super::{
-    DimmedColorRestore, DimmedFog, DistanceFieldDimmedColor, DistanceFieldParams,
-    DistanceFieldSource, DistanceFieldView, DistanceFieldViewHidden, DistanceFieldViewMaterial,
-    DistanceFieldVolume, InvisibleMaterial,
+    DimmedColorRestore, DimmedFog, DistanceFieldDimmedColor, DistanceFieldSource,
+    DistanceFieldView, DistanceFieldViewHidden, DistanceFieldVolume, InvisibleMaterial,
 };
 
 pub fn animate_distance_field(
@@ -15,13 +15,17 @@ pub fn animate_distance_field(
         if !source.baked {
             continue;
         }
-        let params = DistanceFieldParams {
-            field_from_world: global.to_matrix().inverse(),
+        let view = DistanceFieldViewUniform {
+            volume: SdfVolume {
+                field_from_world: global.to_matrix().inverse(),
+                ..source.volume
+            },
             time: time.elapsed_secs(),
-            ..source.params
+            glow_range: source.glow_range,
+            clay_alpha: source.clay_alpha,
         };
         if let Some(mut material) = view_materials.get_mut(&source.view_material) {
-            material.extension.params = params;
+            material.extension.view = view;
             material.extension.sdf = source.image.clone();
         }
     }
@@ -42,14 +46,12 @@ pub fn sync_distance_field_view(
         Has<DistanceFieldVolume>,
         Has<DistanceFieldViewHidden>,
     )>,
-    dimmable: Query<
-        (
-            Entity,
-            &MeshMaterial3d<StandardMaterial>,
-            &DistanceFieldDimmedColor,
-            Option<&DimmedColorRestore>,
-        ),
-    >,
+    dimmable: Query<(
+        Entity,
+        &MeshMaterial3d<StandardMaterial>,
+        &DistanceFieldDimmedColor,
+        Option<&DimmedColorRestore>,
+    )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut fogs: Query<(Entity, &mut DistanceFog, Option<&DimmedFog>)>,
 ) {

@@ -2,6 +2,7 @@ mod camera;
 mod character;
 mod commands;
 mod dev;
+mod distance_field;
 mod docgen;
 mod input;
 mod integration;
@@ -26,6 +27,7 @@ use camera::CameraPlugin;
 use character::CharacterPlugin;
 use commands::CommandsPlugin;
 use dev::DevUtilsPlugin;
+use distance_field::DistanceFieldPlugin;
 use docgen::DocgenPlugin;
 use input::InputPlugin;
 use integration::IntegrationPlugin;
@@ -63,6 +65,7 @@ fn main() {
             ProfilerPlugin,
             CameraPlugin,
             CharacterPlugin,
+            DistanceFieldPlugin,
             TerrainPlugin,
             ScreenshotPlugin,
             DocgenPlugin,

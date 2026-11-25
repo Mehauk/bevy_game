@@ -2222,7 +2222,6 @@ name = "bevy_shader_kit"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "mesh_to_sdf",
 ]
 
 [[package]]
@@ -8419,6 +8418,7 @@ dependencies = [
  "bevy_script_menus",
  "bevy_shader_kit",
  "glam 0.27.0",
+ "mesh_to_sdf",
  "meshless_voronoi",
  "noise",
  "toml",

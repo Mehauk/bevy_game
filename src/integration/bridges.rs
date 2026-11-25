@@ -10,8 +10,9 @@ use crate::camera::{
     CameraRig, CameraSystems, CameraTarget, MainCamera, ViewMode, WantedCursorLock,
 };
 use crate::character::{CameraFacing, Character, CharacterBody};
+use crate::distance_field::DistanceFieldSource;
 use crate::input::{GameplayInput, set_context_active};
-use crate::terrain::{DistanceFieldSource, SkyBox};
+use crate::terrain::SkyBox;
 
 pub(super) fn register(app: &mut App) {
     app.add_systems(

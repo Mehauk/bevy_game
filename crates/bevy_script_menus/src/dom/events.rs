@@ -16,7 +16,7 @@ use bevy_mod_scripting::{
 };
 
 use super::node::MenuTextInput;
-use super::{DomHandle, DomHandlers};
+use super::{DomHandlers, DomNodeMeta};
 use crate::OnDomEvent;
 use crate::lifecycle::MenuRoot;
 use crate::modifiers::modifier_entries;
@@ -27,7 +27,7 @@ pub(crate) struct DomEventCtx<'w, 's> {
     handlers: Query<'w, 's, &'static DomHandlers>,
     parents: Query<'w, 's, &'static ChildOf>,
     roots: Query<'w, 's, &'static MenuRoot>,
-    handles: Query<'w, 's, &'static DomHandle>,
+    metas: Query<'w, 's, &'static DomNodeMeta>,
     callbacks: MessageWriter<'w, ScriptCallbackMessage>,
 }
 
@@ -48,20 +48,20 @@ impl DomEventCtx<'_, '_> {
     }
 
     fn emit(&mut self, target: Entity, event: &str, payload: ScriptValue) -> bool {
-        let Some((target_entity, handler)) = self.find_handler(target, event) else {
+        let Some((handler_entity, handler)) = self.find_handler(target, event) else {
             return false;
         };
+        let Ok(meta) = self.metas.get(handler_entity) else {
+            return false;
+        };
+        let (menu_entity, node_id) = (meta.menu_root, meta.id);
 
-        let Some((menu_entity, root)) = std::iter::once(target_entity)
-            .chain(self.parents.iter_ancestors(target_entity))
-            .find_map(|e| self.roots.get(e).ok().map(|r| (e, r)))
-        else {
+        let Ok(root) = self.roots.get(menu_entity) else {
             return false;
         };
         let Some(script) = root.ready_script() else {
             return false;
         };
-        let node_id = self.handles.get(target_entity).map_or(0, |h| h.0);
 
         self.callbacks
             .write(ScriptCallbackMessage::new_for_script_entity(
@@ -188,7 +188,7 @@ pub(crate) fn strip_menu_nav_text_edits(
 
 #[cfg(test)]
 mod tests {
-    use super::super::node::{NodeSpec, spawn_node_entity};
+    use super::super::DomRuntime;
     use super::*;
     use bevy::camera::NormalizedRenderTarget;
     use bevy::picking::backend::HitData;
@@ -200,13 +200,15 @@ mod tests {
 
     fn click_app() -> App {
         let mut app = App::new();
-        app.add_message::<ScriptCallbackMessage>();
-        app.add_observer(on_dom_click);
+        app.init_resource::<DomRuntime>()
+            .add_message::<ScriptCallbackMessage>()
+            .add_observer(on_dom_click);
         app
     }
 
     fn spawn_menu_root(app: &mut App) -> Entity {
-        app.world_mut()
+        let root = app
+            .world_mut()
             .spawn((
                 MenuRoot {
                     name: "test".into(),
@@ -217,9 +219,38 @@ mod tests {
                     dom_built: true,
                 },
                 DomHandlers::default(),
-                DomHandle(1),
+            ))
+            .id();
+        app.world_mut().entity_mut(root).insert(DomNodeMeta {
+            id: 1,
+            menu_root: root,
+            html_id: None,
+            classes: Vec::new(),
+        });
+        root
+    }
+
+    fn spawn_child(app: &mut App, menu_root: Entity, parent: Entity, id: i64) -> Entity {
+        app.world_mut()
+            .spawn((
+                DomNodeMeta {
+                    id,
+                    menu_root,
+                    html_id: None,
+                    classes: Vec::new(),
+                },
+                DomHandlers::default(),
+                ChildOf(parent),
             ))
             .id()
+    }
+
+    fn bind(app: &mut App, entity: Entity, event: &str, handler: &str) {
+        app.world_mut()
+            .get_mut::<DomHandlers>(entity)
+            .unwrap()
+            .0
+            .insert(event.into(), handler.into());
     }
 
     fn click(world: &mut World, target: Entity, button: PointerButton) {
@@ -259,21 +290,8 @@ mod tests {
     fn a_click_dispatches_its_handler_exactly_once() {
         let mut app = click_app();
         let root = spawn_menu_root(&mut app);
-        let node = spawn_node_entity(
-            app.world_mut(),
-            2,
-            root,
-            NodeSpec {
-                tag: "button".into(),
-                id: Some("btn".into()),
-                ..default()
-            },
-        );
-        app.world_mut()
-            .get_mut::<DomHandlers>(node)
-            .unwrap()
-            .0
-            .insert("click".into(), "on_btn".into());
+        let node = spawn_child(&mut app, root, root, 2);
+        bind(&mut app, node, "click", "on_btn");
 
         click(app.world_mut(), node, PointerButton::Primary);
 
@@ -288,11 +306,7 @@ mod tests {
     fn right_click_on_the_root_reaches_its_handler() {
         let mut app = click_app();
         let root = spawn_menu_root(&mut app);
-        app.world_mut()
-            .get_mut::<DomHandlers>(root)
-            .unwrap()
-            .0
-            .insert("right_click".into(), "on_right".into());
+        bind(&mut app, root, "right_click", "on_right");
 
         click(app.world_mut(), root, PointerButton::Secondary);
 
@@ -300,6 +314,36 @@ mod tests {
             callback_count(&app),
             1,
             "the root entity must receive right_click bindings"
+        );
+    }
+
+    #[test]
+    fn a_click_on_a_child_bubbles_to_the_nearest_handler() {
+        let mut app = click_app();
+        let root = spawn_menu_root(&mut app);
+        let button = spawn_child(&mut app, root, root, 2);
+        let label = spawn_child(&mut app, root, button, 3);
+        bind(&mut app, button, "click", "on_btn");
+
+        click(app.world_mut(), label, PointerButton::Primary);
+
+        assert_eq!(callback_count(&app), 1);
+    }
+
+    #[test]
+    fn a_click_reaches_the_menu_root_without_walking_past_it() {
+        let mut app = click_app();
+        let root = spawn_menu_root(&mut app);
+        let other_menu_root = spawn_menu_root(&mut app);
+        let orphan = spawn_child(&mut app, other_menu_root, root, 9);
+        bind(&mut app, root, "click", "on_root");
+
+        click(app.world_mut(), orphan, PointerButton::Primary);
+
+        assert_eq!(
+            callback_count(&app),
+            1,
+            "the owning menu is read straight off the node, not walked up to"
         );
     }
 }

@@ -6,7 +6,7 @@ use bevy_mod_scripting::bindings::{
 };
 
 use crate::dom::node::NodeSpec;
-use crate::dom::{DomOp, DomRuntime, queue_xml_subtree};
+use crate::dom::{DomNodeMeta, DomOp, DomRuntime, spec_tree};
 use crate::state::MenuCmd;
 
 fn push_menu_cmd(ctx: &FunctionCallContext, cmd: MenuCmd) -> Result<(), InteropError> {
@@ -21,8 +21,16 @@ fn push_dom_op(ctx: &FunctionCallContext, op: DomOp) -> Result<(), InteropError>
         .with_resource_mut(|mut rt: Mut<DomRuntime>| rt.ops.push(op))
 }
 
-fn menu_root_of(rt: &DomRuntime, id: i64) -> Option<Entity> {
-    rt.nodes.get(&id).map(|n| n.menu_root)
+fn queue_script_node(
+    ctx: &FunctionCallContext,
+    parent_id: i64,
+    build: impl FnOnce(&mut DomRuntime, Entity) -> ScriptValue,
+) -> Result<ScriptValue, InteropError> {
+    let world = ctx.world()?;
+    let Some(menu_root) = world.with_resource(|rt: &DomRuntime| rt.index.owner(parent_id))? else {
+        return Ok(ScriptValue::Unit);
+    };
+    world.with_resource_mut(|mut rt: Mut<DomRuntime>| build(&mut *rt, menu_root))
 }
 
 pub(crate) fn register_menu_namespaces(app: &mut App) {
@@ -55,10 +63,7 @@ pub(crate) fn register_menu_namespaces(app: &mut App) {
              opts: ScriptValue|
              -> Result<ScriptValue, InteropError> {
                 let spec = NodeSpec::from_script_opts(tag, opts);
-                ctx.world()?.with_resource_mut(|mut rt: Mut<DomRuntime>| {
-                    let Some(menu_root) = menu_root_of(&rt, parent_id) else {
-                        return ScriptValue::Unit;
-                    };
+                queue_script_node(&ctx, parent_id, move |rt, menu_root| {
                     ScriptValue::Integer(rt.queue_node(menu_root, parent_id, spec))
                 })
             },
@@ -71,12 +76,9 @@ pub(crate) fn register_menu_namespaces(app: &mut App) {
              -> Result<ScriptValue, InteropError> {
                 let doc = roxmltree::Document::parse(&html)
                     .map_err(|e| InteropError::external_boxed(Box::new(e)))?;
-                ctx.world()?.with_resource_mut(|mut rt: Mut<DomRuntime>| {
-                    let Some(menu_root) = menu_root_of(&rt, parent_id) else {
-                        return ScriptValue::Unit;
-                    };
-                    let id = queue_xml_subtree(&mut rt, menu_root, parent_id, doc.root_element());
-                    ScriptValue::Integer(id)
+                let tree = spec_tree(doc.root_element());
+                queue_script_node(&ctx, parent_id, move |rt, menu_root| {
+                    ScriptValue::Integer(rt.queue_spec_tree(menu_root, parent_id, &tree))
                 })
             },
         )
@@ -101,10 +103,13 @@ pub(crate) fn register_menu_namespaces(app: &mut App) {
         .register(
             "has_class",
             |ctx: FunctionCallContext, id: i64, cls: String| -> Result<bool, InteropError> {
-                ctx.world()?.with_resource(|rt: &DomRuntime| {
-                    rt.nodes
-                        .get(&id)
-                        .is_some_and(|n| n.classes.iter().any(|c| c == &cls))
+                let world = ctx.world()?;
+                let Some(entity) = world.with_resource(|rt: &DomRuntime| rt.index.entity(id))?
+                else {
+                    return Ok(false);
+                };
+                world.with_component::<DomNodeMeta, _, _>(entity, |meta| {
+                    meta.is_some_and(|meta| meta.classes.iter().any(|c| c == &cls))
                 })
             },
         )

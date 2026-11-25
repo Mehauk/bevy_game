@@ -40,6 +40,23 @@ impl MenuManager {
         self.open_menus.iter().map(|(name, _)| name.as_str())
     }
 
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (usize, &str, Entity)> {
+        self.open_menus
+            .iter()
+            .enumerate()
+            .map(|(pos, (name, entity))| (pos, name.as_str(), *entity))
+    }
+
+    pub(crate) fn entry_at(&self, pos: usize) -> Option<(String, Entity)> {
+        self.open_menus.get(pos).cloned()
+    }
+
+    pub(crate) fn replace_at(&mut self, pos: usize, name: String, entity: Entity) {
+        if pos < self.open_menus.len() {
+            self.open_menus[pos] = (name, entity);
+        }
+    }
+
     pub fn index_of(&self, name: &str) -> Option<usize> {
         self.open_menus
             .iter()

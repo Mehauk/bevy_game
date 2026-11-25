@@ -1,3 +1,4 @@
+use bevy::asset::AssetId;
 use bevy::input_focus::InputFocus;
 use bevy::prelude::*;
 use bevy_flair::prelude::*;
@@ -16,9 +17,7 @@ use crate::OnMenuReady;
 use crate::assets::resolve_menu_asset;
 use crate::config::MenuConfig;
 use crate::html::HtmlAsset;
-use crate::dom::{
-    DomHandle, DomHandlers, DomRuntime, apply_dom_ops, prune_dead_nodes, queue_xml_subtree,
-};
+use crate::dom::{DomRuntime, queue_xml_subtree, root_node};
 use crate::focus::MenuFocusState;
 use crate::state::{MenuCmd, MenuManager, ToggleMenu};
 
@@ -47,6 +46,20 @@ impl MenuRoot {
 
     pub fn ready_script(&self) -> Option<Handle<ScriptAsset>> {
         self.ready_sent.then(|| self.script.clone()).flatten()
+    }
+
+    pub(crate) fn tracks(
+        &self,
+        scripts: &[AssetId<ScriptAsset>],
+        htmls: &[AssetId<HtmlAsset>],
+    ) -> bool {
+        self.script
+            .as_ref()
+            .is_some_and(|handle| scripts.contains(&handle.id()))
+            || self
+                .html
+                .as_ref()
+                .is_some_and(|handle| htmls.contains(&handle.id()))
     }
 }
 
@@ -100,24 +113,19 @@ pub(crate) fn handle_menu_commands(
     });
 }
 
-pub(crate) fn build_loaded_menu_doms(world: &mut World) {
-    let pending: Vec<(Entity, String, i64, Handle<HtmlAsset>)> = {
-        let mut query = world.query::<(Entity, &MenuRoot)>();
-        query
-            .iter(world)
-            .filter(|(_, root)| !root.dom_built)
-            .filter_map(|(entity, root)| {
-                root.html
-                    .clone()
-                    .map(|handle| (entity, root.name.clone(), root.dom_id, handle))
-            })
-            .collect()
-    };
-
-    let mut built_any = false;
-    for (menu_entity, name, dom_id, handle) in pending {
-        let Some(source) = world
-            .resource::<Assets<HtmlAsset>>()
+pub(crate) fn build_loaded_menu_doms(
+    html_assets: Res<Assets<HtmlAsset>>,
+    mut q_roots: Query<(Entity, &mut MenuRoot)>,
+    mut runtime: ResMut<DomRuntime>,
+) {
+    for (menu_entity, mut root) in &mut q_roots {
+        if root.dom_built {
+            continue;
+        }
+        let Some(handle) = root.html.clone() else {
+            continue;
+        };
+        let Some(source) = html_assets
             .get(&handle)
             .map(|asset| asset.source.clone())
         else {
@@ -126,19 +134,11 @@ pub(crate) fn build_loaded_menu_doms(world: &mut World) {
 
         match roxmltree::Document::parse(&source) {
             Ok(doc) => {
-                let mut rt = world.resource_mut::<DomRuntime>();
-                queue_xml_subtree(&mut rt, menu_entity, dom_id, doc.root_element());
+                queue_xml_subtree(&mut runtime, menu_entity, root.dom_id, doc.root_element());
             }
-            Err(err) => error!("Failed to parse HTML for menu '{name}': {err}"),
+            Err(err) => error!("Failed to parse HTML for menu '{}': {err}", root.name),
         }
-        if let Some(mut root) = world.get_mut::<MenuRoot>(menu_entity) {
-            root.dom_built = true;
-        }
-        built_any = true;
-    }
-
-    if built_any {
-        apply_dom_ops(world);
+        root.dom_built = true;
     }
 }
 
@@ -179,7 +179,6 @@ fn close_menu_at(world: &mut World, pos: usize) {
     if let Ok(e) = world.get_entity_mut(root) {
         e.despawn();
     }
-    prune_dead_nodes(world);
     if !world.resource::<MenuManager>().any_open() {
         world.resource_mut::<InputFocus>().clear();
         world.resource_mut::<MenuFocusState>().last_focused = None;
@@ -202,7 +201,7 @@ fn close_menu_by_name(world: &mut World, name: &str) -> bool {
     true
 }
 
-pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
+fn spawn_menu_root(world: &mut World, name: &str, z: i32) -> Option<Entity> {
     let config = world.resource::<MenuConfig>().clone();
     let asset_server = world.resource::<AssetServer>();
     let html_handle = resolve_menu_asset(&config, &format!("menus/{name}/index.html"))
@@ -213,13 +212,12 @@ pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
         .map(|asset| asset_server.load(asset));
     let Some(html_handle) = html_handle else {
         warn!("Menu HTML not found for '{name}'");
-        return;
+        return None;
     };
     if script_handle.is_none() {
         warn!("Menu script not found for '{name}'");
     }
 
-    let z = config.base_z_index + world.resource::<MenuManager>().depth() as i32;
     let mut root_mut = world.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -239,15 +237,11 @@ pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
     }
     let root_entity = root_mut.id();
 
-    let root_dom_id =
-        world
-            .resource_mut::<DomRuntime>()
-            .alloc_node(root_entity, root_entity, None, Vec::new());
+    let root_dom_id = world.resource_mut::<DomRuntime>().open_root(root_entity);
 
     if let Ok(mut e) = world.get_entity_mut(root_entity) {
         e.insert((
-            DomHandle(root_dom_id),
-            DomHandlers::default(),
+            root_node(root_dom_id, root_entity),
             MenuRoot {
                 name: name.to_string(),
                 dom_id: root_dom_id,
@@ -259,7 +253,40 @@ pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
         ));
     }
 
+    Some(root_entity)
+}
+
+pub(crate) fn open_menu_in_world(world: &mut World, name: &str) {
+    let z = world.resource::<MenuConfig>().base_z_index + world.resource::<MenuManager>().depth() as i32;
+    let Some(root_entity) = spawn_menu_root(world, name, z) else {
+        return;
+    };
     world
         .resource_mut::<MenuManager>()
         .push(name.to_string(), root_entity);
+}
+
+pub(crate) fn reload_menu_at(world: &mut World, pos: usize) {
+    let Some((name, stale)) = world.resource::<MenuManager>().entry_at(pos) else {
+        return;
+    };
+    let Some(z) = world.get::<GlobalZIndex>(stale).map(|index| index.0) else {
+        return;
+    };
+    let focused = world.resource::<InputFocus>().get();
+
+    if let Ok(entity) = world.get_entity_mut(stale) {
+        entity.despawn();
+    }
+    if focused.is_some_and(|entity| world.get_entity(entity).is_err()) {
+        world.resource_mut::<InputFocus>().clear();
+        world.resource_mut::<MenuFocusState>().last_focused = None;
+    }
+
+    let Some(fresh) = spawn_menu_root(world, &name, z) else {
+        return;
+    };
+    world
+        .resource_mut::<MenuManager>()
+        .replace_at(pos, name, fresh);
 }

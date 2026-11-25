@@ -10,7 +10,7 @@ use bevy::{
 use bevy_flair::prelude::*;
 use bevy_mod_scripting::bindings::script_value::ScriptValue;
 
-use super::{DomHandle, DomHandlers};
+use super::{DomHandlers, DomNodeMeta};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct NodeSpec {
@@ -109,21 +109,37 @@ fn split_classes(raw: &str) -> Vec<String> {
 #[derive(Component, Default)]
 pub(crate) struct MenuTextInput(pub String);
 
-pub(crate) fn spawn_node_entity(
-    world: &mut World,
-    id: i64,
-    parent: Entity,
-    spec: NodeSpec,
-) -> Entity {
-    let mut e = world.spawn((DomHandle(id), DomHandlers::default(), ChildOf(parent)));
+pub(crate) struct PendingNode {
+    pub id: i64,
+    pub menu_root: Entity,
+    pub parent: Entity,
+    pub spec: NodeSpec,
+    pub value: Option<String>,
+    pub handlers: Vec<(String, String)>,
+}
+
+pub(crate) fn spawn_pending_node(commands: &mut Commands, entity: Entity, node: PendingNode) {
+    let Ok(mut e) = commands.get_entity(entity) else {
+        return;
+    };
+    let spec = node.spec;
+    let is_input = spec.tag == "input";
+
+    e.insert((
+        DomNodeMeta {
+            id: node.id,
+            menu_root: node.menu_root,
+            html_id: spec.id.clone(),
+            classes: spec.classes.clone(),
+        },
+        DomHandlers::from_pairs(node.handlers),
+    ));
     if let Some(name) = spec.id.clone() {
         e.insert(Name::new(name));
     }
     if !spec.classes.is_empty() {
         e.insert(ClassList::new_with_classes(spec.classes));
     }
-
-    let is_input = spec.tag == "input";
 
     match spec.tag.as_str() {
         "text" => {
@@ -136,14 +152,19 @@ pub(crate) fn spawn_node_entity(
             e.insert((Node::default(), UiButton, Hovered::default()));
         }
         "input" => {
+            let mut editable = EditableText {
+                cursor_width: 0.3,
+                ..default()
+            };
+            let initial = node.value.unwrap_or_default();
+            if !initial.is_empty() {
+                editable.editor_mut().set_text(&initial);
+            }
             e.insert((
                 Node::default(),
-                MenuTextInput::default(),
+                MenuTextInput(initial),
                 TextInput,
-                EditableText {
-                    cursor_width: 0.3,
-                    ..default()
-                },
+                editable,
                 TextLayout {
                     linebreak: LineBreak::NoWrap,
                     ..default()
@@ -170,8 +191,6 @@ pub(crate) fn spawn_node_entity(
         e.observe(super::events::on_dom_key_input)
             .observe(super::events::on_dom_text_change);
     }
-
-    e.id()
 }
 
 #[cfg(test)]

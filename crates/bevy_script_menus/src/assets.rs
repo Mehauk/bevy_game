@@ -5,7 +5,7 @@ use bevy_mod_scripting::asset::ScriptAsset;
 
 use crate::config::MenuConfig;
 use crate::html::HtmlAsset;
-use crate::lifecycle::{MenuRoot, close_top_menu, open_menu_in_world};
+use crate::lifecycle::{MenuRoot, reload_menu_at};
 use crate::state::MenuManager;
 
 pub(crate) fn resolve_menu_asset(config: &MenuConfig, relative_path: &str) -> Option<String> {
@@ -45,29 +45,26 @@ pub(crate) fn reload_menus_on_asset_change(
         return;
     }
 
-    let modified = q_roots.iter().any(|r| {
-        r.script
-            .as_ref()
-            .is_some_and(|h| modified_scripts.contains(&h.id()))
-            || r.html
-                .as_ref()
-                .is_some_and(|h| modified_html.contains(&h.id()))
-    });
+    let affected: Vec<usize> = manager
+        .entries()
+        .filter(|(_, _, entity)| {
+            q_roots
+                .get(*entity)
+                .is_ok_and(|root| root.tracks(&modified_scripts, &modified_html))
+        })
+        .map(|(pos, _, _)| pos)
+        .collect();
 
-    if modified && manager.any_open() {
-        commands.queue(|world: &mut World| {
-            let names: Vec<String> = world
-                .resource::<MenuManager>()
-                .open_names()
-                .map(str::to_string)
-                .collect();
-            while close_top_menu(world) {}
-            world
-                .resource_mut::<MenuManager>()
-                .bump_reload_generation();
-            for name in names {
-                open_menu_in_world(world, &name);
-            }
-        });
+    if affected.is_empty() {
+        return;
     }
+
+    commands.queue(move |world: &mut World| {
+        for pos in affected {
+            reload_menu_at(world, pos);
+        }
+        world
+            .resource_mut::<MenuManager>()
+            .bump_reload_generation();
+    });
 }

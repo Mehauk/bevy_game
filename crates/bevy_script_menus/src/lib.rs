@@ -23,7 +23,7 @@ use bevy_mod_scripting::core::{BMSScriptingInfrastructurePlugin, callback_labels
 use bevy_mod_scripting::lua::LuaScriptingPlugin;
 
 use assets::reload_menus_on_asset_change;
-use dom::apply_dom_ops;
+use dom::{forget_despawned_node, process_dom_ops};
 use lifecycle::{build_loaded_menu_doms, dispatch_menu_ready, handle_menu_commands};
 
 pub type MenuScriptingPlugin = LuaScriptingPlugin;
@@ -50,6 +50,10 @@ impl Plugin for MenuPlugin {
     fn build(&self, app: &mut App) {
         install_scripting_backends(app);
 
+        app.world_mut()
+            .components_registrator()
+            .register_component::<dom::DomNodeMeta>();
+
         app.init_asset::<HtmlAsset>()
             .register_asset_loader(HtmlLoader)
             .init_resource::<MenuConfig>()
@@ -61,6 +65,7 @@ impl Plugin for MenuPlugin {
             .add_observer(dom::events::on_dom_click)
             .add_observer(dom::events::on_dom_hover_enter)
             .add_observer(dom::events::on_dom_hover_exit)
+            .add_observer(forget_despawned_node)
             .configure_sets(
                 Update,
                 (
@@ -77,8 +82,10 @@ impl Plugin for MenuPlugin {
                 (
                     reload_menus_on_asset_change,
                     handle_menu_commands,
+                    ApplyDeferred,
                     focus::track_and_maintain_menu_focus,
                     build_loaded_menu_doms,
+                    process_dom_ops,
                     dispatch_menu_ready,
                 )
                     .chain()
@@ -94,7 +101,7 @@ impl Plugin for MenuPlugin {
                     .chain()
                     .in_set(MenuSystems::DispatchEvents),
             )
-            .add_systems(Update, apply_dom_ops.in_set(MenuSystems::ApplyDom))
+            .add_systems(Update, process_dom_ops.in_set(MenuSystems::ApplyDom))
             .add_systems(
                 PostUpdate,
                 dom::events::strip_menu_nav_text_edits.before(EditableTextSystems),

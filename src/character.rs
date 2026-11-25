@@ -5,12 +5,21 @@ use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
 use crate::{
-    input::{GameplayContextBundle, GameplayInput, HotkeyLabel, MovementBinding}, terrain::terrain::Terrain, utils::registry::{commands::{CommandAppExt, CommandArgs, CommandOutput, command}, debug_info::{DebugInfoAppExt, debug_info}},
+    input::{GameplayContextBundle, GameplayInput, HotkeyLabel, MovementBinding},
+    utils::{
+        SpawnGroundHeight,
+        registry::{
+            commands::{CommandAppExt, CommandArgs, CommandOutput, command},
+            debug_info::{DebugInfoAppExt, debug_info},
+        },
+    },
 };
 
 pub const CHARACTER_SPAWN_OFFSET_Y: f32 = 1.5;
 pub const CAPSULE_RADIUS: f32 = 0.4;
 pub const CAPSULE_HEIGHT: f32 = 1.0;
+pub const FEET_OFFSET: f32 = CAPSULE_HEIGHT * 0.5 + CAPSULE_RADIUS;
+pub const CAPSULE_TOTAL_HEIGHT: f32 = CAPSULE_HEIGHT + CAPSULE_RADIUS * 2.0;
 
 const GROUND_PROBE_RADIUS: f32 = 0.35;
 const GROUND_PROBE_OFFSET_Y: f32 = -(CAPSULE_HEIGHT * 0.5);
@@ -23,6 +32,20 @@ const SLOPE_SNAP_MAX_SPEED: f32 = 4.0;
 const MIN_GROUND_NORMAL_Y: f32 = 0.01;
 const HORIZ_VEL_EPSILON: f32 = 0.001;
 const DEFAULT_SPEED_DELTA: f32 = 2.0;
+
+const SWIM_ENTER_DEPTH: f32 = 1.15;
+const SWIM_EXIT_DEPTH: f32 = 1.05;
+const FLOAT_TARGET_DEPTH: f32 = 1.2;
+const BREACH_MAX_DEPTH: f32 = 1.5;
+const WADING_SLOWDOWN: f32 = 0.45;
+const SWIM_SPRINT_SCALE: f32 = 1.6;
+const DIVE_TILT: f32 = 0.5;
+const SWIM_TILT: f32 = 0.25;
+const BOB_TILT: f32 = 0.07;
+const BOB_ROLL: f32 = 0.05;
+const BOB_HEIGHT: f32 = 0.05;
+const BOB_FREQ: f32 = 2.0;
+const BOB_FOLLOW: f32 = 12.0;
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CharacterSystems {
@@ -60,6 +83,7 @@ impl Plugin for CharacterPlugin {
 
         debug_info!(app, "Movement State", debug_movement_state);
         debug_info!(app, "Movement Speed", debug_movement_speed);
+        debug_info!(app, "Water Depth", debug_water_depth);
         debug_info!(app, "Position", debug_position);
     }
 }
@@ -96,6 +120,7 @@ pub struct Character {
     pub base_gravity: f32,
     pub fall_gravity: f32,
     pub max_slope_angle_rad: f32,
+    pub water: WaterPhysics,
 }
 
 impl Default for Character {
@@ -111,7 +136,70 @@ impl Default for Character {
             base_gravity: 2.5,
             fall_gravity: 3.5,
             max_slope_angle_rad: 50.0_f32.to_radians(),
+            water: WaterPhysics::default(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WaterPhysics {
+    pub swim_speed: f32,
+    pub swim_accel: f32,
+    pub drag: f32,
+    pub buoy_stiffness: f32,
+    pub buoy_damping: f32,
+    pub buoy_max_accel: f32,
+    pub sink_accel: f32,
+    pub dive_accel: f32,
+}
+
+impl Default for WaterPhysics {
+    fn default() -> Self {
+        Self {
+            swim_speed: 4.0,
+            swim_accel: 10.0,
+            drag: 0.15,
+            buoy_stiffness: 24.0,
+            buoy_damping: 6.0,
+            buoy_max_accel: 24.0,
+            sink_accel: 0.8,
+            dive_accel: 3.0,
+        }
+    }
+}
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct SubmersionState {
+    pub depth: f32,
+    pub water_height: f32,
+}
+
+impl Default for SubmersionState {
+    fn default() -> Self {
+        Self {
+            depth: 0.0,
+            water_height: f32::NEG_INFINITY,
+        }
+    }
+}
+
+impl SubmersionState {
+    pub fn measure(water_height: Option<f32>, center_y: f32) -> Self {
+        let Some(surface) = water_height else {
+            return Self::default();
+        };
+        Self {
+            depth: surface - (center_y - FEET_OFFSET),
+            water_height: surface,
+        }
+    }
+
+    pub fn is_submerged(&self) -> bool {
+        self.depth > 0.0
+    }
+
+    pub fn is_fully_submerged(&self) -> bool {
+        self.depth >= CAPSULE_TOTAL_HEIGHT
     }
 }
 
@@ -132,6 +220,16 @@ pub enum MovementState {
     Running,
     Falling,
     Jumping,
+    Wading,
+    Floating,
+    Swimming,
+    Diving,
+}
+
+impl MovementState {
+    pub fn is_swimming(self) -> bool {
+        matches!(self, Self::Floating | Self::Swimming | Self::Diving)
+    }
 }
 
 impl fmt::Display for MovementState {
@@ -142,6 +240,10 @@ impl fmt::Display for MovementState {
             MovementState::Running => "running",
             MovementState::Falling => "falling",
             MovementState::Jumping => "jumping",
+            MovementState::Wading => "wading",
+            MovementState::Floating => "floating",
+            MovementState::Swimming => "swimming",
+            MovementState::Diving => "diving",
         };
         write!(f, "{name}")
     }
@@ -185,6 +287,14 @@ fn debug_movement_speed(velocities: Query<&LinearVelocity, With<Character>>) -> 
         .map(|velocity| format!("{:.2} m/s", horizontal_speed(velocity.0)))
 }
 
+fn debug_water_depth(submersion: Single<&SubmersionState, With<Character>>) -> Option<String> {
+    Some(if submersion.is_submerged() {
+        format!("{:.2} m", submersion.depth)
+    } else {
+        "dry".to_string()
+    })
+}
+
 fn debug_position(transforms: Query<&Transform, With<Character>>) -> Option<String> {
     transforms.iter().next().map(|transform| {
         let p = transform.translation;
@@ -198,6 +308,7 @@ pub(crate) struct CharacterBody;
 #[derive(Component, Default)]
 pub(crate) struct CameraFacing {
     pub yaw: f32,
+    pub pitch: f32,
     pub first_person: bool,
 }
 
@@ -206,6 +317,30 @@ pub fn camera_relative_direction(move_vec: Vec2, cam_yaw: f32) -> Vec3 {
     let forward = yaw_rot * Vec3::NEG_Z;
     let right = yaw_rot * Vec3::X;
     right * move_vec.x + forward * move_vec.y
+}
+
+pub fn camera_relative_direction_3d(move_vec: Vec2, cam_yaw: f32, cam_pitch: f32) -> Vec3 {
+    let yaw_rot = Quat::from_rotation_y(cam_yaw);
+    let forward = yaw_rot * Quat::from_rotation_x(cam_pitch) * Vec3::NEG_Z;
+    let right = yaw_rot * Vec3::X;
+    right * move_vec.x + forward * move_vec.y
+}
+
+#[derive(Clone, Copy)]
+struct MovementInput {
+    move_vec: Vec2,
+    sprinting: bool,
+    jumping: bool,
+    crouching: bool,
+    yaw: f32,
+    pitch: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Medium {
+    Land,
+    Wading,
+    Water,
 }
 
 fn ground_touch_distance(normal_y: f32) -> f32 {
@@ -258,6 +393,93 @@ fn spawn_translation(ground_height: f32) -> Vec3 {
     Vec3::new(0.0, ground_height + CHARACTER_SPAWN_OFFSET_Y, 0.0)
 }
 
+fn swim_latch(depth: f32, was_swimming: bool) -> bool {
+    if was_swimming {
+        depth > SWIM_EXIT_DEPTH
+    } else {
+        depth >= SWIM_ENTER_DEPTH
+    }
+}
+
+fn classify_medium(depth: f32, was_swimming: bool) -> Medium {
+    if swim_latch(depth, was_swimming) {
+        Medium::Water
+    } else if depth > 0.0 {
+        Medium::Wading
+    } else {
+        Medium::Land
+    }
+}
+
+fn wading_scale(depth: f32) -> f32 {
+    let sunk = (depth / SWIM_ENTER_DEPTH).clamp(0.0, 1.0);
+    1.0 - WADING_SLOWDOWN * sunk
+}
+
+fn breach_fires(
+    jumping: bool,
+    held_last_frame: bool,
+    grounded: bool,
+    cooldown_left: f32,
+    depth: f32,
+) -> bool {
+    jumping && !held_last_frame && grounded && cooldown_left <= 0.0 && depth <= BREACH_MAX_DEPTH
+}
+
+fn buoyancy_accel(water: &WaterPhysics, depth: f32, vertical_velocity: f32) -> f32 {
+    let lift = water.buoy_stiffness * (depth - FLOAT_TARGET_DEPTH).max(0.0);
+    (lift - water.buoy_damping * vertical_velocity).clamp(-water.buoy_max_accel, water.buoy_max_accel)
+}
+
+fn drag_toward_zero(value: f32, drag: f32, dt: f32) -> f32 {
+    let loss = drag * value * value * dt;
+    if loss >= value.abs() {
+        0.0
+    } else {
+        value - value.signum() * loss
+    }
+}
+
+fn sprint_scale(sprinting: bool) -> f32 {
+    if sprinting {
+        SWIM_SPRINT_SCALE
+    } else {
+        1.0
+    }
+}
+
+fn classify_wading_state(state: MovementState) -> MovementState {
+    match state {
+        MovementState::Standing | MovementState::Walking | MovementState::Running => {
+            MovementState::Wading
+        }
+        other => other,
+    }
+}
+
+fn classify_water_state(diving: bool, ascending: bool) -> MovementState {
+    if diving {
+        MovementState::Diving
+    } else if ascending {
+        MovementState::Floating
+    } else {
+        MovementState::Swimming
+    }
+}
+
+fn body_tilt(state: MovementState, horiz_speed: f32, swim_speed: f32, time: f32) -> (f32, f32) {
+    let effort = (horiz_speed / swim_speed.max(HORIZ_VEL_EPSILON)).clamp(0.0, 1.0);
+    match state {
+        MovementState::Diving => (-DIVE_TILT * (0.4 + 0.6 * effort), 0.0),
+        MovementState::Swimming => (-SWIM_TILT * effort, 0.0),
+        MovementState::Floating => (
+            (time * BOB_FREQ).sin() * BOB_TILT,
+            (time * BOB_FREQ * 0.5).sin() * BOB_ROLL,
+        ),
+        _ => (0.0, 0.0),
+    }
+}
+
 fn setup_character(world: &mut World) {
     let capsule_mesh = world
         .resource_mut::<Assets<Mesh>>()
@@ -276,8 +498,11 @@ fn setup_character(world: &mut World) {
         require_reset: true,
         ..default()
     };
-    let spawn_translation =
-        spawn_translation(world.get_resource::<Terrain>().map_or(0.0, |h| h.sample_ground_height(0.0, 0.0)));
+    let spawn_translation = spawn_translation(
+        world
+            .get_resource::<SpawnGroundHeight>()
+            .map_or(0.0, |height| height.0),
+    );
 
     let mut char_entity = world
         .spawn_scene(bsn! {
@@ -363,6 +588,7 @@ fn setup_character(world: &mut World) {
             GravityScale(Character::default().base_gravity),
             GroundState::default(),
             MovementState::default(),
+            SubmersionState::default(),
             TransformInterpolation,
             ShapeCaster::new(
                 Collider::sphere(GROUND_PROBE_RADIUS),
@@ -438,32 +664,80 @@ fn character_physics_move(
     move_action: Single<&Action<Move>>,
     sprint_action: Single<&Action<Sprint>>,
     jump_action: Single<&Action<Jump>>,
+    crouch_action: Single<&Action<Crouch>>,
     facing: Single<&CameraFacing>,
     character_query: Single<(
         &Character,
         &mut GroundState,
+        &SubmersionState,
         &mut LinearVelocity,
         &mut GravityScale,
         &mut MovementState,
     )>,
 ) {
-    let (character, mut ground, mut velocity, mut gravity_scale, mut movement_state) =
+    let (character, mut ground, submersion, mut velocity, mut gravity_scale, mut movement_state) =
         character_query.into_inner();
     let dt = time.delta_secs();
 
-    let move_vec = ***move_action;
-    let sprinting = ***sprint_action;
-    let jumping = ***jump_action;
-    let cam_yaw = facing.yaw;
+    let input = MovementInput {
+        move_vec: ***move_action,
+        sprinting: ***sprint_action,
+        jumping: ***jump_action,
+        crouching: ***crouch_action,
+        yaw: facing.yaw,
+        pitch: facing.pitch,
+    };
 
-    let move_dir = camera_relative_direction(move_vec, cam_yaw).normalize_or_zero();
+    let next_state = match classify_medium(submersion.depth, movement_state.is_swimming()) {
+        Medium::Water => move_in_water(
+            character,
+            &mut ground,
+            submersion,
+            &input,
+            &mut velocity,
+            &mut gravity_scale,
+            dt,
+        ),
+        Medium::Wading => classify_wading_state(move_on_ground(
+            character,
+            &mut ground,
+            &input,
+            &mut velocity,
+            &mut gravity_scale,
+            dt,
+            wading_scale(submersion.depth),
+        )),
+        Medium::Land => move_on_ground(
+            character,
+            &mut ground,
+            &input,
+            &mut velocity,
+            &mut gravity_scale,
+            dt,
+            1.0,
+        ),
+    };
 
-    let target_speed = if sprinting {
+    ground.jump_held_last_frame = input.jumping;
+    *movement_state = next_state;
+}
+
+fn move_on_ground(
+    character: &Character,
+    ground: &mut GroundState,
+    input: &MovementInput,
+    velocity: &mut LinearVelocity,
+    gravity_scale: &mut GravityScale,
+    dt: f32,
+    speed_scale: f32,
+) -> MovementState {
+    let move_dir = camera_relative_direction(input.move_vec, input.yaw).normalize_or_zero();
+    let base_speed = if input.sprinting {
         character.sprint_speed
     } else {
         character.walk_speed
     };
-    let target_horiz = move_dir * target_speed;
+    let target_horiz = move_dir * base_speed * speed_scale;
 
     let accel = if ground.is_grounded {
         character.acceleration
@@ -477,12 +751,12 @@ fn character_physics_move(
     velocity.z = new_horiz.z;
 
     if jump_fires(
-        jumping,
+        input.jumping,
         ground.jump_held_last_frame,
         ground.is_grounded,
         ground.jump_cooldown_timer,
     ) {
-        velocity.y = character.jump_speed;
+        velocity.y = character.jump_speed * speed_scale;
         ground.is_grounded = false;
         ground.jump_cooldown_timer = character.jump_cooldown;
         gravity_scale.0 = character.base_gravity;
@@ -498,17 +772,83 @@ fn character_physics_move(
             velocity.y = 0.0;
         }
     } else {
-        gravity_scale.0 = air_gravity_scale(velocity.y, jumping, character);
+        gravity_scale.0 = air_gravity_scale(velocity.y, input.jumping, character);
     }
 
-    ground.jump_held_last_frame = jumping;
-
-    *movement_state = classify_movement_state(
+    classify_movement_state(
         ground.is_grounded,
         horizontal_speed(velocity.0),
         velocity.y,
-        sprinting,
+        input.sprinting,
+    )
+}
+
+fn move_in_water(
+    character: &Character,
+    ground: &mut GroundState,
+    submersion: &SubmersionState,
+    input: &MovementInput,
+    velocity: &mut LinearVelocity,
+    gravity_scale: &mut GravityScale,
+    dt: f32,
+) -> MovementState {
+    let water = &character.water;
+    gravity_scale.0 = 0.0;
+
+    if breach_fires(
+        input.jumping,
+        ground.jump_held_last_frame,
+        ground.is_grounded,
+        ground.jump_cooldown_timer,
+        submersion.depth,
+    ) {
+        velocity.y = character.jump_speed;
+        ground.is_grounded = false;
+        ground.jump_cooldown_timer = character.jump_cooldown;
+        return MovementState::Jumping;
+    }
+
+    let diving = input.crouching || submersion.is_fully_submerged();
+    let steer = if diving {
+        camera_relative_direction_3d(input.move_vec, input.yaw, input.pitch)
+    } else {
+        camera_relative_direction(input.move_vec, input.yaw)
+    }
+    .normalize_or_zero();
+
+    let speed = water.swim_speed * sprint_scale(input.sprinting);
+    let moved = accelerate_toward(
+        Vec3::new(velocity.x, 0.0, velocity.z),
+        Vec3::new(steer.x, 0.0, steer.z) * speed,
+        water.swim_accel,
+        dt,
     );
+    velocity.x = moved.x;
+    velocity.z = moved.z;
+
+    if diving {
+        velocity.y += steer.y * water.swim_accel * dt;
+    }
+
+    if input.jumping {
+        velocity.y += buoyancy_accel(water, submersion.depth, velocity.y) * dt;
+    } else if input.crouching {
+        velocity.y -= water.dive_accel * sprint_scale(input.sprinting) * dt;
+    } else {
+        velocity.y -= water.sink_accel * dt;
+    }
+
+    velocity.0 = Vec3::new(
+        drag_toward_zero(velocity.x, water.drag, dt),
+        drag_toward_zero(velocity.y, water.drag, dt),
+        drag_toward_zero(velocity.z, water.drag, dt),
+    );
+
+    if ground.is_grounded && !input.jumping && velocity.y < 0.0 {
+        velocity.y = 0.0;
+    }
+
+    classify_water_state(diving, input.jumping)
 }
 
 fn character_rotate_body(
@@ -517,33 +857,51 @@ fn character_rotate_body(
     align_action: Single<&Action<AlignToCamera>>,
     facing: Single<&CameraFacing>,
     character: Single<&Character>,
+    velocity: Single<&LinearVelocity, With<Character>>,
+    movement_state: Single<&MovementState, With<Character>>,
     mut body_transform: Single<&mut Transform, (With<CharacterBody>, Without<Character>)>,
 ) {
-    let move_vec = ***move_action;
-    let alt_held = ***align_action;
+    let dt = time.delta_secs();
+    let turn_alpha = (character.turn_speed * dt).min(1.0);
     let cam_yaw = facing.yaw;
     let yaw_rot = Quat::from_rotation_y(cam_yaw);
 
-    let first_person = facing.first_person;
-    if first_person {
+    if facing.first_person {
         body_transform.rotation = yaw_rot;
+        body_transform.translation = Vec3::ZERO;
         return;
     }
 
-    if alt_held {
-        let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
-        body_transform.rotation = body_transform.rotation.slerp(yaw_rot, turn_alpha);
-        return;
-    }
+    let current_yaw = Quat::from_rotation_y(body_transform.rotation.to_euler(EulerRot::YXZ).0);
+    let direction = camera_relative_direction(***move_action, cam_yaw);
 
-    let direction = camera_relative_direction(move_vec, cam_yaw);
-    if direction != Vec3::ZERO {
+    let heading = if ***align_action {
+        yaw_rot
+    } else if direction != Vec3::ZERO {
         let move_dir = direction.normalize();
-        let target_yaw = (-move_dir.x).atan2(-move_dir.z);
-        let target_rot = Quat::from_rotation_y(target_yaw);
-        let turn_alpha = (character.turn_speed * time.delta_secs()).min(1.0);
-        body_transform.rotation = body_transform.rotation.slerp(target_rot, turn_alpha);
-    }
+        Quat::from_rotation_y((-move_dir.x).atan2(-move_dir.z))
+    } else {
+        current_yaw
+    };
+
+    let (pitch_tilt, roll_tilt) = body_tilt(
+        **movement_state,
+        horizontal_speed(velocity.0),
+        character.water.swim_speed,
+        time.elapsed_secs(),
+    );
+    let target = current_yaw
+        .slerp(heading, turn_alpha)
+        * Quat::from_rotation_x(pitch_tilt)
+        * Quat::from_rotation_z(roll_tilt);
+    body_transform.rotation = body_transform.rotation.slerp(target, turn_alpha);
+
+    let bob = if movement_state.is_swimming() {
+        (time.elapsed_secs() * BOB_FREQ).sin() * BOB_HEIGHT
+    } else {
+        0.0
+    };
+    body_transform.translation.y = body_transform.translation.y.lerp(bob, (BOB_FOLLOW * dt).min(1.0));
 }
 
 fn sync_body_visibility(
@@ -561,7 +919,7 @@ fn sync_body_visibility(
 }
 
 fn respawn_character(
-    terrain: Res<Terrain>,
+    spawn_ground: Res<SpawnGroundHeight>,
     query: Single<(
         &mut Transform,
         &mut LinearVelocity,
@@ -573,7 +931,7 @@ fn respawn_character(
 ) {
     let (mut transform, mut velocity, mut ground, mut gravity, mut movement_state, character) =
         query.into_inner();
-    transform.translation = spawn_translation(terrain.sample_ground_height(0.0, 0.0));
+    transform.translation = spawn_translation(spawn_ground.0);
     velocity.0 = Vec3::ZERO;
     *ground = GroundState::default();
     *movement_state = MovementState::default();
@@ -767,5 +1125,190 @@ mod tests {
         let mid = slope_snap_speed(0.1);
         assert!(mid > 0.0 && mid < SLOPE_SNAP_MAX_SPEED, "should ramp between the bounds");
         assert_eq!(slope_snap_speed(100.0), SLOPE_SNAP_MAX_SPEED, "must cap, or steps slam");
+    }
+
+    #[test]
+    fn the_capsule_is_one_metre_eight_tall() {
+        assert!((CAPSULE_TOTAL_HEIGHT - 1.8).abs() < 1e-6);
+        assert!((FEET_OFFSET - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn swim_latch_needs_more_depth_to_leave_than_to_enter() {
+        assert!(!swim_latch(SWIM_ENTER_DEPTH - 0.01, false));
+        assert!(swim_latch(SWIM_ENTER_DEPTH, false));
+        assert!(
+            swim_latch(SWIM_EXIT_DEPTH + 0.01, true),
+            "draining through the band keeps you swimming"
+        );
+        assert!(
+            !swim_latch(SWIM_EXIT_DEPTH, true),
+            "once shallow enough you stand again"
+        );
+    }
+
+    #[test]
+    fn medium_splits_land_wading_and_water() {
+        assert_eq!(classify_medium(-0.5, false), Medium::Land);
+        assert_eq!(classify_medium(0.0, false), Medium::Land);
+        assert_eq!(classify_medium(0.5, false), Medium::Wading);
+        assert_eq!(classify_medium(SWIM_ENTER_DEPTH, false), Medium::Water);
+        assert_eq!(classify_medium(1.1, false), Medium::Wading);
+        assert_eq!(classify_medium(1.1, true), Medium::Water);
+    }
+
+    #[test]
+    fn wading_slows_the_deeper_you_are() {
+        assert_eq!(wading_scale(0.0), 1.0, "dry shoes are unbothered");
+        let knee = wading_scale(0.5);
+        let chest = wading_scale(1.0);
+        assert!(knee > chest, "deeper is slower");
+        assert!(chest > 1.0 - WADING_SLOWDOWN);
+        assert!(
+            (wading_scale(99.0) - (1.0 - WADING_SLOWDOWN)).abs() < 1e-6,
+            "the ramp bottoms out instead of going negative"
+        );
+    }
+
+    #[test]
+    fn buoyancy_lifts_only_from_below_the_float_line() {
+        let water = WaterPhysics::default();
+        assert_eq!(buoyancy_accel(&water, FLOAT_TARGET_DEPTH, 0.0), 0.0);
+        assert!(
+            buoyancy_accel(&water, FLOAT_TARGET_DEPTH - 0.3, 0.0) <= 0.0,
+            "buoyancy never pulls you under"
+        );
+        assert!(buoyancy_accel(&water, 2.0, 0.0) > 0.0, "deep means lifted");
+        assert_eq!(
+            buoyancy_accel(&water, 100.0, 0.0),
+            water.buoy_max_accel,
+            "a hard clamp stops the spring launching you"
+        );
+        assert!(
+            buoyancy_accel(&water, FLOAT_TARGET_DEPTH, 5.0) < 0.0,
+            "damping opposes a rise"
+        );
+    }
+
+    #[test]
+    fn drag_bleeds_speed_without_crossing_zero() {
+        assert_eq!(drag_toward_zero(0.0, 0.15, 0.016), 0.0);
+
+        let plunge = drag_toward_zero(10.0, 0.15, 1.0 / 64.0);
+        assert!(plunge > 0.0 && plunge < 9.9, "a fast entry bleeds hard");
+
+        let glide = drag_toward_zero(0.2, 0.15, 1.0 / 64.0);
+        assert!(glide > 0.0 && glide < 0.2, "a slow glide still loses something");
+        assert!(
+            plunge / 10.0 < glide / 0.2,
+            "drag bites harder the faster you go"
+        );
+
+        assert!(drag_toward_zero(-10.0, 0.15, 1.0 / 64.0) > -10.0);
+        assert_eq!(
+            drag_toward_zero(0.01, 0.15, 1000.0),
+            0.0,
+            "a step bigger than the speed stops at zero, never past it"
+        );
+    }
+
+    #[test]
+    fn breach_needs_ground_shallow_water_and_a_fresh_press() {
+        assert!(breach_fires(true, false, true, 0.0, 1.0));
+        assert!(!breach_fires(true, true, true, 0.0, 1.0), "held is not a press");
+        assert!(
+            !breach_fires(true, false, false, 0.0, 1.0),
+            "nothing to push off"
+        );
+        assert!(!breach_fires(true, false, true, 0.1, 1.0), "cooldown pending");
+        assert!(
+            !breach_fires(true, false, true, 0.0, BREACH_MAX_DEPTH + 0.1),
+            "too deep to breach"
+        );
+    }
+
+    #[test]
+    fn water_states_split_on_input_and_depth() {
+        assert_eq!(classify_water_state(true, true), MovementState::Diving);
+        assert_eq!(classify_water_state(false, true), MovementState::Floating);
+        assert_eq!(classify_water_state(false, false), MovementState::Swimming);
+    }
+
+    #[test]
+    fn submersion_measures_from_the_capsule_feet() {
+        let waist = SubmersionState::measure(Some(0.0), 0.0);
+        assert!((waist.depth - FEET_OFFSET).abs() < 1e-6);
+        assert_eq!(waist.water_height, 0.0);
+        assert!(waist.is_submerged());
+        assert!(!waist.is_fully_submerged());
+
+        let sunk = SubmersionState::measure(Some(0.0), -CAPSULE_TOTAL_HEIGHT);
+        assert!(sunk.is_fully_submerged());
+
+        let dry = SubmersionState::measure(None, -20.0);
+        assert!(!dry.is_submerged());
+        assert_eq!(dry.water_height, f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn diving_tilts_the_body_nose_down() {
+        let (dive, _) = body_tilt(MovementState::Diving, 4.0, 4.0, 0.0);
+        let (swim, _) = body_tilt(MovementState::Swimming, 4.0, 4.0, 0.0);
+        let (idle_swim, _) = body_tilt(MovementState::Swimming, 0.0, 4.0, 0.0);
+        let (stand, roll) = body_tilt(MovementState::Standing, 0.0, 4.0, 0.0);
+        assert!(dive < 0.0, "diving pitches forward");
+        assert!(swim < 0.0, "swimming pitches forward");
+        assert!(dive < swim, "diving tilts harder than swimming");
+        assert_eq!(idle_swim, 0.0, "treading does not pitch");
+        assert_eq!((stand, roll), (0.0, 0.0), "standing stays flat");
+    }
+
+    #[test]
+    fn floating_bobs_instead_of_holding_still() {
+        let (low, _) = body_tilt(MovementState::Floating, 0.0, 4.0, 0.0);
+        let (high, _) = body_tilt(MovementState::Floating, 0.0, 4.0, std::f32::consts::FRAC_PI_4 / BOB_FREQ);
+        assert!(high > low, "the bob swings through its cycle");
+    }
+
+    #[test]
+    fn pitch_steers_the_dive_vector() {
+        let level = camera_relative_direction_3d(Vec2::new(0.0, 1.0), 0.0, 0.0);
+        assert!(level.y.abs() < 1e-6, "level camera stays horizontal");
+
+        let down = camera_relative_direction_3d(Vec2::new(0.0, 1.0), 0.0, -0.5);
+        assert!(down.y < 0.0 && down.z < 0.0, "looking down drives you down");
+
+        let up = camera_relative_direction_3d(Vec2::new(0.0, 1.0), 0.0, 0.5);
+        assert!(up.y > 0.0, "looking up drives you up");
+
+        let turned = camera_relative_direction_3d(Vec2::new(0.0, 1.0), 90f32.to_radians(), -0.5);
+        assert!(turned.x < -0.5 && turned.y < 0.0, "yaw still steers");
+    }
+
+    #[test]
+    fn water_movement_states_display_lowercase() {
+        assert_eq!(MovementState::Wading.to_string(), "wading");
+        assert_eq!(MovementState::Floating.to_string(), "floating");
+        assert_eq!(MovementState::Swimming.to_string(), "swimming");
+        assert_eq!(MovementState::Diving.to_string(), "diving");
+    }
+
+    #[test]
+    fn only_the_fluid_states_count_as_swimming() {
+        assert!(MovementState::Floating.is_swimming());
+        assert!(MovementState::Swimming.is_swimming());
+        assert!(MovementState::Diving.is_swimming());
+        assert!(!MovementState::Wading.is_swimming(), "wading keeps its footing");
+        assert!(!MovementState::Walking.is_swimming());
+        assert!(!MovementState::Jumping.is_swimming());
+    }
+
+    #[test]
+    fn wading_relabels_only_the_grounded_states() {
+        assert_eq!(classify_wading_state(MovementState::Standing), MovementState::Wading);
+        assert_eq!(classify_wading_state(MovementState::Walking), MovementState::Wading);
+        assert_eq!(classify_wading_state(MovementState::Running), MovementState::Wading);
+        assert_eq!(classify_wading_state(MovementState::Jumping), MovementState::Jumping);
+        assert_eq!(classify_wading_state(MovementState::Falling), MovementState::Falling);
     }
 }

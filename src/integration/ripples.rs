@@ -2,11 +2,10 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use bevy_shader_kit::WaterMaterial;
 
-use crate::character::{CAPSULE_HEIGHT, CAPSULE_RADIUS, Character};
+use crate::character::{CAPSULE_RADIUS, Character, FEET_OFFSET};
 use crate::ripples::{RippleField, RippleSystems};
 use crate::terrain::{WaterHeightSource, WaterSurface};
 
-const FEET_OFFSET: f32 = CAPSULE_HEIGHT * 0.5 + CAPSULE_RADIUS;
 const HULL_RADIUS: f32 = CAPSULE_RADIUS + 0.15;
 const SUBMERGE_MARGIN: f32 = 0.05;
 const WAKE_MIN_SPEED: f32 = 1.2;

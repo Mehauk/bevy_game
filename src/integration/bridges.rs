@@ -35,6 +35,7 @@ pub(super) fn register(app: &mut App) {
 
 fn sync_camera_facing(rig: Single<&CameraRig>, mut facing: Single<&mut CameraFacing>) {
     facing.yaw = rig.yaw;
+    facing.pitch = rig.pitch;
     facing.first_person = rig.view_mode == ViewMode::FirstPerson;
 }
 

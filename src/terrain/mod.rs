@@ -3,6 +3,7 @@ use bevy::prelude::*;
 
 use crate::{
     terrain::terrain::Terrain,
+    utils::SpawnGroundHeight,
     utils::registry::commands::{CommandAppExt, command},
 };
 
@@ -24,8 +25,13 @@ pub struct TerrainPlugin;
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainFog>()
-            .init_resource::<Terrain>()
-            .add_systems(
+            .init_resource::<Terrain>();
+        let spawn_ground = app
+            .world()
+            .resource::<Terrain>()
+            .sample_ground_height(0.0, 0.0);
+        app.insert_resource(SpawnGroundHeight(spawn_ground));
+        app.add_systems(
                 Startup,
                 (setup_terrain, setup_atmosphere, water::setup_water_surface),
             )

@@ -12,6 +12,7 @@ mod menu_wiring;
 mod post_process;
 mod ripples;
 mod state_pause;
+mod submersion;
 
 pub struct IntegrationPlugin;
 
@@ -45,5 +46,6 @@ impl Plugin for IntegrationPlugin {
         distance_field::register(app);
         ripples::register(app);
         state_pause::register(app);
+        submersion::register(app);
     }
 }

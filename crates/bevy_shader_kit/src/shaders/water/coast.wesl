@@ -1,11 +1,11 @@
-import package::shaders::water::swell_types::{ShoreContext, shore_factor, swell_amplitude_span, swell_height, swell_height_shored};
+import package::shaders::water::swell_types::{ShoreContext, shore_factor, swell_amplitude_span, swell_height_shored};
 import package::shaders::water::swells::swells;
 import package::shaders::water::types::water;
 
-const COAST_SWASH_RUNUP: f32 = 0.15;
-const COAST_SWASH_TUCK: f32 = -0.15;
 const COAST_SWASH_BLEND: f32 = 1.5;
-const COAST_WET_DEPTH: f32 = 0.25;
+const COAST_TROUGH_CLEARANCE: f32 = 0.03;
+const COAST_SPAN_FLOOR: f32 = 0.05;
+const COAST_SHOAL_MAX: f32 = 2.5;
 const COAST_BLUR_TEXELS: f32 = 4.0;
 
 struct CoastField {
@@ -80,25 +80,23 @@ fn shore_context_at(world_xz: vec2<f32>) -> ShoreContext {
     return shore;
 }
 
+fn swell_span() -> f32 {
+    return max(swell_amplitude_span(swells), COAST_SPAN_FLOOR);
+}
+
+fn max_crest_height() -> f32 {
+    return swell_span() * COAST_SHOAL_MAX * (0.5 + water.wave_energy);
+}
+
 fn coastal_wash_mask(shore: ShoreContext, swell: f32) -> f32 {
-    let span = max(swell_amplitude_span(swells), 0.05);
-    return clamp(0.5 + 0.5 * swell / span, 0.0, 1.0);
+    return clamp(0.5 + 0.5 * swell / swell_span(), 0.0, 1.0);
 }
 
 fn coastal_surface_y(rest_xz: vec2<f32>, time: f32) -> f32 {
     let shore = shore_context_at(rest_xz);
-    let terrain_y = water.water_height - shore.rest_depth;
     let swell = swell_height_shored(swells, rest_xz, time, shore);
-    let offshore_y = water.water_height + swell;
-    let wet = smoothstep(0.0, COAST_WET_DEPTH, shore.rest_depth);
-    let wash = mix(
-        COAST_SWASH_TUCK,
-        COAST_SWASH_RUNUP,
-        coastal_wash_mask(shore, swell_height(swells, rest_xz, time)) * wet,
-    );
-    let near_land = 1.0 - smoothstep(0.0, COAST_SWASH_BLEND, shore.rest_depth);
-    let sheet = mix(offshore_y, terrain_y + wash, near_land);
-    return mix(sheet, offshore_y, wet);
+    let trough_floor = -max(shore.rest_depth - COAST_TROUGH_CLEARANCE, 0.0);
+    return water.water_height + max(swell, trough_floor);
 }
 
 fn coastal_normal(rest_xz: vec2<f32>, time: f32) -> vec3<f32> {

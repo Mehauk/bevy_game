@@ -61,13 +61,16 @@ impl SeaState {
 
     pub fn shore_surface_height_at(&self, terrain: &Terrain, x: f32, z: f32, time: f32) -> f32 {
         let shore = shore_context(terrain, self, x, z);
-        self.sea_level + self.swells.height_at_shored(x, z, time, shore)
+        let swell = self.swells.height_at_shored(x, z, time, shore);
+        let trough_floor = -(shore.rest_depth - TROUGH_CLEARANCE).max(0.0);
+        self.sea_level + swell.max(trough_floor)
     }
 }
 
 const SEA_SUBDIVISIONS: u32 = 256;
 const EMPTY_SDF: f32 = 1.0e6;
 const SWASH_RUNUP: f32 = 0.15;
+const TROUGH_CLEARANCE: f32 = 0.03;
 const WETNESS_DECAY: f32 = 0.01;
 
 const SWELLS: SwellSet = SwellSet {
@@ -299,8 +302,6 @@ pub(super) fn set_wave_energy(
 mod tests {
     use super::*;
 
-    const SWELL_SPAN: f32 = 0.225;
-
     #[test]
     fn a_flat_swell_set_rests_on_the_sea_level() {
         let sea = SeaState {
@@ -317,11 +318,12 @@ mod tests {
             sea_level: 2.0,
             ..default()
         };
+        let span = sea.swells.amplitude_span();
         for step in 0..12 {
             let time = step as f32 * 0.7;
             let height = sea.surface_height_at(12.0, -30.0, time);
             assert!(
-                (height - sea.sea_level).abs() <= SWELL_SPAN + 1.0e-3,
+                (height - sea.sea_level).abs() <= span + 1.0e-3,
                 "the surface at t={time} left the swell envelope"
             );
         }
@@ -335,10 +337,31 @@ mod tests {
             sea_level: ground - 1.0,
             ..default()
         };
-        assert_eq!(
-            sea.shore_surface_height_at(&terrain, 0.0, 0.0, 3.0),
-            sea.sea_level,
-            "shoaling damps the swell to nothing once the ground breaks the surface"
-        );
+        for step in 0..24 {
+            let time = step as f32 * 0.35;
+            assert_eq!(
+                sea.shore_surface_height_at(&terrain, 0.0, 0.0, time),
+                sea.sea_level,
+                "shoaling damps the swell to nothing once the ground breaks the surface (t={time})"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trough_never_opens_below_the_seabed() {
+        let terrain = Terrain::default();
+        let ground = terrain.sample_ground_height(0.0, 0.0);
+        let sea = SeaState {
+            sea_level: ground + 0.2,
+            wave_energy: 1.0,
+            ..default()
+        };
+        for step in 0..24 {
+            let time = step as f32 * 0.35;
+            assert!(
+                sea.shore_surface_height_at(&terrain, 0.0, 0.0, time) >= ground,
+                "a trough at t={time} dropped below the seabed"
+            );
+        }
     }
 }

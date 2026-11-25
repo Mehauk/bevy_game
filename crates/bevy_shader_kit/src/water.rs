@@ -131,6 +131,14 @@ pub struct SwellSet {
 }
 
 impl SwellSet {
+    pub fn amplitude_span(&self) -> f32 {
+        self.waves
+            .iter()
+            .take(self.count as usize)
+            .map(|wave| wave.amplitude)
+            .sum()
+    }
+
     pub fn offset_at(&self, x: f32, z: f32, time: f32) -> Vec3 {
         let point = Vec2::new(x, z);
         let mut offset = Vec3::ZERO;

@@ -9,7 +9,7 @@ import package::shaders::noise::fbm2d::scrolling_fbm_2d;
 import package::shaders::sdf::volume::volume_sample_world;
 import package::shaders::water::body::{body_sdf, body_volume};
 import package::shaders::water::coast::{
-    COAST_SWASH_BLEND, COAST_SWASH_RUNUP, coastal_wash_mask, shore_context_at, spill_height_at,
+    COAST_SWASH_BLEND, coastal_wash_mask, max_crest_height, shore_context_at, spill_height_at,
     terrain_height_at,
 };
 import package::shaders::water::swell_types::swell_height_shored;
@@ -46,7 +46,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     var coast_rest_depth: f32 = 1.0e6;
     @if(WATER_COAST) {
         let terrain_y = terrain_height_at(ctx.p.xz);
-        if (water.water_height + COAST_SWASH_RUNUP < spill_height_at(ctx.p.xz)) {
+        if (water.water_height + max_crest_height() < spill_height_at(ctx.p.xz)) {
             discard;
         }
         coast_rest_depth = water.water_height - terrain_y;

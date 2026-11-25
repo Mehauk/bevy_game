@@ -55,8 +55,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     out.color = apply_pbr_lighting(pbr_input);
 
     @if(WATER_OPTICS) {
-        let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.scattering, water.absorption, water.sun_direction, water.sun_illuminance, water.ambient_illuminance, water.phase_g);
-        out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);
+        if (front) {
+            let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.scattering, water.absorption, water.sun_direction, water.sun_illuminance, water.ambient_illuminance, water.phase_g);
+            out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);
+        }
     }
 
     @if(WATER_FOAM) {

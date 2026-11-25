@@ -7,8 +7,12 @@ use bevy::{
 
 pub mod compose;
 pub mod field;
+pub mod post_process;
+pub mod underwater;
 pub mod water;
 
+pub use post_process::{PostProcessEffect, PostProcessPlugin};
+pub use underwater::UnderwaterPostProcess;
 pub use field::{
     DistanceFieldViewExt, DistanceFieldViewMaterial, DistanceFieldViewUniform, SdfVolume,
 };
@@ -42,10 +46,13 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/foam.wesl");
         load_shader_library!(app, "shaders/water/ripples.wesl");
         load_shader_library!(app, "shaders/water/optics.wesl");
+        load_shader_library!(app, "shaders/post_process/bindings.wesl");
         embedded_asset!(app, "shaders/sdf/view_mode.wesl");
         embedded_asset!(app, "shaders/water/water.wesl");
+        embedded_asset!(app, "shaders/post_process/underwater.wesl");
 
         app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
+            .add_plugins(PostProcessPlugin::<UnderwaterPostProcess>::default())
             .init_resource::<DynamicShaderRegistry>()
             .add_systems(Update, rebuild_dynamic_shaders);
     }

@@ -273,7 +273,7 @@ pub fn water_blueprint() -> ShaderBlueprint {
             BlueprintSegment::Text("    @if(WATER_OPTICS) {\n"),
             BlueprintSegment::Slot {
                 hook: ShaderHook::VolumeOptics,
-                default: "        let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.scattering, water.absorption, water.sun_direction, water.sun_illuminance, water.ambient_illuminance, water.phase_g);\n        out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);\n",
+                default: "        if (front) {\n            let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.scattering, water.absorption, water.sun_direction, water.sun_illuminance, water.ambient_illuminance, water.phase_g);\n            out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);\n        }\n",
             },
             BlueprintSegment::Text("    }\n\n    @if(WATER_FOAM) {\n        if (ctx.foam > 0.0) {\n"),
             BlueprintSegment::Slot {

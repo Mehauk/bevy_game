@@ -9,6 +9,7 @@ mod bridges;
 mod distance_field;
 mod menu_callbacks;
 mod menu_wiring;
+mod post_process;
 mod ripples;
 mod state_pause;
 
@@ -39,6 +40,7 @@ impl Plugin for IntegrationPlugin {
 
         menu_callbacks::register(app);
         menu_wiring::register(app);
+        post_process::register(app);
         bridges::register(app);
         distance_field::register(app);
         ripples::register(app);

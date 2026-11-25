@@ -1,5 +1,0 @@
-- [ ] floating using space while in water
-- [ ] sinking if let go
-- [ ] swimging if moving while floating
-- [ ] diving with ctrl
-- [ ] diving from th sky if falling into deep enough water by holding ctrl

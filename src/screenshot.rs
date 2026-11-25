@@ -46,6 +46,9 @@ struct PendingCapture {
     path: PathBuf,
 }
 
+#[derive(Component)]
+pub struct ScreenshotCaptureCamera;
+
 type CaptureCameras<'w, 's> = Query<
     'w,
     's,
@@ -161,6 +164,7 @@ fn handle_capture_requests(
                 capture_camera.is_active = true;
                 let mut capture = commands.spawn((
                     Name::new("ScreenshotCaptureCamera"),
+                    ScreenshotCaptureCamera,
                     Camera3d::default(),
                     capture_camera,
                     projection.clone(),

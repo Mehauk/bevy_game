@@ -1,0 +1,4 @@
+- [ ] floating using space while in water
+- [ ] swiming/fast swiming if moving or shift moving while floating
+- [ ] diving/fast diving oriented correctly and moving or shift moving
+- [ ] sinking otherwise

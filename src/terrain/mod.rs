@@ -10,13 +10,12 @@ mod atmosphere;
 pub mod terrain;
 mod water;
 
+pub use water::{WaterHeightSource, WaterSurface};
 pub(crate) use atmosphere::SkyBox;
 use atmosphere::{
     TerrainFog, setup_atmosphere, sync_terrain_fog, toggle_atmospheric_fog,
     toggle_fog_light_influence,
 };
-pub use water::{WaterHeightSource, WaterSurface};
-
 #[derive(Component)]
 pub struct TerrainSurface;
 
@@ -30,7 +29,10 @@ impl Plugin for TerrainPlugin {
                 Startup,
                 (setup_terrain, setup_atmosphere, water::setup_water_surface),
             )
-            .add_systems(Update, sync_terrain_fog);
+            .add_systems(
+                Update,
+                (sync_terrain_fog, water::sync_water_params),
+            );
 
         command!(app, "Toggle atmospheric fog", toggle_atmospheric_fog);
         command!(

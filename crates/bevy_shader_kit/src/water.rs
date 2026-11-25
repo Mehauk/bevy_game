@@ -1,5 +1,5 @@
 use bevy::{
-    asset::{AssetId, RenderAssetUsages, uuid::Uuid},
+    asset::{AssetId, uuid::Uuid},
     mesh::MeshVertexBufferLayoutRef,
     pbr::{
         ExtendedMaterial, MaterialExtension, MaterialExtensionKey, MaterialExtensionPipeline,
@@ -7,37 +7,51 @@ use bevy::{
     },
     prelude::*,
     render::render_resource::{
-        AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
-        TextureDimension, TextureFormat,
+        AsBindGroup, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
     },
     shader::{Shader, ShaderDefVal, ShaderRef},
 };
 
-use crate::field::SdfVolume;
+pub const MAX_RIPPLES: usize = 16;
 
-pub const MAX_WATER_FIELDS: usize = 4;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
+pub struct RippleWave {
+    pub origin: Vec2,
+    pub birth: f32,
+    pub strength: f32,
+    pub frequency: f32,
+    pub speed: f32,
+    pub decay: f32,
+    pub spread: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
+pub struct RippleSet {
+    pub count: u32,
+    pub pad0: u32,
+    pub pad1: u32,
+    pub pad2: u32,
+    pub waves: [RippleWave; MAX_RIPPLES],
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, ShaderType, Reflect)]
 pub struct WaterParams {
     pub time: f32,
     pub water_height: f32,
-    pub ripple_range: f32,
-    pub ripple_frequency: f32,
-    pub ripple_speed: f32,
-    pub ripple_strength: f32,
     pub foam_width: f32,
     pub foam_strength: f32,
-    pub field_count: u32,
     pub max_depth: f32,
     pub phase_g: f32,
-    pub pad: f32,
+    pub ripple_normal: f32,
+    pub ripple_foam: f32,
     pub scattering: Vec3,
     pub absorption: Vec3,
     pub sun_direction: Vec3,
     pub sun_illuminance: Vec3,
     pub ambient_illuminance: Vec3,
-    pub fields: [SdfVolume; MAX_WATER_FIELDS],
 }
 
 impl Default for WaterParams {
@@ -45,42 +59,35 @@ impl Default for WaterParams {
         Self {
             time: 0.0,
             water_height: 0.0,
-            ripple_range: 6.0,
-            ripple_frequency: 3.0,
-            ripple_speed: 2.5,
-            ripple_strength: 0.55,
             foam_width: 0.8,
             foam_strength: 0.25,
-            field_count: 0,
             max_depth: 8.0,
             phase_g: 0.6,
-            pad: 0.0,
+            ripple_normal: 0.55,
+            ripple_foam: 0.9,
             scattering: Vec3::new(0.03, 0.045, 0.05),
             absorption: Vec3::new(0.35, 0.12, 0.06),
             sun_direction: Vec3::new(0.707, 0.0, 0.707),
             sun_illuminance: Vec3::splat(3.0),
             ambient_illuminance: Vec3::new(0.15, 0.2, 0.25),
-            fields: [SdfVolume::default(); MAX_WATER_FIELDS],
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct WaterMaterialKey {
-    pub ripples: bool,
     pub foam: bool,
     pub optics: bool,
-    pub depth_steps: u32,
+    pub ripples: bool,
     pub override_shader: Option<Uuid>,
 }
 
 impl From<&WaterMaterialExt> for WaterMaterialKey {
     fn from(ext: &WaterMaterialExt) -> Self {
         Self {
-            ripples: ext.ripples,
             foam: ext.foam,
             optics: ext.optics,
-            depth_steps: ext.depth_steps,
+            ripples: ext.ripples,
             override_shader: ext.override_shader.as_ref().and_then(|shader| match shader.id() {
                 AssetId::Uuid { uuid } => Some(uuid),
                 AssetId::Index { .. } => None,
@@ -91,10 +98,9 @@ impl From<&WaterMaterialExt> for WaterMaterialKey {
 
 pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
     vec![
-        ShaderDefVal::Bool("WATER_RIPPLES".into(), key.ripples),
         ShaderDefVal::Bool("WATER_FOAM".into(), key.foam),
         ShaderDefVal::Bool("WATER_OPTICS".into(), key.optics),
-        ShaderDefVal::UInt("WATER_DEPTH_STEPS".into(), key.depth_steps),
+        ShaderDefVal::Bool("WATER_RIPPLES".into(), key.ripples),
     ]
 }
 
@@ -103,18 +109,11 @@ pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
 pub struct WaterMaterialExt {
     #[uniform(100)]
     pub params: WaterParams,
-    #[texture(101, dimension = "3d", sample_type = "float", filterable = false)]
-    pub field0: Handle<Image>,
-    #[texture(102, dimension = "3d", sample_type = "float", filterable = false)]
-    pub field1: Handle<Image>,
-    #[texture(103, dimension = "3d", sample_type = "float", filterable = false)]
-    pub field2: Handle<Image>,
-    #[texture(104, dimension = "3d", sample_type = "float", filterable = false)]
-    pub field3: Handle<Image>,
-    pub ripples: bool,
+    #[uniform(101)]
+    pub waves: RippleSet,
     pub foam: bool,
     pub optics: bool,
-    pub depth_steps: u32,
+    pub ripples: bool,
     pub override_shader: Option<Handle<Shader>>,
 }
 
@@ -122,14 +121,10 @@ impl Default for WaterMaterialExt {
     fn default() -> Self {
         Self {
             params: default(),
-            field0: default(),
-            field1: default(),
-            field2: default(),
-            field3: default(),
-            ripples: true,
+            waves: default(),
             foam: true,
             optics: true,
-            depth_steps: 12,
+            ripples: true,
             override_shader: None,
         }
     }
@@ -162,27 +157,12 @@ impl MaterialExtension for WaterMaterialExt {
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterMaterialExt>;
 
-pub fn dummy_field_image(images: &mut Assets<Image>) -> Handle<Image> {
-    images.add(Image::new(
-        Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D3,
-        1.0e6f32.to_le_bytes().to_vec(),
-        TextureFormat::R32Float,
-        RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn key_ext() -> WaterMaterialExt {
         WaterMaterialExt {
-            depth_steps: 8,
             optics: false,
             ..default()
         }
@@ -191,9 +171,24 @@ mod tests {
     #[test]
     fn key_mirrors_extension_flags() {
         let key = WaterMaterialKey::from(&key_ext());
-        assert!(key.ripples && key.foam && !key.optics);
-        assert_eq!(key.depth_steps, 8);
+        assert!(key.foam);
+        assert!(!key.optics);
+        assert!(key.ripples);
         assert_eq!(key.override_shader, None);
+    }
+
+    #[test]
+    fn ripple_uniform_matches_the_shader_layout() {
+        assert_eq!(RippleWave::min_size().get(), 32);
+        assert_eq!(RippleSet::min_size().get(), 16 + 32 * MAX_RIPPLES as u64);
+    }
+
+    #[test]
+    fn shader_declares_the_same_ripple_capacity() {
+        let source = include_str!("shaders/water/ripples.wesl");
+        assert!(source.contains(&format!("array<RippleWave, {MAX_RIPPLES}>")));
+        assert!(source.contains(&format!("min(ripples.count, {MAX_RIPPLES}u)")));
+        assert!(source.contains("@binding(101)"));
     }
 
     #[test]
@@ -208,10 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn defs_carry_flags_and_step_count() {
+    fn defs_carry_feature_flags() {
         let defs = water_shader_defs(&WaterMaterialKey::from(&key_ext()));
-        assert!(defs.contains(&ShaderDefVal::Bool("WATER_RIPPLES".into(), true)));
+        assert!(defs.contains(&ShaderDefVal::Bool("WATER_FOAM".into(), true)));
         assert!(defs.contains(&ShaderDefVal::Bool("WATER_OPTICS".into(), false)));
-        assert!(defs.contains(&ShaderDefVal::UInt("WATER_DEPTH_STEPS".into(), 8)));
+        assert!(defs.contains(&ShaderDefVal::Bool("WATER_RIPPLES".into(), true)));
     }
 }

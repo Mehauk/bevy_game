@@ -1,6 +1,6 @@
 use avian3d::prelude::*;
 use bevy::{
-    pbr::ScreenSpaceTransmission, prelude::*, transform::TransformSystems, window::{CursorGrabMode, CursorOptions, PrimaryWindow},
+    core_pipeline::prepass::DepthPrepass, pbr::ScreenSpaceTransmission, prelude::*, transform::TransformSystems, window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 use bevy_enhanced_input::prelude::*;
 
@@ -209,6 +209,7 @@ fn setup_camera(mut commands: Commands) {
         CameraRig::default(),
         Transform::default(),
         ScreenSpaceTransmission::default(),
+        DepthPrepass,
     ));
 }
 

@@ -1,5 +1,5 @@
 use bevy::{light::NotShadowCaster, pbr::StandardMaterial, prelude::*};
-use bevy_shader_kit::{WaterMaterial, WaterMaterialExt, dummy_field_image};
+use bevy_shader_kit::{WaterMaterial, WaterMaterialExt};
 
 use crate::distance_field::DistanceFieldViewHidden;
 use crate::utils::registry::commands::{CommandArgs, CommandOutput};
@@ -15,17 +15,14 @@ pub struct WaterHeightSource;
 #[derive(Resource)]
 pub struct WaterSurface {
     pub material: Handle<WaterMaterial>,
-    pub dummy: Handle<Image>,
 }
 
 pub fn setup_water_surface(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
-    mut images: ResMut<Assets<Image>>,
     world: Res<Terrain>,
 ) {
-    let dummy = dummy_field_image(&mut images);
     let material = water_materials.add(WaterMaterial {
         base: StandardMaterial {
             base_color: Color::srgb(0.6, 0.75, 0.72),
@@ -40,17 +37,10 @@ pub fn setup_water_surface(
             attenuation_color: Color::srgb(0.2, 0.7, 0.5),
             ..default()
         },
-        extension: WaterMaterialExt {
-            field0: dummy.clone(),
-            field1: dummy.clone(),
-            field2: dummy.clone(),
-            field3: dummy.clone(),
-            ..default()
-        },
+        extension: WaterMaterialExt::default(),
     });
     commands.insert_resource(WaterSurface {
         material: material.clone(),
-        dummy: dummy.clone(),
     });
     commands.spawn((
         Name::new("Sea"),
@@ -68,6 +58,27 @@ pub fn setup_water_surface(
         NotShadowCaster,
         DistanceFieldViewHidden,
     ));
+}
+
+pub(super) fn sync_water_params(
+    time: Res<Time>,
+    heights: Query<&Transform, With<WaterHeightSource>>,
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+) {
+    let Some(surface) = surface else {
+        return;
+    };
+    let Some(transform) = heights.iter().next() else {
+        return;
+    };
+    let Some(mut material) = materials.get_mut(&surface.material) else {
+        return;
+    };
+    let mut params = material.extension.params;
+    params.time = time.elapsed_secs();
+    params.water_height = transform.translation.y;
+    material.extension.params = params;
 }
 
 pub(super) fn set_water_level(

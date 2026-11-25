@@ -7,6 +7,7 @@ mod docgen;
 mod input;
 mod integration;
 mod profiler;
+mod ripples;
 mod screenshot;
 mod state;
 mod terrain;
@@ -32,6 +33,7 @@ use docgen::DocgenPlugin;
 use input::InputPlugin;
 use integration::IntegrationPlugin;
 use profiler::ProfilerPlugin;
+use ripples::RipplePlugin;
 use screenshot::ScreenshotPlugin;
 use state::StatePlugin;
 use terrain::TerrainPlugin;
@@ -67,6 +69,7 @@ fn main() {
             CharacterPlugin,
             DistanceFieldPlugin,
             TerrainPlugin,
+            RipplePlugin,
             ScreenshotPlugin,
             DocgenPlugin,
             IntegrationPlugin,

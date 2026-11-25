@@ -2,11 +2,8 @@ use bevy::{prelude::*, shader::Shader, shader::ShaderDefVal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShaderHook {
-    ContactSample,
-    ContactProjection,
-    RippleDistance,
-    RippleWave,
-    RippleNormal,
+    DepthSample,
+    RippleField,
     FoamEdge,
     FoamPattern,
     FoamRoughness,
@@ -21,11 +18,8 @@ pub enum ShaderHook {
 impl ShaderHook {
     pub fn slot_name(&self) -> String {
         match self {
-            ShaderHook::ContactSample => "contact_sample".to_string(),
-            ShaderHook::ContactProjection => "contact_projection".to_string(),
-            ShaderHook::RippleDistance => "ripple_distance".to_string(),
-            ShaderHook::RippleWave => "ripple_wave".to_string(),
-            ShaderHook::RippleNormal => "ripple_normal".to_string(),
+            ShaderHook::DepthSample => "depth_sample".to_string(),
+            ShaderHook::RippleField => "ripple_field".to_string(),
             ShaderHook::FoamEdge => "foam_edge".to_string(),
             ShaderHook::FoamPattern => "foam_pattern".to_string(),
             ShaderHook::FoamRoughness => "foam_roughness".to_string(),
@@ -219,57 +213,41 @@ pub fn water_blueprint() -> ShaderBlueprint {
             "import bevy_pbr::render::mesh_view_bindings::view;",
             "import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;",
             "import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};",
-            "import package::shaders::math::aa::phase_derivative_aa;",
-            "import package::shaders::math::falloff::{quadratic_falloff, view_distance_fade};",
+            "import bevy_pbr::render::view_transformations::depth_ndc_to_view_z;",
+            "import bevy_pbr::prepass::utils::prepass_depth;",
+            "import package::shaders::math::falloff::view_distance_fade;",
             "import package::shaders::noise::fbm2d::scrolling_fbm_2d;",
-            "import package::shaders::sdf::contact::project_onto_contact;",
-            "import package::shaders::sdf::field_array::{\n    field_array_contact, field_array_raymarch_depth,\n};",
-            "import package::shaders::water::foam::{\n    apply_foam_roughness, blend_foam_color, foam_noise_mask, proximity_edge_mask, shore_edge_mask,\n};",
+            "import package::shaders::water::foam::{\n    apply_foam_roughness, blend_foam_color, foam_noise_mask, shore_edge_mask,\n};",
             "import package::shaders::water::optics::water_volume_in_scatter;",
-            "import package::shaders::water::ripples::{\n    perturb_normal_horizontal, radial_contact_distance, ripple_wave_signal,\n};",
-            "import package::shaders::water::types::{\n    WaterContext, water, water_field0, water_field1, water_field2, water_field3,\n};",
+            "import package::shaders::water::ripples::{ripple_foam_edge, ripple_normal, ripple_slope};",
+            "import package::shaders::water::types::{WaterContext, water};",
         ],
         declarations: vec![
             "const WATER_VIEW_FADE_RANGE: f32 = 60.0;",
-            "const WATER_DEPTH_STEPS_DEFAULT: i32 = 12;",
         ],
         shader_defs: Vec::new(),
         entry: WATER_FRAGMENT_ENTRY,
         segments: vec![
             BlueprintSegment::Text(
-                "    var out: FragmentOutput;\n    var pbr_input = pbr_input_from_standard_material(in, front);\n    pbr_input.material.base_color = alpha_discard(\n        pbr_input.material.flags,\n        pbr_input.material.alpha_cutoff,\n        pbr_input.material.base_color,\n    );\n\n    var ctx: WaterContext;\n    ctx.p = pbr_input.world_position.xyz;\n    ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);\n\n    var fields = water.fields;\n    let count = i32(water.field_count);\n\n",
+                "    var out: FragmentOutput;\n    var pbr_input = pbr_input_from_standard_material(in, front);\n    pbr_input.material.base_color = alpha_discard(\n        pbr_input.material.flags,\n        pbr_input.material.alpha_cutoff,\n        pbr_input.material.base_color,\n    );\n\n    var ctx: WaterContext;\n    ctx.p = pbr_input.world_position.xyz;\n    ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);\n\n    ctx.depth = water.max_depth;\n    @if(DEPTH_PREPASS) {\n",
             ),
             BlueprintSegment::Slot {
-                hook: ShaderHook::ContactSample,
-                default: "    let contact = field_array_contact(&fields, count, water_field0, water_field1, water_field2, water_field3, ctx.p, water.ripple_range);\n    ctx.distance = contact.distance;\n    ctx.gradient = contact.gradient;\n    ctx.boundary = contact.boundary;\n",
+                hook: ShaderHook::DepthSample,
+                default: "        let surface_view_z = depth_ndc_to_view_z(in.position.z);\n        let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));\n        ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.max_depth);\n",
             },
             BlueprintSegment::Text(
-                "\n    var depth_steps: i32 = WATER_DEPTH_STEPS_DEFAULT;\n    @if(WATER_DEPTH_STEPS) { depth_steps = i32(constants::WATER_DEPTH_STEPS); }\n    ctx.depth = field_array_raymarch_depth(&fields, count, water_field0, water_field1, water_field2, water_field3, vec3<f32>(ctx.p.x, water.water_height, ctx.p.z), water.max_depth, depth_steps);\n    pbr_input.material.thickness = ctx.depth;\n\n",
+                "    }\n    pbr_input.material.thickness = ctx.depth;\n\n    ctx.ripple = vec2<f32>(0.0);\n    @if(WATER_RIPPLES) {\n",
             ),
             BlueprintSegment::Slot {
-                hook: ShaderHook::ContactProjection,
-                default: "    let surface = project_onto_contact(ctx.p, ctx.gradient, ctx.distance, water.ripple_range, water.water_height);\n    ctx.point = surface.point;\n    ctx.outward = surface.outward;\n    ctx.emerged = surface.emerged;\n",
-            },
-            BlueprintSegment::Text("\n    @if(WATER_RIPPLES) {\n"),
-            BlueprintSegment::Slot {
-                hook: ShaderHook::RippleDistance,
-                default: "        ctx.ripple_distance = radial_contact_distance(ctx.p, ctx.point, water.water_height);\n        let phase = ctx.ripple_distance * water.ripple_frequency - water.time * water.ripple_speed;\n",
-            },
-            BlueprintSegment::Slot {
-                hook: ShaderHook::RippleWave,
-                default: "        let wave = ripple_wave_signal(ctx.ripple_distance, water.ripple_frequency, water.time, water.ripple_speed);\n",
+                hook: ShaderHook::RippleField,
+                default: "        ctx.ripple = ripple_slope(ctx.p.xz, water.time);\n",
             },
             BlueprintSegment::Text(
-                "        let ripple_aa = phase_derivative_aa(phase);\n        let falloff = quadratic_falloff(ctx.ripple_distance, water.ripple_range);\n        if (ctx.distance < water.ripple_range) {\n            let amp = water.ripple_strength * ctx.emerged * ctx.boundary * falloff * ripple_aa * ctx.view_fade;\n",
+                "        pbr_input.N = ripple_normal(pbr_input.N, ctx.ripple, water.ripple_normal);\n    }\n\n    @if(WATER_FOAM) {\n",
             ),
-            BlueprintSegment::Slot {
-                hook: ShaderHook::RippleNormal,
-                default: "            pbr_input.N = perturb_normal_horizontal(pbr_input.N, ctx.outward, wave, amp);\n",
-            },
-            BlueprintSegment::Text("        }\n    }\n\n    @if(WATER_FOAM) {\n"),
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamEdge,
-                default: "        ctx.edge = max(shore_edge_mask(ctx.depth, water.foam_width), proximity_edge_mask(ctx.distance, water.foam_width, ctx.emerged));\n",
+                default: "        ctx.edge = max(shore_edge_mask(ctx.depth, water.foam_width), ripple_foam_edge(length(ctx.ripple), water.ripple_foam));\n",
             },
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamPattern,
@@ -527,7 +505,7 @@ mod tests {
     #[test]
     fn water_blueprint_composes_with_default_slots() {
         let composed = compose_wesl(&water_blueprint(), &[]);
-        assert!(composed.source.contains("field_array_contact(&fields, count"));
+        assert!(composed.source.contains("prepass_depth(in.position, 0u)"));
         assert!(composed.source.contains("scrolling_fbm_2d(ctx.p.xz * 2.2, water.time);"));
         assert!(composed.source.contains("water_volume_in_scatter(pbr_input.V"));
         assert!(composed.source.ends_with("    return out;\n}\n"));

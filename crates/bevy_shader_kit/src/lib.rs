@@ -18,8 +18,8 @@ pub use compose::{
     water_blueprint,
 };
 pub use water::{
-    MAX_WATER_FIELDS, WaterMaterial, WaterMaterialExt, WaterMaterialKey, WaterParams,
-    dummy_field_image, water_shader_defs,
+    MAX_RIPPLES, RippleSet, RippleWave, WaterMaterial, WaterMaterialExt, WaterMaterialKey,
+    WaterParams, water_shader_defs,
 };
 
 pub struct ShaderKitPlugin;
@@ -37,12 +37,10 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/shading/hemisphere.wesl");
         load_shader_library!(app, "shaders/sdf/texture3d.wesl");
         load_shader_library!(app, "shaders/sdf/volume.wesl");
-        load_shader_library!(app, "shaders/sdf/field_array.wesl");
-        load_shader_library!(app, "shaders/sdf/contact.wesl");
         load_shader_library!(app, "shaders/sdf/view_bindings.wesl");
         load_shader_library!(app, "shaders/water/types.wesl");
-        load_shader_library!(app, "shaders/water/ripples.wesl");
         load_shader_library!(app, "shaders/water/foam.wesl");
+        load_shader_library!(app, "shaders/water/ripples.wesl");
         load_shader_library!(app, "shaders/water/optics.wesl");
         embedded_asset!(app, "shaders/sdf/view_mode.wesl");
         embedded_asset!(app, "shaders/water/water.wesl");

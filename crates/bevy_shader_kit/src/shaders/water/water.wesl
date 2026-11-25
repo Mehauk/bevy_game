@@ -2,26 +2,18 @@ import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
 import bevy_pbr::render::mesh_view_bindings::view;
 import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
 import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};
-import package::shaders::math::aa::phase_derivative_aa;
-import package::shaders::math::falloff::{quadratic_falloff, view_distance_fade};
+import bevy_pbr::render::view_transformations::depth_ndc_to_view_z;
+import bevy_pbr::prepass::utils::prepass_depth;
+import package::shaders::math::falloff::view_distance_fade;
 import package::shaders::noise::fbm2d::scrolling_fbm_2d;
-import package::shaders::sdf::contact::project_onto_contact;
-import package::shaders::sdf::field_array::{
-    field_array_contact, field_array_raymarch_depth,
-};
 import package::shaders::water::foam::{
-    apply_foam_roughness, blend_foam_color, foam_noise_mask, proximity_edge_mask, shore_edge_mask,
+    apply_foam_roughness, blend_foam_color, foam_noise_mask, shore_edge_mask,
 };
 import package::shaders::water::optics::water_volume_in_scatter;
-import package::shaders::water::ripples::{
-    perturb_normal_horizontal, radial_contact_distance, ripple_wave_signal,
-};
-import package::shaders::water::types::{
-    WaterContext, water, water_field0, water_field1, water_field2, water_field3,
-};
+import package::shaders::water::ripples::{ripple_foam_edge, ripple_normal, ripple_slope};
+import package::shaders::water::types::{WaterContext, water};
 
 const WATER_VIEW_FADE_RANGE: f32 = 60.0;
-const WATER_DEPTH_STEPS_DEFAULT: i32 = 12;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOutput {
@@ -37,38 +29,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     ctx.p = pbr_input.world_position.xyz;
     ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);
 
-    var fields = water.fields;
-    let count = i32(water.field_count);
-
-    let contact = field_array_contact(&fields, count, water_field0, water_field1, water_field2, water_field3, ctx.p, water.ripple_range);
-    ctx.distance = contact.distance;
-    ctx.gradient = contact.gradient;
-    ctx.boundary = contact.boundary;
-
-    var depth_steps: i32 = WATER_DEPTH_STEPS_DEFAULT;
-    @if(WATER_DEPTH_STEPS) { depth_steps = i32(constants::WATER_DEPTH_STEPS); }
-    ctx.depth = field_array_raymarch_depth(&fields, count, water_field0, water_field1, water_field2, water_field3, vec3<f32>(ctx.p.x, water.water_height, ctx.p.z), water.max_depth, depth_steps);
+    ctx.depth = water.max_depth;
+    @if(DEPTH_PREPASS) {
+        let surface_view_z = depth_ndc_to_view_z(in.position.z);
+        let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));
+        ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.max_depth);
+    }
     pbr_input.material.thickness = ctx.depth;
 
-    let surface = project_onto_contact(ctx.p, ctx.gradient, ctx.distance, water.ripple_range, water.water_height);
-    ctx.point = surface.point;
-    ctx.outward = surface.outward;
-    ctx.emerged = surface.emerged;
-
+    ctx.ripple = vec2<f32>(0.0);
     @if(WATER_RIPPLES) {
-        ctx.ripple_distance = radial_contact_distance(ctx.p, ctx.point, water.water_height);
-        let phase = ctx.ripple_distance * water.ripple_frequency - water.time * water.ripple_speed;
-        let wave = ripple_wave_signal(ctx.ripple_distance, water.ripple_frequency, water.time, water.ripple_speed);
-        let ripple_aa = phase_derivative_aa(phase);
-        let falloff = quadratic_falloff(ctx.ripple_distance, water.ripple_range);
-        if (ctx.distance < water.ripple_range) {
-            let amp = water.ripple_strength * ctx.emerged * ctx.boundary * falloff * ripple_aa * ctx.view_fade;
-            pbr_input.N = perturb_normal_horizontal(pbr_input.N, ctx.outward, wave, amp);
-        }
+        ctx.ripple = ripple_slope(ctx.p.xz, water.time);
+        pbr_input.N = ripple_normal(pbr_input.N, ctx.ripple, water.ripple_normal);
     }
 
     @if(WATER_FOAM) {
-        ctx.edge = max(shore_edge_mask(ctx.depth, water.foam_width), proximity_edge_mask(ctx.distance, water.foam_width, ctx.emerged));
+        ctx.edge = max(shore_edge_mask(ctx.depth, water.foam_width), ripple_foam_edge(length(ctx.ripple), water.ripple_foam));
         ctx.pattern = scrolling_fbm_2d(ctx.p.xz * 2.2, water.time);
         ctx.foam = foam_noise_mask(ctx.edge, ctx.pattern, water.foam_strength, ctx.view_fade);
         if (ctx.foam > 0.0) {

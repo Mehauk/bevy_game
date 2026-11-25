@@ -9,6 +9,7 @@ mod bridges;
 mod distance_field;
 mod menu_callbacks;
 mod menu_wiring;
+mod ripples;
 mod state_pause;
 
 pub struct IntegrationPlugin;
@@ -40,6 +41,7 @@ impl Plugin for IntegrationPlugin {
         menu_wiring::register(app);
         bridges::register(app);
         distance_field::register(app);
+        ripples::register(app);
         state_pause::register(app);
     }
 }

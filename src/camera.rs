@@ -1,13 +1,10 @@
 use avian3d::prelude::*;
 use bevy::{
-    core_pipeline::prepass::DepthPrepass, pbr::ScreenSpaceTransmission, prelude::*, transform::TransformSystems, window::{CursorGrabMode, CursorOptions, PrimaryWindow},
+    core_pipeline::prepass::DepthPrepass, pbr::ScreenSpaceTransmission, prelude::*,
+    transform::TransformSystems,
 };
-use bevy_enhanced_input::prelude::*;
 
-use crate::{
-    input::InputAppExt,
-    utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command},
-};
+use crate::utils::registry::commands::{CommandAppExt, CommandArgs, CommandOutput, command};
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CameraSystems {
@@ -29,39 +26,6 @@ impl Plugin for CameraPlugin {
                 sync_camera_transform.in_set(CameraSystems::UpdateTransform),
             );
 
-        app.register_gameplay_action::<Look, _, _, _>(
-            "Camera Look",
-            ActionSettings::default(),
-            [Binding::mouse_motion()],
-            on_camera_look,
-        )
-        .register_gameplay_hotkey::<ToggleViewMode, _, _, _>(
-            "Toggle 1st/3rd View",
-            camera_hotkey(),
-            [KeyCode::KeyF.with_mod_keys(ModKeys::SHIFT).into()],
-            on_toggle_view_mode,
-        )
-        .register_gameplay_hotkey::<GrabCursor, _, _, _>(
-            "Grab Cursor",
-            camera_hotkey(),
-            [MouseButton::Left.into()],
-            on_grab_cursor,
-        )
-        .register_gameplay_hotkey::<ReleaseCursor, _, _, _>(
-            "Unlock Cursor",
-            camera_hotkey(),
-            [KeyCode::Escape.into()],
-            on_release_cursor,
-        )
-        .register_gameplay_action::<ZoomCamera, _, _, _>(
-            "Zoom Camera",
-            camera_hotkey(),
-            [Binding::MouseWheel {
-                mod_keys: ModKeys::SHIFT | ModKeys::CONTROL,
-            }],
-            on_camera_zoom,
-        );
-
         command!(app, "toggle between first and third person view", toggle_view_mode);
         command!(
             app,
@@ -78,26 +42,6 @@ impl Plugin for CameraPlugin {
 
 #[derive(Resource, Default)]
 pub(crate) struct WantedCursorLock(pub(crate) bool);
-
-#[derive(InputAction)]
-#[action_output(Vec2)]
-struct Look;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-struct ToggleViewMode;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-struct GrabCursor;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-struct ReleaseCursor;
-
-#[derive(InputAction)]
-#[action_output(Vec2)]
-struct ZoomCamera;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
@@ -159,6 +103,13 @@ impl CameraRig {
         self.view_mode = ViewMode::ThirdPerson;
     }
 
+    pub fn toggle_view_mode(&mut self) {
+        self.view_mode = match self.view_mode {
+            ViewMode::FirstPerson => ViewMode::ThirdPerson,
+            ViewMode::ThirdPerson => ViewMode::FirstPerson,
+        };
+    }
+
     pub fn apply_zoom(&mut self, scroll_y: f32) {
         if scroll_y.abs() < ZOOM_EPSILON {
             return;
@@ -191,13 +142,6 @@ impl Default for CameraTarget {
         Self {
             offset: Vec3::new(0.0, 0.65, 0.0),
         }
-    }
-}
-
-fn camera_hotkey() -> ActionSettings {
-    ActionSettings {
-        require_reset: true,
-        ..default()
     }
 }
 
@@ -252,43 +196,13 @@ fn camera_info(rig: Single<(&CameraRig, &Transform)>, mut output: ResMut<Command
     ));
 }
 
-fn on_grab_cursor(_event: On<Start<GrabCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
-    wanted_lock.0 = true;
-}
-
-fn on_release_cursor(_event: On<Start<ReleaseCursor>>, mut wanted_lock: ResMut<WantedCursorLock>) {
-    wanted_lock.0 = false;
-}
-
 fn toggle_view_mode(mut rig: Single<&mut CameraRig>) {
-    rig.view_mode = match rig.view_mode {
-        ViewMode::FirstPerson => ViewMode::ThirdPerson,
-        ViewMode::ThirdPerson => ViewMode::FirstPerson,
-    };
-}
-
-fn on_toggle_view_mode(_event: On<Start<ToggleViewMode>>, rig: Single<&mut CameraRig>) {
-    toggle_view_mode(rig);
-}
-
-fn on_camera_look(
-    event: On<Fire<Look>>,
-    cursor_options: Single<&CursorOptions, With<PrimaryWindow>>,
-    mut rig: Single<&mut CameraRig>,
-) {
-    if cursor_options.grab_mode != CursorGrabMode::Locked || event.value == Vec2::ZERO {
-        return;
-    }
-    rig.apply_look(event.value);
+    rig.toggle_view_mode();
 }
 
 const MIN_THIRD_PERSON_DIST: f32 = 1.2;
 const MAX_ZOOM_DIST: f32 = 36.0;
 const ZOOM_STEP: f32 = 2.0;
-
-fn on_camera_zoom(event: On<Fire<ZoomCamera>>, mut rig: Single<&mut CameraRig>) {
-    rig.apply_zoom(event.value.y);
-}
 
 fn sync_camera_transform(
     spatial_query: SpatialQuery,

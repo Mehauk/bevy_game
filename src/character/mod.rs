@@ -8,7 +8,6 @@ use avian3d::prelude::*;
 use bevy::{prelude::*, transform::TransformSystems};
 use bevy_enhanced_input::prelude::*;
 
-use crate::input::{GameplayContextBundle, GameplayInput, HotkeyLabel, MovementBinding};
 use crate::utils::SpawnGroundHeight;
 use crate::utils::registry::commands::{CommandAppExt, command};
 use crate::utils::registry::debug_info::{DebugInfoAppExt, debug_info};
@@ -76,23 +75,23 @@ impl Plugin for CharacterPlugin {
 
 #[derive(InputAction)]
 #[action_output(Vec2)]
-struct Move;
+pub(crate) struct Move;
 
 #[derive(InputAction)]
 #[action_output(bool)]
-struct Sprint;
+pub(crate) struct Sprint;
 
 #[derive(InputAction)]
 #[action_output(bool)]
-struct AlignToCamera;
+pub(crate) struct AlignToCamera;
 
 #[derive(InputAction)]
 #[action_output(bool)]
-struct Jump;
+pub(crate) struct Jump;
 
 #[derive(InputAction)]
 #[action_output(bool)]
-struct Crouch;
+pub(crate) struct Crouch;
 
 fn spawn_translation(ground_height: f32) -> Vec3 {
     Vec3::new(0.0, ground_height + CHARACTER_SPAWN_OFFSET_Y, 0.0)
@@ -112,10 +111,6 @@ fn setup_character(world: &mut World) {
         .resource_mut::<Assets<StandardMaterial>>()
         .add(Color::srgb(0.1, 0.12, 0.18));
 
-    let reset_settings = ActionSettings {
-        require_reset: true,
-        ..default()
-    };
     let spawn_translation = spawn_translation(
         world
             .get_resource::<SpawnGroundHeight>()
@@ -127,67 +122,6 @@ fn setup_character(world: &mut World) {
             Character
             Transform::from_translation(spawn_translation)
             Visibility::default()
-            GameplayInput
-            Actions<GameplayInput> [
-                Action::<Move>::new()
-                reset_settings
-                Bindings [
-                    Binding(KeyCode::KeyW)
-                    HotkeyLabel("Move Forward")
-                    MovementBinding
-                    ~SwizzleAxis::YXZ
-                    --
-                    Binding(KeyCode::KeyS)
-                    HotkeyLabel("Move Back")
-                    MovementBinding
-                    ~Negate::all()
-                    ~SwizzleAxis::YXZ
-                    --
-                    Binding(KeyCode::KeyD)
-                    HotkeyLabel("Move Right")
-                    MovementBinding
-                    --
-                    Binding(KeyCode::KeyA)
-                    HotkeyLabel("Move Left")
-                    MovementBinding
-                    ~Negate::all()
-                ]
-                --
-                Action::<Sprint>::new()
-                reset_settings
-                HotkeyLabel("Sprint")
-                Bindings [
-                    Binding(KeyCode::ShiftLeft)
-                    --
-                    Binding(KeyCode::ShiftRight)
-                ]
-                --
-                Action::<AlignToCamera>::new()
-                reset_settings
-                HotkeyLabel("Align Camera")
-                Bindings [
-                    Binding(KeyCode::AltLeft)
-                    --
-                    Binding(KeyCode::AltRight)
-                ]
-                --
-                Action::<Jump>::new()
-                reset_settings
-                HotkeyLabel("Jump")
-                Bindings [
-                    Binding(KeyCode::Space)
-                    MovementBinding
-                ]
-                --
-                Action::<Crouch>::new()
-                reset_settings
-                HotkeyLabel("Crouch")
-                Bindings [
-                    Binding(KeyCode::ControlLeft)
-                    --
-                    Binding(KeyCode::ControlRight)
-                ]
-            ]
         })
         .unwrap();
 
@@ -196,7 +130,6 @@ fn setup_character(world: &mut World) {
     char_entity
         .insert((
             CameraFacing::default(),
-            GameplayContextBundle::default(),
             RigidBody::Dynamic,
             Collider::capsule(CAPSULE_RADIUS, CAPSULE_HEIGHT),
             LockedAxes::ROTATION_LOCKED,

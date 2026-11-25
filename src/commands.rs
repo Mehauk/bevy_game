@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
 use bevy_mod_scripting::bindings::{
     InteropError, WorldExtensions,
@@ -76,42 +77,83 @@ impl Plugin for CommandsPlugin {
     }
 }
 
+struct Invocation {
+    line: String,
+    system_id: Option<SystemId>,
+    args: Vec<String>,
+}
+
+impl Invocation {
+    fn parse(line: &str, registry: &CommandRegistry) -> Option<Self> {
+        let line = line.trim();
+        if line.is_empty() {
+            return None;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else {
+            return None;
+        };
+        match registry.find_command(name) {
+            Some(entry) => Some(Self {
+                line: line.to_string(),
+                system_id: Some(entry.system_id),
+                args: parts.map(String::from).collect(),
+            }),
+            None => {
+                warn!("Unknown command '{line}'");
+                Some(Self {
+                    line: line.to_string(),
+                    system_id: None,
+                    args: Vec::new(),
+                })
+            }
+        }
+    }
+
+    fn run(self, world: &mut World) -> Option<String> {
+        let Some(system_id) = self.system_id else {
+            return None;
+        };
+        let outer_args = std::mem::replace(
+            &mut *world.resource_mut::<CommandArgs>(),
+            CommandArgs { args: self.args },
+        );
+        let outer_output = std::mem::take(&mut *world.resource_mut::<CommandOutput>());
+        let outcome = world.run_system(system_id);
+        let output = world.resource_mut::<CommandOutput>().take();
+        *world.resource_mut::<CommandArgs>() = outer_args;
+        *world.resource_mut::<CommandOutput>() = outer_output;
+
+        match outcome {
+            Ok(()) => output,
+            Err(err) => {
+                warn!("Command failed to run: {err}");
+                Some(format!("error: {err}"))
+            }
+        }
+    }
+}
+
 fn handle_run_commands(
     mut commands: Commands,
     registry: Res<CommandRegistry>,
     mut reader: MessageReader<RunCommand>,
 ) {
-    for msg in reader.read() {
-        let trimmed = msg.0.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let mut parts = trimmed.split_whitespace();
-        let Some(name) = parts.next() else { continue };
-        let args: Vec<String> = parts.map(String::from).collect();
-        let line = trimmed.to_string();
-
-        let Some(entry) = registry.find_command(name) else {
-            warn!("Unknown command '{}'", trimmed);
-            commands.queue(move |world: &mut World| push_history(world, line, None));
-            continue;
-        };
-
-        let system_id = entry.system_id;
-        commands.queue(move |world: &mut World| {
-            *world.resource_mut::<CommandArgs>() = CommandArgs { args };
-            *world.resource_mut::<CommandOutput>() = CommandOutput::default();
-            let output = match world.run_system(system_id) {
-                Ok(()) => world.resource_mut::<CommandOutput>().take(),
-                Err(err) => {
-                    warn!("Command failed to run: {err}");
-                    Some(format!("error: {err}"))
-                }
-            };
-            push_history(world, line, output);
-        });
+    let invocations: Vec<Invocation> = reader
+        .read()
+        .filter_map(|message| Invocation::parse(&message.0, &registry))
+        .collect();
+    if invocations.is_empty() {
+        return;
     }
+
+    commands.queue(move |world: &mut World| {
+        for invocation in invocations {
+            let line = invocation.line.clone();
+            let output = invocation.run(world);
+            push_history(world, line, output);
+        }
+    });
 }
 
 fn push_history(world: &mut World, command: String, output: Option<String>) {
@@ -251,6 +293,64 @@ mod tests {
         assert_eq!(
             app.world().resource::<Seen>().0,
             vec!["first:a,b", "second:c,d"]
+        );
+    }
+
+    #[test]
+    fn a_finished_command_leaves_no_arguments_behind() {
+        let mut app = history_app();
+        app.register_command("test>echo", "d", |args: Res<CommandArgs>| {
+            assert!(!args.args.is_empty());
+        });
+        {
+            let world = app.world_mut();
+            world
+                .resource_mut::<Messages<RunCommand>>()
+                .write(RunCommand("echo a b".into()));
+        }
+        app.update();
+
+        assert!(
+            app.world().resource::<CommandArgs>().args.is_empty(),
+            "the next reader must not inherit the last command's arguments"
+        );
+    }
+
+    #[test]
+    fn an_invocation_restores_the_state_it_borrows() {
+        let mut app = history_app();
+        app.register_command(
+            "test>inner",
+            "d",
+            |args: Res<CommandArgs>, mut output: ResMut<CommandOutput>| {
+                output.set(args.args.join(","));
+            },
+        );
+
+        let world = app.world_mut();
+        *world.resource_mut::<CommandArgs>() = CommandArgs {
+            args: vec!["outer".to_string()],
+        };
+        world
+            .resource_mut::<CommandOutput>()
+            .set("outer output");
+        let system_id = world
+            .resource::<CommandRegistry>()
+            .get("test>inner")
+            .expect("the inner command is registered")
+            .system_id;
+        let invocation = Invocation {
+            line: "inner x y".to_string(),
+            system_id: Some(system_id),
+            args: vec!["x".to_string(), "y".to_string()],
+        };
+
+        assert_eq!(invocation.run(world).as_deref(), Some("x,y"));
+        assert_eq!(world.resource::<CommandArgs>().args, vec!["outer"]);
+        assert_eq!(
+            world.resource_mut::<CommandOutput>().take().as_deref(),
+            Some("outer output"),
+            "an inner command cannot answer for its caller"
         );
     }
 }

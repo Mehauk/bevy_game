@@ -3,15 +3,11 @@ use bevy::{
     pbr::wireframe::{WireframeConfig, WireframePlugin},
     prelude::*,
 };
-use bevy_enhanced_input::prelude::*;
 
-use crate::input::InputAppExt;
 use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
-use crate::utils::registry::debug_info::DebugInfoRegistry;
-
-#[derive(InputAction)]
-#[action_output(bool)]
-struct ToggleFpsOverlay;
+use crate::utils::registry::debug_info::{
+    DebugInfoEnabled, DebugInfoSnapshot, DebugInfoSystems,
+};
 
 #[derive(Resource)]
 pub struct DebugOverlayConfig {
@@ -27,8 +23,8 @@ impl Default for DebugOverlayConfig {
 #[derive(Component)]
 struct DebugOverlayRoot;
 
-#[derive(Resource)]
-struct DebugOverlayTextEntity(Entity);
+#[derive(Component)]
+struct DebugOverlayText;
 
 pub struct DevUtilsPlugin;
 
@@ -36,26 +32,30 @@ impl Plugin for DevUtilsPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(WireframePlugin::default());
         app.init_resource::<DebugOverlayConfig>()
-            .init_resource::<DebugInfoRegistry>()
+            .init_resource::<DebugInfoEnabled>()
             .add_systems(Startup, spawn_debug_overlay)
             .add_systems(
                 Update,
-                (update_debug_overlay_text, sync_debug_overlay_layout).chain(),
+                sync_debug_info_enabled.in_set(DebugInfoSystems::Sync),
+            )
+            .add_systems(
+                Update,
+                (sync_debug_overlay_text, sync_debug_overlay_layout)
+                    .chain()
+                    .in_set(DebugInfoSystems::Render),
+            )
+            .configure_sets(
+                Update,
+                (
+                    DebugInfoSystems::Sync,
+                    DebugInfoSystems::Collect,
+                    DebugInfoSystems::Render,
+                )
+                    .chain(),
             );
         command!(app, "Toggle global wireframe rendering", toggle_wireframe);
         command!(app, "Toggle the FPS overlay", toggle_fps_overlay);
         command!(app, "Toggle debugging info overlay", toggle_debug_overlay);
-        app.register_gameplay_hotkey::<ToggleFpsOverlay, _, _, _>(
-            "FPS Overlay",
-            ActionSettings {
-                require_reset: true,
-                ..default()
-            },
-            [KeyCode::F2.into()],
-            |_ev: On<Start<ToggleFpsOverlay>>, config: ResMut<FpsOverlayConfig>| {
-                toggle_fps_overlay(config);
-            },
-        );
     }
 }
 
@@ -63,7 +63,7 @@ fn toggle_wireframe(mut wireframe_config: ResMut<WireframeConfig>) {
     wireframe_config.global = !wireframe_config.global;
 }
 
-fn toggle_fps_overlay(mut config: ResMut<FpsOverlayConfig>) {
+pub(crate) fn toggle_fps_overlay(mut config: ResMut<FpsOverlayConfig>) {
     config.enabled = !config.enabled;
     config.frame_time_graph_config.enabled = config.enabled;
 }
@@ -83,6 +83,7 @@ fn toggle_debug_overlay(
 fn spawn_debug_overlay(mut commands: Commands) {
     let text_entity = commands
         .spawn((
+            DebugOverlayText,
             Text::default(),
             TextFont::from_font_size(16.0),
             TextColor(Color::WHITE),
@@ -105,7 +106,6 @@ fn spawn_debug_overlay(mut commands: Commands) {
             Pickable::IGNORE,
         ))
         .add_child(text_entity);
-    commands.insert_resource(DebugOverlayTextEntity(text_entity));
 }
 
 fn sync_debug_overlay_layout(
@@ -138,39 +138,20 @@ fn sync_debug_overlay_layout(
     }
 }
 
-fn update_debug_overlay_text(world: &mut World) {
-    if !world.resource::<DebugOverlayConfig>().enabled {
+fn sync_debug_info_enabled(config: Res<DebugOverlayConfig>, mut enabled: ResMut<DebugInfoEnabled>) {
+    enabled.0 = config.enabled;
+}
+
+fn sync_debug_overlay_text(
+    config: Res<DebugOverlayConfig>,
+    mut snapshot: ResMut<DebugInfoSnapshot>,
+    mut text: Single<&mut Text, With<DebugOverlayText>>,
+) {
+    if !config.enabled || !snapshot.take_dirty() {
         return;
     }
-
-    let entries = std::mem::take(&mut world.resource_mut::<DebugInfoRegistry>().entries);
-    let mut text = String::new();
-    let mut category_shown: Option<&str> = None;
-    for entry in &entries {
-        let value = match world.run_system(entry.system_id) {
-            Ok(Some(value)) => value,
-            Ok(None) => continue,
-            Err(err) => format!("error: {err}"),
-        };
-        if category_shown != Some(entry.category) {
-            if category_shown.is_some() {
-                text.push('\n');
-            }
-            text.push_str(&format!("[{}]\n", entry.category));
-            category_shown = Some(entry.category);
-        }
-        text.push_str(&format!("  {}: {}\n", entry.label, value));
-    }
-    world.resource_mut::<DebugInfoRegistry>().entries = entries;
-
-    let Some(text_entity) = world.get_resource::<DebugOverlayTextEntity>().map(|e| e.0) else {
-        return;
-    };
-    let mut text_node = world.entity_mut(text_entity);
-    let Some(mut current) = text_node.get_mut::<Text>() else {
-        return;
-    };
-    if current.as_str() != text {
-        *current = Text::from(text);
+    let rendered = snapshot.render();
+    if text.as_str() != rendered {
+        **text = Text::from(rendered);
     }
 }

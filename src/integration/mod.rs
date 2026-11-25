@@ -9,6 +9,7 @@ mod body_foam;
 mod bridges;
 mod currents;
 mod distance_field;
+mod input_wiring;
 mod menu_callbacks;
 mod menu_wiring;
 mod post_process;
@@ -43,6 +44,7 @@ impl Plugin for IntegrationPlugin {
 
         body_foam::register(app);
         currents::register(app);
+        input_wiring::register(app);
         menu_callbacks::register(app);
         menu_wiring::register(app);
         post_process::register(app);

@@ -3,4 +3,4 @@
 3. [x] Event-Driven DOM Runtime
 4. [x] Unified WaterMedium & Per-Entity Water Interactions
 5. [x] Chunked Async Terrain & Heightfield Pipeline
-6. [ ] Feature Module Isolation & Lock-Free Debug Scheduling
+6. [x] Feature Module Isolation & Lock-Free Debug Scheduling

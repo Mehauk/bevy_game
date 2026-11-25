@@ -1,26 +1,28 @@
-use avian3d::prelude::*;
 use bevy::{pbr::MaterialPlugin, prelude::*};
-use bevy_shader_kit::{WetSandExt, WetSandMaterial, Wetness};
+use bevy_shader_kit::WetSandMaterial;
 
 use crate::{
     utils::SpawnGroundHeight,
-    utils::registry::commands::{CommandAppExt, command},
+    utils::registry::{
+        commands::{CommandAppExt, command},
+        debug_info::{DebugInfoAppExt, debug_info},
+    },
 };
 
 mod atmosphere;
-mod coast;
+mod chunks;
+mod heightmap;
 pub mod terrain;
 mod water;
 
-pub use terrain::Terrain;
-pub use water::{SeaState, WaterSurface, terrain_gradient};
 pub(crate) use atmosphere::SkyBox;
 use atmosphere::{
     TerrainFog, setup_atmosphere, sync_sea_sun, sync_terrain_fog, toggle_atmospheric_fog,
     toggle_fog_light_influence,
 };
-#[derive(Component)]
-pub struct TerrainSurface;
+use chunks::{attach_finished_chunk_meshes, chunk_debug_info, spawn_terrain_chunks};
+pub use terrain::Terrain;
+pub use water::{Sea, SeaState, WaterSurface, terrain_gradient};
 
 pub struct TerrainPlugin;
 
@@ -36,13 +38,19 @@ impl Plugin for TerrainPlugin {
             .sample_ground_height(0.0, 0.0);
         app.insert_resource(SpawnGroundHeight(spawn_ground));
         app.add_systems(
-                Startup,
-                (setup_terrain, setup_atmosphere, water::setup_water_surface),
+            Startup,
+            (
+                spawn_terrain_chunks,
+                setup_atmosphere,
+                water::setup_water_surface,
             )
+                .chain(),
+        )
             .add_systems(
                 Update,
                 (
                     sync_terrain_fog,
+                    attach_finished_chunk_meshes,
                     (
                         sync_sea_sun,
                         water::drive_sea_level,
@@ -61,37 +69,6 @@ impl Plugin for TerrainPlugin {
         );
         command!(app, "Set the water level", water::set_water_level);
         command!(app, "Set the wave energy", water::set_wave_energy);
+        debug_info!(app, "Chunks", chunk_debug_info);
     }
-}
-
-fn setup_terrain(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<WetSandMaterial>>,
-    world: Res<Terrain>,
-) {
-    let terrain_mesh = Mesh::from(world.into_inner());
-    let terrain_collider = Collider::trimesh_from_mesh(&terrain_mesh).expect("Failed to create terrain collider");
-
-    commands.spawn((
-        Name::new("Terrain"),
-        RigidBody::Static,
-        Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
-        Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
-        Transform::default(),
-        Mesh3d(meshes.add(terrain_mesh)),
-        MeshMaterial3d(materials.add(WetSandMaterial {
-            base: StandardMaterial {
-                base_color: Color::srgb(0.28, 0.42, 0.20),
-                perceptual_roughness: 0.92,
-                reflectance: 0.15,
-                ..default()
-            },
-            extension: WetSandExt {
-                wetness: Wetness::default(),
-            },
-        })),
-        terrain_collider,
-        TerrainSurface,
-    ));
 }

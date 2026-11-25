@@ -12,10 +12,9 @@ use bevy_shader_kit::{
     WetSandMaterial, shore_factor,
 };
 
-use super::coast::bake_coast_maps;
+use super::chunks::TerrainSurfaceMaterial;
+use super::heightmap::bake_height_map;
 use super::terrain::Terrain;
-use super::TerrainSurface;
-use crate::distance_field::DistanceFieldViewHidden;
 use crate::utils::registry::commands::{CommandArgs, CommandOutput};
 
 #[derive(Component)]
@@ -168,7 +167,7 @@ pub fn setup_water_surface(
     terrain: Res<Terrain>,
     sea_state: Res<SeaState>,
 ) {
-    let coast = bake_coast_maps(&terrain, &mut images);
+    let coast = bake_height_map(&terrain, &mut images);
     let material = water_materials.add(WaterMaterial {
         base: StandardMaterial {
             base_color: Color::srgb(0.6, 0.75, 0.72),
@@ -201,6 +200,7 @@ pub fn setup_water_surface(
         material: material.clone(),
     });
     commands.insert_resource(coast);
+    let world = terrain.config().world;
     commands.spawn((
         Name::new("Sea"),
         Sea,
@@ -209,13 +209,12 @@ pub fn setup_water_surface(
             meshes.add(
                 Plane3d::default()
                     .mesh()
-                    .size(terrain.size().0, terrain.size().1)
+                    .size(world.x, world.y)
                     .subdivisions(SEA_SUBDIVISIONS),
             ),
         ),
         MeshMaterial3d(material),
         NotShadowCaster,
-        DistanceFieldViewHidden,
     ));
 }
 
@@ -258,13 +257,13 @@ pub(super) fn sync_water_params(
 
 pub(super) fn sync_wetness(
     sea_state: Res<SeaState>,
-    terrain: Query<&MeshMaterial3d<WetSandMaterial>, With<TerrainSurface>>,
+    surface: Option<Res<TerrainSurfaceMaterial>>,
     mut materials: ResMut<Assets<WetSandMaterial>>,
 ) {
-    let Some(handle) = terrain.iter().next().map(|material| material.0.clone()) else {
+    let Some(surface) = surface else {
         return;
     };
-    let Some(mut material) = materials.get_mut(&handle) else {
+    let Some(mut material) = materials.get_mut(&surface.material) else {
         return;
     };
     material.extension.wetness.height = sea_state.wetness_height;

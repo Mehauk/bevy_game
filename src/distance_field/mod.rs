@@ -54,9 +54,6 @@ impl DistanceFieldSource {
 }
 
 #[derive(Component)]
-pub struct PrimaryField;
-
-#[derive(Component)]
 pub struct DistanceFieldVolume;
 
 #[derive(Component)]
@@ -112,15 +109,12 @@ fn toggle_distance_field(mut view: ResMut<DistanceFieldView>, mut output: ResMut
 
 fn distance_field_debug_info(
     view: Res<DistanceFieldView>,
-    primary: Query<&DistanceFieldSource, With<PrimaryField>>,
+    sources: Query<&DistanceFieldSource>,
 ) -> Option<String> {
-    let source = primary.iter().next()?;
-    let r = source.volume.resolution;
+    let baked = sources.iter().filter(|source| source.baked).count();
     Some(format!(
-        "{} {}x{}x{}",
+        "{} {baked} field{}",
         if view.active { "on" } else { "off" },
-        r.x as i32,
-        r.y as i32,
-        r.z as i32,
+        if baked == 1 { "" } else { "s" }
     ))
 }

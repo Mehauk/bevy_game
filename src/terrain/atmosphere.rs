@@ -2,11 +2,9 @@ use bevy::{
     light::{CascadeShadowConfigBuilder, NotShadowCaster, light_consts::lux},
     prelude::*,
 };
-use crate::distance_field::DistanceFieldDimmedColor;
 
 use super::water::SeaState;
 
-const SKYBOX_VIEW_COLOR: Color = Color::srgb(0.015, 0.015, 0.018);
 const SUN_RADIANCE_PER_LUX: f32 = 3.0 / lux::AMBIENT_DAYLIGHT;
 
 #[derive(Resource, Clone)]
@@ -54,7 +52,6 @@ pub(super) fn setup_atmosphere(
 
     commands.spawn((
         SkyBox,
-        DistanceFieldDimmedColor(SKYBOX_VIEW_COLOR),
         Mesh3d(meshes.add(Cuboid::new(2.0, 1.0, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Srgba::hex("888888").unwrap().into(),

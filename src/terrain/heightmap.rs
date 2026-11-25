@@ -10,7 +10,7 @@ use bevy_shader_kit::CoastField;
 
 use super::terrain::Terrain;
 
-pub const COAST_RESOLUTION: u32 = 512;
+pub const HEIGHT_MAP_RESOLUTION: u32 = 512;
 
 fn sortable(level: f32) -> u32 {
     let bits = level.to_bits();
@@ -22,16 +22,16 @@ fn sortable(level: f32) -> u32 {
 }
 
 #[derive(Resource)]
-pub struct CoastMaps {
+pub struct TerrainHeightMap {
     pub image: Handle<Image>,
     pub field: CoastField,
 }
 
-pub fn bake_coast_maps(terrain: &Terrain, images: &mut Assets<Image>) -> CoastMaps {
-    let (width, height) = terrain.size();
-    let res = COAST_RESOLUTION;
-    let texel = Vec2::new(width / res as f32, height / res as f32);
-    let bounds_min = Vec2::new(-width * 0.5, -height * 0.5);
+pub fn bake_height_map(terrain: &Terrain, images: &mut Assets<Image>) -> TerrainHeightMap {
+    let world = terrain.config().world;
+    let res = HEIGHT_MAP_RESOLUTION;
+    let texel = Vec2::new(world.x / res as f32, world.y / res as f32);
+    let bounds_min = -world * 0.5;
     let count = (res * res) as usize;
 
     let mut ground = vec![0.0f32; count];
@@ -91,12 +91,12 @@ pub fn bake_coast_maps(terrain: &Terrain, images: &mut Assets<Image>) -> CoastMa
         TextureFormat::Rg32Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     ));
-    CoastMaps {
+    TerrainHeightMap {
         image,
         field: CoastField {
             bounds_min,
             texel,
-            inv_size: Vec2::new(1.0 / width, 1.0 / height),
+            inv_size: Vec2::new(1.0 / world.x, 1.0 / world.y),
             resolution: Vec2::new(res as f32, res as f32),
         },
     }
@@ -107,10 +107,10 @@ mod tests {
     use super::*;
 
     fn spill_of(terrain: &Terrain, images: &mut Assets<Image>) -> Vec<f32> {
-        let maps = bake_coast_maps(terrain, images);
+        let maps = bake_height_map(terrain, images);
         let image = images.get(&maps.image).unwrap();
         let bytes = image.data.as_ref().unwrap();
-        let count = (COAST_RESOLUTION * COAST_RESOLUTION) as usize;
+        let count = (HEIGHT_MAP_RESOLUTION * HEIGHT_MAP_RESOLUTION) as usize;
         (0..count)
             .map(|i| f32::from_le_bytes(bytes[i * 8 + 4..i * 8 + 8].try_into().unwrap()))
             .collect()

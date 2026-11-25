@@ -1,140 +1,140 @@
-## Cross-Stage Invariants
-
-Before starting Stage 1, note four properties of the current codebase that govern all three stages:
-
-1. **Single height seam**: `Terrain::sample_ground_height(&self, x: f32, z: f32) -> f32` is already the sole entry point for `build_chunk_mesh`, `build_chunk_collider`, `ground_normal`, `bake_height_map`, `terrain_gradient`, `SeaState::shore_surface_height_at`, `SpawnGroundHeight`, `integration/currents.rs`, `integration/submersion.rs`, and `integration/debug_views.rs`. Preserving this signature keeps every consumer untouched across stages.
-2. **Thread-safe chunk sampling**: `src/terrain/chunks.rs` copies `Terrain` (`let sampler = *terrain;`) into `AsyncComputeTaskPool` tasks (`build_chunk_mesh`). Once `Terrain` owns heap data in Stage 2+, it must shift from `Copy` to cheap `Clone` over immutable snapshots (`Arc<HeightGrid>`) so background tasks never race or block on locks.
-3. **Existing `world` size vs. unit tests**: `TerrainConfig::default().world` is `Vec2::splat(3000.0)` (`50×50 = 2500` chunks at `chunk_size = 60.0`), while existing tests in `src/terrain/terrain.rs` and `src/terrain/chunks.rs` still assert `5×5 = 25` chunks (`300.0`). Reconcile that baseline (either update those assertions or pass an explicit `300.0` config in test fixtures) before adding stage tests.
-4. **Module isolation & test clocks**: `src/terrain/` must never import peer features (`tests/module_isolation.rs`), all new code must contain zero comments, and `FixedUpdate` integration tests (`currents.rs`, `submersion.rs`) must keep using `TimeUpdateStrategy::ManualDuration`.
-
----
-
 ## Stage 1 — Pluggable Generation (`Generator`)
 
+Same foundation: keep `Terrain` stateless and `Copy` while moving the analytic crater behind an enum.
+
 ### Migration Steps
-1. **Define `Generator` in `src/terrain/terrain.rs`**:
-   - Add `#[derive(Clone, Copy, Debug, PartialEq)] pub enum Generator { Crater, Noise { seed: u32, octaves: u32, scale: f32 } }`.
+1. **Add `Generator` in `src/terrain/terrain.rs`**:
+   - Define `#[derive(Clone, Copy, Debug, PartialEq)] pub enum Generator { Crater, Noise { seed: u32, octaves: u32, scale: f32 } }`.
    - Implement `Generator::sample(&self, world: Vec2, x: f32, z: f32) -> f32`:
-     - `Crater` runs the existing `CRATER_DEPTH` / `CRATER_RIM_X` / `CRATER_RIM_Z` / `CRATER_INSET` smoothstep formula verbatim.
-     - `Noise { seed, octaves, scale }` evaluates deterministic, stateless 2D FBM (pure coordinate-hashed gradient noise with quintic fade and normalized octave sum). Avoid calling `noise::Perlin::new(seed)` inside `sample_ground_height`, as it rebuilds a 512-entry permutation table on every vertex/normal call.
-2. **Wire into `TerrainConfig` and `Terrain`**:
-   - Add `pub generator: Generator` to `TerrainConfig` (default `Generator::Crater` initially so startup parity is preserved, or `Noise` once validated).
-   - Delegate `Terrain::sample_ground_height(&self, x: f32, z: f32) -> f32` to `self.0.generator.sample(self.0.world, x, z)`.
-   - Keep `Terrain` `Copy` so `chunks.rs` needs no changes in Stage 1.
-3. **Optionally expose generator switching for Stage 1 verification**:
-   - Re-export `Generator` from `src/terrain/mod.rs` so scenarios/tests can construct `Terrain` with either variant cleanly.
+     - `Crater`: existing `CRATER_DEPTH` / `CRATER_RIM_X` / `CRATER_RIM_Z` / `CRATER_INSET` smoothstep math.
+     - `Noise`: deterministic, stateless 2D FBM using pure coordinate-hashed gradient noise (do **not** construct `noise::Perlin::new(seed)` inside `sample_ground_height`, as it rebuilds a 512-byte permutation table on every vertex and normal call).
+2. **Thread through `TerrainConfig` & `Terrain`**:
+   - Add `pub generator: Generator` to `TerrainConfig` (default `Generator::Crater` initially).
+   - Route `Terrain::sample_ground_height(&self, x, z)` to `self.0.generator.sample(self.0.world, x, z)`.
+   - Reconcile `TerrainConfig::default().world` (`3000.0`, 2500 chunks) vs. existing tests in `terrain.rs` and `chunks.rs` (which assert `300.0`, 25 chunks) before expanding test coverage.
 
 ### Files Touched
-- `src/terrain/terrain.rs`: add `Generator`, `TerrainConfig::generator`, route `sample_ground_height`.
-- `src/terrain/mod.rs`: export `Generator`.
+- `src/terrain/terrain.rs`
+- `src/terrain/mod.rs` (re-export `Generator`)
 
 ### Risks
-- **Stateless noise cost vs. table allocation**: Constructing `noise::Perlin::new(seed)` inside `sample_ground_height` will allocate/initialize tables millions of times across chunk meshes and `ground_normal` finite differences, causing severe startup/LOD stalls. Use pure arithmetic coordinate-hash gradient noise so `Generator` remains `Copy`, stateless, and allocation-free.
-- **Boundary ridges blocking ocean spill**: Unlike `Crater` (whose perimeter is `-30.0` everywhere), raw FBM `Noise` can place ridges higher than `sea_level` along the 4 world edges. In `heightmap.rs`, priority-flood `spill` seeds from the 4 edges, so edge ridges prevent open-ocean flooding of interior valleys. Decide whether `Noise` maps include an optional edge basin skirt or intentionally form enclosed inland basins.
-- **Interior LOD seams exposed**: `Crater` has a flat interior (`y = 0.0`), so interior LOD stitching was previously hidden. `Noise` puts slopes and curvature across every chunk boundary, exposing any normal or index-stitch bug immediately.
-- **Spawn elevation at `(0, 0)`**: `TerrainPlugin::build` computes `SpawnGroundHeight` from `sample_ground_height(0.0, 0.0)`; if `Noise` puts `(0, 0)` deep underwater (`< sea_level`), the character spawns submerged unless amplitude/offset places `(0, 0)` above `sea_level`.
+- **Per-call table construction**: Constructing `noise::Perlin` inside `sample_ground_height` will stall chunk building; keep noise evaluation pure arithmetic or prebuilt once outside the per-vertex loop.
+- **Boundary ridges vs. ocean spill**: Arbitrary noise can place ridges along world edges above `sea_level`, blocking `heightmap.rs` edge-seeded `spill` flooding from entering interior valleys unless you intend enclosed basins or add an edge falloff.
+- **Interior LOD seams**: `Crater` is flat in the interior, so curved `Noise` slopes will exercise interior `StitchFlags` seams for the first time.
 
 ### What to Test Before Moving to Stage 2
-- **Determinism & edge cases**: Identical `(seed, octaves, scale, x, z)` produces bit-identical `f32`; distinct seeds produce distinct heights; `octaves == 0`, `scale <= 0.0`, and large coordinates remain finite.
-- **`Crater` parity**: `Generator::Crater` matches the previous analytic output across plain, rim slopes, and corners.
-- **Watertight LOD stitching over `Noise`**: Parameterize `a_stitched_fine_edge_meets_the_coarse_neighbour_exactly` in `src/terrain/terrain.rs` over `Generator::Noise` (and test North/South/East/West stitches, not just East) so curved interior seams meet coarse chords with zero crack.
-- **Spill bake**: Run `bake_height_map` with `Generator::Noise` and verify all `ground` and `spill` texels are finite and `spill >= ground`.
-- **Integration `FixedUpdate` parity**: Run `cargo test` for `integration::currents` and `integration::submersion` (manual clocks) and `cargo test --test module_isolation`.
+- `Noise` determinism across `(seed, octaves, scale, x, z)` and safe finite outputs for `octaves == 0` or `scale <= 0.0`.
+- `Generator::Crater` bit-identical parity with the original function.
+- `a_stitched_fine_edge_meets_the_coarse_neighbour_exactly` passing with `Generator::Noise` on all 4 borders (`N, S, E, W`).
+- `bake_height_map` with `Generator::Noise` producing finite values with `spill >= ground`.
+- `FixedUpdate` tests in `src/integration/currents.rs` and `src/integration/submersion.rs` (with `TimeUpdateStrategy::ManualDuration`).
 
 ---
 
-## Stage 2 — Grid-Authoritative Heightfield
+## Stage 2 — Grid-Authoritative Heightfield & Simulation Passes (Erosion)
+
+Invert `heightmap.rs` so a stored `HeightGrid` becomes the single source of truth, seeded by `Generator` and optionally shaped by iterative terrain passes (erosion, smoothing, etc.) before meshes, colliders, and `spill` read from it.
 
 ### Migration Steps
-1. **Introduce `HeightGrid` (`src/terrain/grid.rs` or inside `src/terrain/terrain.rs`)**:
-   - Store `resolution: UVec2`, `bounds_min: Vec2`, `texel: Vec2`, `inv_size: Vec2`, `heights: Vec<f32>`.
-   - Add `pub grid_resolution: u32` (default `512`, replacing the standalone `HEIGHT_MAP_RESOLUTION` constant in `heightmap.rs`) to `TerrainConfig`.
-   - Seed `HeightGrid::from_config(config: &TerrainConfig)` once by evaluating `config.generator.sample(config.world, world_x, world_z)` at texel centers `bounds_min + (ix + 0.5, iz + 0.5) * texel` — matching the exact layout currently baked in `heightmap.rs`.
-2. **Match `coast.wesl` bilinear sampling on CPU**:
-   - Implement `HeightGrid::sample(&self, x: f32, z: f32) -> f32` using the exact convention in `crates/bevy_shader_kit/src/shaders/water/coast.wesl` (`coast_weight_of` + clamped 4-corner bilinear interpolation over texel centers):
-     - `u = ((x - bounds_min.x) * inv_size.x * res.x - 0.5).clamp(0.0, res.x - 1.0)`
-     - `v = ((z - bounds_min.y) * inv_size.y * res.y - 0.5).clamp(0.0, res.y - 1.0)`
-     - Bilinearly mix `(ix0, iz0)`, `(ix1, iz0)`, `(ix0, iz1)`, `(ix1, iz1)` where `ix1 = (ix0 + 1).min(res_x - 1)`.
-   - Scale `Terrain::ground_normal` finite-difference step safely (`step = NORMAL_SAMPLE_STEP.max(texel_min)` or `texel * 0.5`) so normals don't capture bilinear cell creases when `texel > 0.5m`.
-3. **Make `Terrain` own `Arc<HeightGrid>`**:
-   - Change `Terrain` from `Copy` to `Clone`: `pub struct Terrain { config: TerrainConfig, grid: Arc<HeightGrid> }`.
-   - Route `Terrain::sample_ground_height(&self, x, z)` through `self.grid.sample(x, z)`.
-   - Expose `pub fn grid(&self) -> &HeightGrid` and `pub fn config(&self) -> TerrainConfig`.
-   - In `src/terrain/chunks.rs`, change the two `let sampler = *terrain;` sites (`spawn_terrain_chunks`, `update_chunk_lods`) to `let sampler = terrain.clone();` (`O(1)` atomic refcount bump).
+1. **Create `HeightGrid` (`src/terrain/grid.rs` or in `terrain.rs`)**:
+   - Store `resolution: UVec2`, `bounds_min: Vec2`, `texel: Vec2`, `inv_size: Vec2`, and `heights: Vec<f32>`.
+   - Move `HEIGHT_MAP_RESOLUTION` into `TerrainConfig::grid_resolution: u32` (default `512`).
+   - Seed texel centers (`bounds_min + (ix + 0.5, iz + 0.5) * texel`) from `Generator`.
+2. **Add toggleable generation-time passes (`TerrainSimConfig` / `TerrainPass`)**:
+   - Define a config struct on `TerrainConfig` (e.g., `pub erosion: ErosionConfig { pub enabled: bool, pub thermal_iterations: u32, pub hydraulic_drops: u32, pub talus_angle: f32, ... }` — disabled or tuned by default, deterministic from a `seed`).
+   - Run enabled passes directly over `HeightGrid.heights` right after seeding from `Generator`. Because passes run on the flat `Vec<f32>` grid before creating the `Arc<HeightGrid>`, there is zero locking and zero async complexity.
+3. **Preserve the `sample_ground_height(x, z)` seam with CPU/GPU parity**:
+   - Change `Terrain` from `Copy` to `Clone` wrapping `config: TerrainConfig`, `revision: u64`, and `grid: Arc<HeightGrid>`.
+   - Implement `HeightGrid::sample(x, z)` using the exact texel-center bilinear convention of `coast_weight_of` + `terrain_height_at` in `crates/bevy_shader_kit/src/shaders/water/coast.wesl`.
+   - Scale `Terrain::ground_normal` finite-difference step with `texel` (`NORMAL_SAMPLE_STEP.max(texel_min * 0.5)`) so normals stay smooth across grid cells.
+   - Update `let sampler = *terrain;` to `let sampler = terrain.clone();` in `src/terrain/chunks.rs` (two sites: `spawn_terrain_chunks` and `update_chunk_lods`).
 4. **Invert `src/terrain/heightmap.rs`**:
-   - Extract `pub fn compute_spill(ground: &[f32], res: UVec2) -> Vec<f32>` as a pure function operating on `&[f32]`.
-   - Change `bake_height_map(terrain: &Terrain, images: &mut Assets<Image>) -> TerrainHeightMap` so it reads `terrain.grid().heights()` instead of calling `terrain.sample_ground_height(x, z)`.
-   - Populate `CoastField` from `grid.bounds_min`, `grid.texel`, `grid.inv_size`, and `grid.resolution` instead of hardcoding `HEIGHT_MAP_RESOLUTION`.
+   - Extract `pub fn compute_spill(ground: &[f32], res: UVec2) -> Vec<f32>`.
+   - Update `bake_height_map` to read `terrain.grid().heights()` directly instead of calling `sample_ground_height`, and build `CoastField` from `grid` metadata.
 
 ### Files Touched
-- `src/terrain/terrain.rs` (and optional `src/terrain/grid.rs` submodule): `HeightGrid`, `TerrainConfig::grid_resolution`, `Terrain` holding `Arc<HeightGrid>`, `Clone` instead of `Copy`, bilinear `sample_ground_height`.
-- `src/terrain/heightmap.rs`: extract `compute_spill`, read `terrain.grid().heights()`, build `CoastField` from grid metadata.
-- `src/terrain/chunks.rs`: `let sampler = terrain.clone();` in `spawn_terrain_chunks` and `update_chunk_lods`.
-- `src/terrain/mod.rs`: declare `mod grid;` if separated.
+- `src/terrain/terrain.rs` (and optional `src/terrain/grid.rs` / `src/terrain/erosion.rs`)
+- `src/terrain/heightmap.rs`
+- `src/terrain/chunks.rs` (`terrain.clone()`)
+- `src/terrain/mod.rs`
 
 ### Risks
-- **CPU/GPU half-texel shift**: If `HeightGrid::sample` uses texel corners (`0..world`) while `coast.wesl` uses texel centers (`0.5..res - 0.5`), the water shoreline (`water.wesl` / `water_vertex.wesl`) will misalign from terrain meshes and colliders by `0.5 * texel` (`~2.9m` at `3000m / 512`). Mirroring `coast_weight_of` exactly eliminates this.
-- **Resolution mismatch (`world = 3000.0` vs. `512²`)**: At `3000m`, `512²` gives `5.86m` per texel while `lod 0` mesh quads are `0.94m` (`60 / 64`). High-frequency generator noise is low-pass filtered onto the `5.86m` grid. Keeping `grid_resolution` configurable (`512`, `1024`, etc.) lets you trade memory (`1 MB` vs `4 MB`) and startup spill cost for resolution without hardcoding.
-- **Bilinear normal kinks**: Sampling `NORMAL_SAMPLE_STEP = 0.5` across a `5.86m` bilinear cell exposes subtle normal discontinuities along texel-center grid lines unless step scales with `texel` or uses `CoastField`-style smoothing.
-- **Startup stall on oversized grids**: `BinaryHeap` Dijkstra over `2048²` (`4.2M` cells) takes significantly longer than `512²` (`262k` cells) during `Startup` (`setup_water_surface`). Keep default `512` (or `1024`) and monitor with `ProfilerPlugin`.
+- **CPU/GPU shoreline desync**: Any difference between `HeightGrid::sample` and `coast.wesl` (`coast_weight_of`) shifts water shorelines by `0.5 * texel`. Keep the exact same clamped `uv * res - 0.5` math.
+- **Grid resolution vs. erosion detail**: At `world = 3000.0` and `grid_resolution = 512`, 1 texel is `5.86m`, so fine erosion gullies won't resolve unless `grid_resolution` is higher (e.g. `1024`) or `world` is smaller; however, `compute_spill` Dijkstra cost grows as $O(N \log N)$ with grid size. Keep `grid_resolution` configurable and profile `Startup` with `ProfilerPlugin`.
+- **Non-deterministic erosion**: If hydraulic droplet simulation uses thread-local/non-seeded RNG, terrain will differ across runs or regenerations. Always seed erosion passes deterministically from `TerrainConfig`.
 
 ### What to Test Before Moving to Stage 3
-- **Texel-center and bilinear accuracy**: At exact texel centers, `HeightGrid::sample` equals the generator value; at midpoints between 4 texels, it equals their mean; out-of-bounds `(x, z)` clamps cleanly without panic or NaN.
-- **CPU/GPU `coast.wesl` parity test**: Run a unit test comparing `HeightGrid::sample` against a direct Rust translation of `coast.wesl`'s `coast_weight_of` + `terrain_height_at` at interior, seam, and out-of-bounds coordinates.
-- **Watertight LOD seams from grid**: Verify `build_chunk_mesh` across adjacent `lod 0` / `lod 1` / `lod 2` / `lod 3` chunks produces identical border heights and normals when reading from `HeightGrid`.
-- **`compute_spill` unit tests**: Verify flat plain spills `<= 0.0`, closed crater holds rim saddle level, and breached rim drains to boundary height.
-- **Async pipeline & integration tests**: Confirm `chunks.rs` tests (`chunk_meshes_arrive_from_the_task_pool`, `colliders_follow_the_viewer`) and `FixedUpdate` tests (`currents.rs`, `submersion.rs`) pass.
+- **Bilinear & `coast.wesl` parity**: `HeightGrid::sample` matches generator values at texel centers and matches a Rust mirror of `coast.wesl` across interior, edge, and out-of-bounds points.
+- **Erosion invariants**: With erosion enabled, deterministic re-runs produce bit-identical `HeightGrid`s; thermal erosion reduces slopes steeper than `talus_angle` while conserving finite heights (`!is_nan`, within expected bounds).
+- **Watertight LOD seams**: `build_chunk_mesh` across adjacent LOD levels (`0..3`) stays watertight on an eroded `Noise` grid.
+- **Async chunk & `FixedUpdate` suites**: `chunks.rs` async mesh/collider tests and `currents.rs` / `submersion.rs` manual-clock tests pass.
 
 ---
 
-## Stage 3 — Simulation Plumbing (Runtime Terrain Mutation)
+## Stage 3 — Console Commands & Toggles for Terrain and Water Simulations
+
+With `HeightGrid` in place, Stage 3 adds two clean sets of console controls without needing runtime incremental sculpting:
+1. **Terrain simulation toggles & on-demand regeneration** (`erosion`, `generator`, `seed`).
+2. **Water simulation toggles** (shader features, tides, swells, currents, splashes, wetness, underwater).
 
 ### Migration Steps
-1. **Revisioned copy-on-write edits on `Terrain`**:
-   - Add `revision: u64` to `Terrain`, plus per-chunk target revisions (`chunk_revisions: Vec<u64>` indexed by `iz * count.x + ix`) and a dirty-spill tracker (`pending_spill_dirty: Option<DirtySpillBounds>` or raised/lowered texel lists).
-   - Provide an edit API on `Terrain` (e.g. `apply_edit(world_bounds, |grid_slice| ...)` or `modify_region(world_rect, fn)`):
-     - Uses `Arc::make_mut(&mut self.grid)` so in-flight `AsyncComputeTaskPool` tasks continue reading the prior immutable `Arc<HeightGrid>` snapshot with zero locks or data races.
-     - Records per-texel deltas (whether any texel rose above `old_spill`, or lowered below `old_spill`).
-     - Increments `self.revision`, expands the edited world rectangle by `padding = grid.texel + Vec2::splat(normal_step)` (covering bilinear interpolation + `ground_normal` stencil across chunk borders), and bumps `chunk_revisions` for every chunk intersecting that padded rectangle.
-2. **Incremental mesh & collider rebuild in `src/terrain/chunks.rs`**:
-   - Add `pub revision: u64` to `TerrainChunk` and `ChunkMeshTask`, and add `#[derive(Component)] struct ColliderRevision(u64)` to collider-bearing chunks.
-   - In `update_chunk_lods`: skip rebuilding only when `chunk.lod == lod && chunk.flags == flags && chunk.revision == target_revision` (and `pending.revision == target_revision`). Dirty chunks enqueue a `ChunkMeshTask` carrying `sampler = terrain.clone()` and `revision: target_revision`.
-   - In `attach_finished_chunk_meshes`: set `chunk.revision = pending.revision`. If `terrain.chunk_revision(chunk.coord) != chunk.revision`, the next `update_chunk_lods` tick automatically schedules the newer revision.
-   - In `sync_chunk_colliders`: alongside attach/detach by `collider_radius`, rebuild `build_chunk_collider(&terrain, chunk.coord)` when an active collider's `ColliderRevision.0 != terrain.chunk_revision(chunk.coord)` (optionally budgeting max collider rebuilds per frame if continuous brushes edit many chunks at once).
-3. **Incremental `spill` recompute & in-place GPU upload in `src/terrain/heightmap.rs`**:
-   - Store `pub spill: Vec<f32>` (and `last_revision: u64`) inside `TerrainHeightMap`.
-   - Implement `update_spill_incremental(ground: &[f32], spill: &mut [f32], res: UVec2, raised: &[u32], lowered: &[u32]) -> bool`:
-     - **Short-circuit**: if `raised` has no texels with `ground[i] > spill[i]` and `lowered` has no texels with `ground[i] < spill[i]` (e.g., raising/lowering underwater mud below the spill plane), return `false` (`O(edited_texels)`).
-     - **Raises first**: starting from lifted texels where `ground[i] > spill[i]`, flood outward through neighbors that are valid interior basins (`spill[n] < INFINITY` and `spill[n] >= old_threshold`) to invalidate `spill[n] = INFINITY` (except world-border texels, which reset to `ground[border]`), then run a multi-source priority-flood seeded from the valid perimeter neighbors of the invalidated set (`spill != INFINITY`) to refill exact `spill`.
-     - **Lowers second**: push lowered texels where `ground[i] < spill[i]` (along with their updated `max(ground[i], min_neighbor_spill)`) into a min-heap and propagate strictly while `candidate < spill[neighbor]`, stopping naturally at the drained basin's boundary.
-   - Add an `Update` system `sync_height_map(mut terrain: ResMut<Terrain>, mut heightmap: ResMut<TerrainHeightMap>, mut images: ResMut<Assets<Image>>)` running before `water::sync_water_params`:
-     - Drains pending dirty texels from `Terrain`, updates `TerrainHeightMap::spill` incrementally, and overwrites the existing `Image` bytes in `images.get_mut(&heightmap.image)` in-place (preserving the `Handle<Image>` bound to `WaterMaterialExt.coast_map`).
-4. **Sync downstream terrain-derived caches (`src/integration/`)**:
-   - In `src/integration/debug_views.rs`: store `terrain_revision: u64` in `DebugCurtains` so `sync_debug_curtains` regenerates `curtain_mesh(&terrain, &segments)` when `terrain.revision() != state.terrain_revision`, even if `segments` didn't change.
-   - Keep `integration/currents.rs` and `integration/submersion.rs` reading `Res<Terrain>` dynamically (already live), and ensure `setup_water_surface` / `sync_height_map` ordering keeps `TerrainHeightMap` initialized cleanly in `Startup`.
+
+#### A. Terrain Simulation Toggles & On-Demand Regeneration
+1. **Track `revision: u64` on `Terrain`, `TerrainChunk`, `ChunkMeshTask`, and `ColliderRevision`**:
+   - Add `pub fn regenerate(&mut self)` on `Terrain`: builds a fresh `Arc<HeightGrid>` from `self.config` (running enabled passes like erosion), swaps `self.grid`, and increments `self.revision`.
+   - In `src/terrain/chunks.rs`:
+     - Store `revision: u64` on `TerrainChunk` and `ChunkMeshTask`, plus `ColliderRevision(u64)` on collider chunks.
+     - `update_chunk_lods` rebuilds chunks whenever `chunk.revision != terrain.revision()` (alongside `lod` / `flags`), letting the existing `AsyncComputeTaskPool` pipeline swap meshes asynchronously without freezing the frame.
+     - `sync_chunk_colliders` rebuilds active colliders within `collider_radius` when `ColliderRevision.0 != terrain.revision()`.
+2. **Re-upload `TerrainHeightMap` in-place**:
+   - In `src/terrain/heightmap.rs`, add a `sync_height_map` system checking `heightmap.revision != terrain.revision()`: recompute full `spill` from `terrain.grid().heights()` and overwrite `images.get_mut(&heightmap.image).data` in-place (keeping the same `Handle<Image>` bound to `WaterMaterialExt.coast_map`).
+3. **Sync downstream terrain caches**:
+   - Update `SpawnGroundHeight` when `terrain.revision()` changes so `respawn_character` stays above mutated ground.
+   - In `src/integration/debug_views.rs`, track `terrain_revision: u64` in `DebugCurtains` so active Level-2 curtains re-drape over regenerated terrain.
+4. **Register terrain console commands (`src/terrain/mod.rs`)**:
+   - `toggle_erosion` (flips `config.erosion.enabled` and calls `terrain.regenerate()`).
+   - `set_terrain_generator <crater|noise> [seed] [octaves] [scale]` (updates `config.generator` and calls `terrain.regenerate()`).
+   - `regenerate_terrain [seed]`.
+
+#### B. Water Simulation Effect Toggles
+1. **Add simulation flags to `SeaState` (`src/terrain/water.rs`)**:
+   - Add explicit toggles such as `pub tides_enabled: bool`, `pub swells_enabled: bool`, `pub wetness_enabled: bool` (plus keeping `wave_energy`).
+   - Gate `drive_sea_level` tide oscillation on `tides_enabled` (holding `sea_level = base_level` and `level_rate = 0.0` when off), gate `SwellSet` evaluation on `swells_enabled` (pushing `SwellSet::default()` to `WaterMaterialExt.swells` and skipping CPU swell offset when off), and gate `sync_wetness` on `wetness_enabled` (setting `wetness.height = f32::MIN` when off).
+2. **Expose shader-level water toggles via `WaterMaterialExt` (`src/terrain/water.rs`)**:
+   - Register commands (`command!` in `src/terrain/mod.rs`) mutating `WaterMaterialExt` on `WaterSurface`:
+     - `toggle_water_coast` (`ext.coastal`, toggles `WATER_COAST` vertex/fragment shoaling & spill discard)
+     - `toggle_water_ripples` (`ext.ripples`, toggles `WATER_RIPPLES`)
+     - `toggle_water_foam` (`ext.foam`, toggles `WATER_FOAM`)
+     - `toggle_water_optics` (`ext.optics`, toggles `WATER_OPTICS`)
+     - `toggle_water_body_foam` (`ext.body_foam`, toggles `WATER_BODY_FOAM`)
+     - `toggle_water_tides`, `toggle_water_swells`, `toggle_water_wetness`
+   - Note: `WaterMaterialKey` already hashes all 5 `WaterMaterialExt` bools, so toggling them recompiles/switches pipeline variants automatically with zero extra shader plumbing!
+3. **Integration-level water toggles (`src/integration/`)**:
+   - Keep cross-feature simulation toggles inside `src/integration/` to respect `tests/module_isolation.rs`:
+     - `src/integration/currents.rs`: add `CurrentsToggle` + `toggle_currents` command (`character.water.current = Vec3::ZERO` when disabled).
+     - `src/integration/ripples.rs`: add `SplashesToggle` + `toggle_splashes` command (skips `emit_character_splashes` when disabled, while keeping manual `splash` command working).
+     - (`src/integration/post_process.rs` already has `toggle_underwater`.)
+   - Note on `body_foam.rs`: if `toggle_water_body_foam` is exposed on `WaterMaterialExt`, avoid having `sync_body_sdf` unconditionally overwrite `extension.body_foam = true` every frame—either only initialize it once when the body SDF first finishes baking, or respect an explicit `BodyFoamToggle`.
 
 ### Files Touched
-- `src/terrain/terrain.rs` (and `grid.rs`): `revision`, `chunk_revisions`, padded dirty-bounds-to-chunk mapping, `Arc::make_mut` edit API, raised/lowered dirty texel tracking.
-- `src/terrain/chunks.rs`: `revision` on `TerrainChunk` / `ChunkMeshTask`, `ColliderRevision`, dirty checks in `update_chunk_lods`, `attach_finished_chunk_meshes`, and `sync_chunk_colliders`.
-- `src/terrain/heightmap.rs`: `spill` cache in `TerrainHeightMap`, `update_spill_incremental`, in-place `Assets<Image>` update (`sync_height_map`).
-- `src/terrain/water.rs` & `src/terrain/mod.rs`: share `TerrainHeightMap` initialization/update cleanly in `Startup` and `Update` (plus optional simulation/edit command in `terrain` for live testing).
-- `src/integration/debug_views.rs`: invalidate `DebugCurtains` on `terrain.revision()` changes.
+- `src/terrain/terrain.rs` (and `grid.rs` / `erosion.rs`): `revision`, `regenerate()`, `ErosionConfig`
+- `src/terrain/chunks.rs`: `revision` on `TerrainChunk`, `ChunkMeshTask`, `ColliderRevision`
+- `src/terrain/heightmap.rs`: `revision` tracking + in-place `sync_height_map`
+- `src/terrain/water.rs`: `SeaState` simulation flags + water toggle commands
+- `src/terrain/mod.rs`: command registrations, `SpawnGroundHeight` sync, `sync_height_map` schedule
+- `src/integration/currents.rs`: `CurrentsToggle` + `toggle_currents`
+- `src/integration/ripples.rs`: `SplashesToggle` + `toggle_splashes`
+- `src/integration/body_foam.rs`: guard `body_foam` overwrite so console toggle sticks
+- `src/integration/debug_views.rs`: re-drape `DebugCurtains` on `terrain.revision()` changes
 
 ### Risks
-- **Missing neighbor rebuild on border edits**: Editing a texel within `1 texel + normal_step` of a chunk edge alters `sample_ground_height` and `ground_normal` on the adjacent chunk. Failing to pad the dirty-rect-to-chunk intersection breaks LOD seam watertightness.
-- **1-frame async seam lag during edits**: When two neighboring chunks rebuild concurrently on `AsyncComputeTaskPool`, one can attach 1 frame before the other, producing a transient 1-frame seam until both land. Self-heals as soon as the second task completes; if unacceptable for large discrete steps, attach completed tasks from the same revision together.
-- **Raise-then-lower ordering hazard in incremental spill**: Applying lowerings before raisings in the same batch can cause newly invalidated cells to miss downward drains. Always run raise-invalidation + perimeter flood before downward heap propagation, and coalesce multiple edits per frame before running `sync_height_map`.
-- **Large dam-breach / continuous brush frame spikes**: Rebuilding dozens of Avian `Collider::heightfield`s or invalidating a continent-sized spill basin in one `Update` tick can spike frame time (`ProfilerPlugin`). Budget collider rebuilds per frame, keep `collider_radius` local, and coalesce edits.
-- **Stale curtain debug views**: `DebugCurtains` currently skips mesh rebuild when `segments` is unchanged; without checking `terrain.revision()`, elevated Level-2 curtains float or sink relative to mutated terrain.
+- **System overwrite fighting console toggles**: `body_foam::sync_body_sdf` currently sets `extension.body_foam = true` every frame, and `drive_sea_level` overwrites `sea_level` every frame. Any command toggle must control the source-of-truth flag rather than being clobbered on the next `Update`.
+- **Stale `ChunkMeshTask` after rapid regenerations**: Running `toggle_erosion` twice quickly could let an older `ChunkMeshTask` finish after the newer `regenerate()`. Tagging `ChunkMeshTask` with `revision` and having `update_chunk_lods` check `chunk.revision != terrain.revision()` guarantees the latest revision always wins.
+- **Swell parity between GPU `UnderwaterPostProcess` and `SeaState`**: If `swells_enabled = false` sets `SwellSet::default()` on `SeaState.swells`, `sync_underwater_post_process` (`src/integration/post_process.rs`) will automatically stop wave meniscus motion on the lens too—make sure `SeaState::swells` is the single source of truth rather than mutating only `WaterMaterialExt.swells`.
+- **Module isolation regressions**: Placing `toggle_currents` or `toggle_splashes` inside `src/terrain/` would violate `tests/module_isolation.rs`; keep those commands in their `src/integration/*` modules (or inside `src/ripples/mod.rs` for ripple emission).
 
 ### What to Test Before Considering Stage 3 Complete
-- **Targeted dirty chunking**: Edit a single interior chunk well away from borders (`> texel + normal_step` inside); verify only that chunk's `target_revision` increments, only 1 `ChunkMeshTask` spawns, and the other 24/2499 chunks do zero rebuild work.
-- **Border-padded seam test**: Edit directly across a chunk border separating an `lod = 0` chunk and a stitched `lod = 1` chunk; settle tasks and assert both chunks incremented revision and the stitched fine edge matches the coarse chord vertex-for-vertex.
-- **Collider synchronization**:
-  - Edit terrain under `TerrainViewer`; assert the active chunk's `Collider` updates to the new heightfield.
-  - Edit terrain far outside `collider_radius`; assert no `Collider` spawns early, then move `TerrainViewer` over it and assert the newly attached `Collider` uses the mutated height.
-- **Incremental spill equivalence (property/fuzz test)**: Apply sequences of random raises, lowers, dam closures, and dam breaches on a test grid (e.g. `64×64`), asserting `update_spill_incremental` matches a fresh full `compute_spill` element-for-element after every edit and updates `Image.data` in-place without changing `Handle<Image>`.
-- **Full isolation & simulation checks**:
-  - `cargo test --test module_isolation` and `cargo test --test crate_isolation`.
-  - `FixedUpdate` tests (`currents.rs`, `submersion.rs` with `TimeUpdateStrategy::ManualDuration`) observe mutated terrain heights and gradients.
-  - `debug_views.rs` unit/app test confirms `DebugCurtains` mesh Y positions update after a `Terrain` edit.
+- **Regeneration round-trip**: Trigger `regenerate` / `toggle_erosion` in a test app; verify `terrain.revision()` increments, `TerrainHeightMap` updates `Image.data` in-place with the same `Handle<Image>`, active `Collider`s update, and all `TerrainChunk`s converge to the new `revision` with watertight LOD seams.
+- **Water toggle stickiness**: Toggle `body_foam`, `swells`, `tides`, `currents`, `splashes`, and `wetness` off and step `Update` + `FixedUpdate` multiple frames; verify `sync_body_sdf`, `drive_sea_level`, `sync_water_params`, `sync_tidal_currents` (with `TimeUpdateStrategy::ManualDuration`), and `emit_character_splashes` do not re-enable or overwrite the disabled state.
+- **Downstream sync**: Verify `SpawnGroundHeight` and `DebugCurtains` update after `terrain.regenerate()`.
+- **Isolation & code hygiene**: `cargo test --workspace`, `cargo test --test module_isolation`, `cargo test --test crate_isolation`, and zero code comments in all edited files.

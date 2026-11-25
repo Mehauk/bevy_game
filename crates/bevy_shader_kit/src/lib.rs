@@ -5,6 +5,7 @@ use bevy::{
     shader::load_shader_library,
 };
 
+pub mod bake;
 pub mod compose;
 pub mod field;
 pub mod post_process;
@@ -12,6 +13,7 @@ pub mod underwater;
 pub mod water;
 pub mod wet;
 
+pub use bake::{GpuBakeSdfRequest, GpuSdfBakePlugin, SdfBakeQueue, uninit_sdf_image};
 pub use post_process::{PostProcessEffect, PostProcessPlugin};
 pub use underwater::UnderwaterPostProcess;
 pub use wet::{WetSandExt, WetSandMaterial, Wetness};
@@ -54,12 +56,14 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/body.wesl");
         load_shader_library!(app, "shaders/post_process/bindings.wesl");
         embedded_asset!(app, "shaders/sdf/view_mode.wesl");
+        embedded_asset!(app, "shaders/sdf/bake_compute.wesl");
         embedded_asset!(app, "shaders/water/water.wesl");
         embedded_asset!(app, "shaders/water/water_vertex.wesl");
         embedded_asset!(app, "shaders/wet/wet_sand.wesl");
         embedded_asset!(app, "shaders/post_process/underwater.wesl");
 
-        app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
+        app.add_plugins(GpuSdfBakePlugin)
+            .add_plugins(MaterialPlugin::<WaterMaterial>::default())
             .add_plugins(PostProcessPlugin::<UnderwaterPostProcess>::default())
             .init_resource::<DynamicShaderRegistry>()
             .add_systems(Update, rebuild_dynamic_shaders);

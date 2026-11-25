@@ -1,5 +1,5 @@
 1. [x] Locomotion & Physics Decoupling
-2. [ ] GPU SDF Compute Pipeline
+2. [x] GPU SDF Compute Pipeline
 3. [ ] Event-Driven DOM Runtime
 4. [ ] Unified WaterMedium & Per-Entity Water Interactions
 5. [ ] Chunked Async Terrain & Heightfield Pipeline

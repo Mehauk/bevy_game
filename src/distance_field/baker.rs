@@ -1,12 +1,8 @@
-use bevy::{
-    asset::RenderAssetUsages,
-    light::NotShadowCaster,
-    mesh::VertexAttributeValues,
-    pbr::StandardMaterial,
-    prelude::*,
-    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
+use bevy::{light::NotShadowCaster, mesh::VertexAttributeValues, pbr::StandardMaterial, prelude::*};
+use bevy_shader_kit::{
+    DistanceFieldViewExt, DistanceFieldViewMaterial, DistanceFieldViewUniform, GpuBakeSdfRequest,
+    SdfBakeQueue, SdfVolume, uninit_sdf_image,
 };
-use bevy_shader_kit::{DistanceFieldViewExt, DistanceFieldViewMaterial, DistanceFieldViewUniform, SdfVolume};
 
 use super::{
     DistanceFieldSource, DistanceFieldUnitCube, DistanceFieldViewHidden, DistanceFieldVolume,
@@ -40,44 +36,31 @@ impl FieldBounds {
     }
 }
 
-pub fn sdf_from_triangles(
-    bounds: &FieldBounds,
-    resolution: UVec3,
-    positions: &[[f32; 3]],
-    indices: &[usize],
-) -> Vec<f32> {
-    let min = bounds.min;
-    let max = bounds.max;
-    let grid = mesh_to_sdf::Grid::from_bounding_box(
-        &[min.x, min.y, min.z],
-        &[max.x, max.y, max.z],
-        [
-            resolution.x as usize,
-            resolution.y as usize,
-            resolution.z as usize,
-        ],
-    );
-    let indices: Vec<u32> = indices.iter().map(|i| *i as u32).collect();
-    let generated = mesh_to_sdf::generate_grid_sdf(
-        positions,
-        mesh_to_sdf::Topology::TriangleList(Some(&indices)),
-        &grid,
-        mesh_to_sdf::SignMethod::Raycast,
-    );
-    let (rx, ry, rz) = (
-        resolution.x as usize,
-        resolution.y as usize,
-        resolution.z as usize,
-    );
-    let mut data = vec![0.0f32; generated.len()];
-    for z in 0..rz {
-        for y in 0..ry {
-            for x in 0..rx {
-                data[x + y * rx + z * rx * ry] = generated[x * ry * rz + y * rz + z];
-            }
-        }
+#[derive(Clone, Debug, Default)]
+pub struct FieldGeometry {
+    pub vertices: Vec<Vec3>,
+    pub indices: Vec<u32>,
+}
+
+impl FieldGeometry {
+    fn push_part(&mut self, positions: &[Vec3], indices: &[u32]) {
+        let base = self.vertices.len() as u32;
+        self.vertices.extend_from_slice(positions);
+        self.indices.extend(indices.iter().map(|index| index + base));
     }
-    data
+
+    fn bounds(&self) -> Option<FieldBounds> {
+        let mut min = Vec3::splat(f32::MAX);
+        let mut max = Vec3::splat(f32::MIN);
+        for vertex in &self.vertices {
+            min = min.min(*vertex);
+            max = max.max(*vertex);
+        }
+        if min.cmpgt(max).any() {
+            return None;
+        }
+        Some(FieldBounds { min, max })
+    }
 }
 
 fn mesh_positions(mesh: &Mesh) -> Option<&Vec<[f32; 3]>> {
@@ -87,12 +70,8 @@ fn mesh_positions(mesh: &Mesh) -> Option<&Vec<[f32; 3]>> {
     }
 }
 
-fn f32_bytes(data: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * 4);
-    for value in data {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    bytes
+fn mesh_triangles(mesh: &Mesh) -> Option<Vec<u32>> {
+    Some(mesh.indices()?.iter().map(|index| index as u32).collect())
 }
 
 fn opaque_material(materials: &Assets<StandardMaterial>, handle: &Handle<StandardMaterial>) -> bool {
@@ -101,12 +80,7 @@ fn opaque_material(materials: &Assets<StandardMaterial>, handle: &Handle<Standar
         .is_some_and(|m| m.alpha_mode == AlphaMode::Opaque && m.base_color.alpha() >= 1.0)
 }
 
-struct PartGeometry {
-    positions: Vec<[f32; 3]>,
-    indices: Vec<usize>,
-}
-
-fn collect_opaque_parts(
+fn collect_field_geometry(
     entity: Entity,
     mesh3d: &Mesh3d,
     own_material: &MeshMaterial3d<StandardMaterial>,
@@ -116,7 +90,7 @@ fn collect_opaque_parts(
     meshes: &Assets<Mesh>,
     materials: &Assets<StandardMaterial>,
     commands: &mut Commands,
-) -> Option<(FieldBounds, Vec<PartGeometry>)> {
+) -> Option<(FieldBounds, FieldGeometry)> {
     let mut handles: Vec<(Handle<Mesh>, Mat4, Handle<StandardMaterial>)> =
         vec![(mesh3d.0.clone(), Mat4::IDENTITY, own_material.0.clone())];
     let mut stack: Vec<(Entity, Mat4)> = vec![(entity, Mat4::IDENTITY)];
@@ -137,9 +111,7 @@ fn collect_opaque_parts(
             stack.push((kid, to_source));
         }
     }
-    let mut parts: Vec<PartGeometry> = Vec::new();
-    let mut min = Vec3::splat(f32::MAX);
-    let mut max = Vec3::splat(f32::MIN);
+    let mut geometry = FieldGeometry::default();
     for (handle, matrix, material) in handles {
         if !opaque_material(materials, &material) {
             continue;
@@ -150,25 +122,20 @@ fn collect_opaque_parts(
         let Some(part_positions) = mesh_positions(part) else {
             continue;
         };
-        let mut positions: Vec<[f32; 3]> = Vec::with_capacity(part_positions.len());
-        for p in part_positions {
-            let q = matrix.transform_point3(Vec3::from(*p));
-            min = min.min(q);
-            max = max.max(q);
-            positions.push(q.to_array());
-        }
-        let Some(part_indices) = part.indices() else {
+        let Some(part_indices) = mesh_triangles(part) else {
             continue;
         };
-        parts.push(PartGeometry {
-            positions,
-            indices: part_indices.iter().collect(),
-        });
+        let positions: Vec<Vec3> = part_positions
+            .iter()
+            .map(|p| matrix.transform_point3(Vec3::from(*p)))
+            .collect();
+        geometry.push_part(&positions, &part_indices);
     }
-    if parts.is_empty() || min.cmpgt(max).any() {
+    let bounds = geometry.bounds()?;
+    if geometry.indices.is_empty() {
         return None;
     }
-    Some((FieldBounds { min, max }, parts))
+    Some((bounds, geometry))
 }
 
 pub fn bake_distance_fields(
@@ -187,6 +154,7 @@ pub fn bake_distance_fields(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut view_materials: ResMut<Assets<DistanceFieldViewMaterial>>,
+    mut bake_queue: ResMut<SdfBakeQueue>,
     invisible: Option<Res<InvisibleMaterial>>,
 ) {
     if invisible.is_none() {
@@ -204,7 +172,7 @@ pub fn bake_distance_fields(
         if source.baked {
             continue;
         }
-        let Some((bounds, parts)) = collect_opaque_parts(
+        let Some((bounds, geometry)) = collect_field_geometry(
             entity,
             mesh3d,
             own_material,
@@ -226,31 +194,19 @@ pub fn bake_distance_fields(
             max: bounds.max + border,
         };
         let resolution = field_bounds.resolution(source.texel);
-        let mut data = vec![f32::MAX; (resolution.x * resolution.y * resolution.z) as usize];
-        for part in &parts {
-            let field =
-                sdf_from_triangles(&field_bounds, resolution, &part.positions, &part.indices);
-            for (out, value) in data.iter_mut().zip(&field) {
-                *out = out.min(*value);
-            }
-        }
-        let image = images.add(Image::new(
-            Extent3d {
-                width: resolution.x,
-                height: resolution.y,
-                depth_or_array_layers: resolution.z,
-            },
-            TextureDimension::D3,
-            f32_bytes(&data),
-            TextureFormat::R32Float,
-            RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
-        ));
-        let span = (field_bounds.max - field_bounds.min).max(Vec3::splat(1e-3));
         let volume = SdfVolume::from_bounds(
             field_bounds.min,
             field_bounds.max,
             resolution.as_vec3(),
         );
+        let image = images.add(uninit_sdf_image(resolution));
+        bake_queue.push(GpuBakeSdfRequest {
+            image: image.clone(),
+            volume,
+            vertices: geometry.vertices,
+            indices: geometry.indices,
+        });
+        let span = (field_bounds.max - field_bounds.min).max(Vec3::splat(1e-3));
         let view = DistanceFieldViewUniform {
             volume,
             glow_range,
@@ -295,107 +251,81 @@ pub fn bake_distance_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::render::render_resource::{TextureDimension, TextureFormat, TextureUsages};
 
-    #[test]
-    fn triangle_sdf_signs_a_cube_correctly() {
-        let mesh: Mesh = Cuboid::new(1.0, 1.0, 1.0).mesh().into();
-        let positions = mesh_positions(&mesh).unwrap();
-        let indices: Vec<usize> = mesh.indices().unwrap().iter().collect();
-        let bounds = FieldBounds {
-            min: Vec3::splat(-1.5),
-            max: Vec3::splat(1.5),
-        };
-        let res = UVec3::new(6, 6, 6);
-        let data = sdf_from_triangles(&bounds, res, positions, &indices);
-        let sample = |ix: u32, iy: u32, iz: u32| {
-            data[(iz * res.x * res.y + iy * res.x + ix) as usize]
-        };
-        let inside = sample(2, 3, 2);
-        assert!(inside < 0.0, "texel inside the cube should be negative, got {inside}");
-        let outside = sample(5, 5, 5);
-        assert!(outside > 0.0, "texel outside the cube should be positive, got {outside}");
+    fn cube_at(matrix: Mat4, size: [f32; 3]) -> (Vec<Vec3>, Vec<u32>) {
+        let mesh: Mesh = Cuboid::new(size[0], size[1], size[2]).mesh().into();
+        let positions = mesh_positions(&mesh)
+            .unwrap()
+            .iter()
+            .map(|p| matrix.transform_point3(Vec3::from(*p)))
+            .collect();
+        (positions, mesh_triangles(&mesh).unwrap())
     }
 
     #[test]
-    fn prop_parts_union_field_is_sane() {
-        let part = |mesh: &Mesh, matrix: Mat4| -> PartGeometry {
-            PartGeometry {
-                positions: mesh_positions(mesh)
-                    .unwrap()
-                    .iter()
-                    .map(|p| matrix.transform_point3(Vec3::from(*p)).to_array())
-                    .collect(),
-                indices: mesh.indices().unwrap().iter().collect(),
-            }
-        };
-        let parts = vec![
-            part(&Mesh::from(Capsule3d::new(0.4, 1.0)), Mat4::IDENTITY),
-            part(
-                &Mesh::from(Cuboid::new(0.45, 0.18, 0.2)),
-                Mat4::from_translation(Vec3::new(0.0, 0.45, -0.35)),
-            ),
-        ];
-        let mut min = Vec3::splat(f32::MAX);
-        let mut max = Vec3::splat(f32::MIN);
-        for geometry in &parts {
-            for p in &geometry.positions {
-                let q = Vec3::from(*p);
-                min = min.min(q);
-                max = max.max(q);
-            }
-        }
-        let bounds = FieldBounds { min, max };
-        let texel = Vec3::splat(0.1);
-        let base_resolution = bounds.resolution(texel);
-        let voxel = (bounds.max - bounds.min) / base_resolution.as_vec3();
-        let glow_range = (voxel.max_element() * 4.0).clamp(0.3, 1.0);
-        let border = voxel.max(Vec3::splat(glow_range));
-        let field_bounds = FieldBounds {
-            min: bounds.min - border,
-            max: bounds.max + border,
-        };
-        let resolution = field_bounds.resolution(texel);
-        let mut data = vec![f32::MAX; (resolution.x * resolution.y * resolution.z) as usize];
-        for geometry in &parts {
-            let field =
-                sdf_from_triangles(&field_bounds, resolution, &geometry.positions, &geometry.indices);
-            for (out, value) in data.iter_mut().zip(&field) {
-                *out = out.min(*value);
-            }
-        }
-        let span = field_bounds.max - field_bounds.min;
-        let texel_size = span / resolution.as_vec3();
-        let sample = |field: &[f32], ix: u32, iy: u32, iz: u32| {
-            field[(iz * resolution.x * resolution.y + iy * resolution.x + ix) as usize]
-        };
-        let at = |field: &[f32], p: Vec3| {
-            let i = ((p - field_bounds.min) / texel_size - Vec3::splat(0.5))
-                .round()
-                .max(Vec3::ZERO)
-                .min(resolution.as_vec3() - Vec3::splat(1.0));
-            sample(field, i.x as u32, i.y as u32, i.z as u32)
-        };
-        assert!(data.iter().all(|v| v.is_finite()), "field has non-finite values");
-        assert!(
-            data.iter().all(|v| *v < 1.0e5),
-            "field has unfilled texels: max is {}",
-            data.iter().cloned().fold(f32::MIN, f32::max)
+    fn merged_geometry_rebases_each_part_to_its_own_vertex_range() {
+        let mut geometry = FieldGeometry::default();
+        let (first, first_indices) = cube_at(Mat4::IDENTITY, [1.0, 1.0, 1.0]);
+        let (second, second_indices) = cube_at(Mat4::from_translation(Vec3::X * 4.0), [1.0, 2.0, 3.0]);
+        geometry.push_part(&first, &first_indices);
+        geometry.push_part(&second, &second_indices);
+
+        assert_eq!(geometry.vertices.len(), first.len() + second.len());
+        let base = first.len() as u32;
+        assert_eq!(geometry.indices.len(), first_indices.len() + second_indices.len());
+        assert_eq!(&geometry.indices[..first_indices.len()], &first_indices[..]);
+        assert_eq!(
+            &geometry.indices[first_indices.len()..],
+            &second_indices.iter().map(|i| i + base).collect::<Vec<u32>>()[..]
         );
-        assert!(at(&data, Vec3::ZERO) < 0.0, "capsule center should be inside");
-        assert!(at(&data, Vec3::new(0.0, 0.45, -0.35)) < 0.0, "visor center should be inside");
-        assert!(at(&data, field_bounds.min + Vec3::splat(0.01)) > 0.0, "corner should be outside");
-        for iz in 0..resolution.z {
-            for iy in 0..resolution.y {
-                for ix in 0..resolution.x - 1 {
-                    let jump = (sample(&data, ix + 1, iy, iz) - sample(&data, ix, iy, iz)).abs();
-                    assert!(
-                        jump <= texel_size.x * 2.0,
-                        "x-adjacent texels ({ix},{iy},{iz}) jump by {jump}, texel {}",
-                        texel_size.x
-                    );
-                }
-            }
-        }
+        assert!(
+            geometry.indices.iter().all(|i| (*i as usize) < geometry.vertices.len()),
+            "every index must address the merged vertex buffer"
+        );
+    }
+
+    #[test]
+    fn bounds_span_every_part() {
+        let mut geometry = FieldGeometry::default();
+        geometry.push_part(&[Vec3::new(-1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 2.0)], &[0, 1, 0]);
+        geometry.push_part(&[Vec3::new(3.0, -2.0, 5.0)], &[]);
+        let bounds = geometry.bounds().unwrap();
+        assert_eq!(bounds.min, Vec3::new(-1.0, -2.0, 0.0));
+        assert_eq!(bounds.max, Vec3::new(3.0, 1.0, 5.0));
+        assert!(FieldGeometry::default().bounds().is_none());
+    }
+
+    #[test]
+    fn a_single_cube_bounds_its_own_extent() {
+        let mesh: Mesh = Cuboid::new(2.0, 4.0, 6.0).mesh().into();
+        let geometry = FieldGeometry {
+            vertices: mesh_positions(&mesh)
+                .unwrap()
+                .iter()
+                .map(|p| Vec3::from(*p))
+                .collect(),
+            indices: mesh_triangles(&mesh).unwrap(),
+        };
+        let bounds = geometry.bounds().unwrap();
+        assert!((bounds.max.x - 1.0).abs() < 1e-5);
+        assert!((bounds.max.y - 2.0).abs() < 1e-5);
+        assert!((bounds.max.z - 3.0).abs() < 1e-5);
+        assert_eq!(bounds.min, -bounds.max);
+    }
+
+    #[test]
+    fn the_bake_target_is_an_uninitialized_storage_texture() {
+        let image = uninit_sdf_image(UVec3::new(8, 16, 32));
+        assert!(image.data.is_none(), "the field must never be staged through the CPU");
+        let descriptor = image.texture_descriptor;
+        assert_eq!(descriptor.format, TextureFormat::R32Float);
+        assert_eq!(descriptor.dimension, TextureDimension::D3);
+        assert_eq!(descriptor.size.width, 8);
+        assert_eq!(descriptor.size.height, 16);
+        assert_eq!(descriptor.size.depth_or_array_layers, 32);
+        assert!(descriptor.usage.contains(TextureUsages::STORAGE_BINDING));
+        assert!(descriptor.usage.contains(TextureUsages::TEXTURE_BINDING));
     }
 
     #[test]

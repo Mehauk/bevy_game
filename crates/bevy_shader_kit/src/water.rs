@@ -49,22 +49,47 @@ pub struct RippleSet {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, ShaderType, Reflect)]
-pub struct WaterParams {
-    pub time: f32,
-    pub water_height: f32,
-    pub foam_width: f32,
-    pub foam_strength: f32,
-    pub max_depth: f32,
-    pub phase_g: f32,
-    pub ripple_normal: f32,
-    pub ripple_foam: f32,
-    pub wave_energy: f32,
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
+pub struct WaterOptics {
     pub scattering: Vec3,
     pub absorption: Vec3,
     pub sun_direction: Vec3,
     pub sun_illuminance: Vec3,
     pub ambient_illuminance: Vec3,
+    pub max_depth: f32,
+    pub phase_g: f32,
+    pub pad0: f32,
+    pub pad1: f32,
+}
+
+impl Default for WaterOptics {
+    fn default() -> Self {
+        Self {
+            scattering: Vec3::new(0.03, 0.045, 0.05),
+            absorption: Vec3::new(0.35, 0.12, 0.06),
+            sun_direction: Vec3::new(0.707, 0.0, 0.707),
+            sun_illuminance: Vec3::splat(3.0),
+            ambient_illuminance: Vec3::new(0.15, 0.2, 0.25),
+            max_depth: 8.0,
+            phase_g: 0.6,
+            pad0: 0.0,
+            pad1: 0.0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
+pub struct WaterParams {
+    pub time: f32,
+    pub water_height: f32,
+    pub foam_width: f32,
+    pub foam_strength: f32,
+    pub ripple_normal: f32,
+    pub ripple_foam: f32,
+    pub wave_energy: f32,
+    pub pad0: f32,
+    pub optics: WaterOptics,
 }
 
 impl Default for WaterParams {
@@ -74,16 +99,11 @@ impl Default for WaterParams {
             water_height: 0.0,
             foam_width: 0.8,
             foam_strength: 0.25,
-            max_depth: 8.0,
-            phase_g: 0.6,
             ripple_normal: 0.55,
             ripple_foam: 0.9,
             wave_energy: 0.35,
-            scattering: Vec3::new(0.03, 0.045, 0.05),
-            absorption: Vec3::new(0.35, 0.12, 0.06),
-            sun_direction: Vec3::new(0.707, 0.0, 0.707),
-            sun_illuminance: Vec3::splat(3.0),
-            ambient_illuminance: Vec3::new(0.15, 0.2, 0.25),
+            pad0: 0.0,
+            optics: WaterOptics::default(),
         }
     }
 }
@@ -373,6 +393,33 @@ mod tests {
     }
 
     #[test]
+    fn optics_uniform_matches_the_shader_layout() {
+        assert_eq!(WaterOptics::min_size().get(), 96);
+        let source = include_str!("shaders/water/optics_types.wesl");
+        for field in [
+            "scattering",
+            "absorption",
+            "sun_direction",
+            "sun_illuminance",
+            "ambient_illuminance",
+            "max_depth",
+            "phase_g",
+        ] {
+            assert!(
+                source.contains(&format!("{field}:")),
+                "optics_types.wesl is missing the `{field}` field"
+            );
+        }
+    }
+
+    #[test]
+    fn params_uniform_embeds_the_shared_optics() {
+        assert_eq!(WaterParams::min_size().get(), 128);
+        let source = include_str!("shaders/water/types.wesl");
+        assert!(source.contains("optics: WaterOptics,"));
+    }
+
+    #[test]
     fn shader_declares_the_same_ripple_capacity() {
         let source = include_str!("shaders/water/ripples.wesl");
         assert!(source.contains(&format!("array<RippleWave, {MAX_RIPPLES}>")));
@@ -384,9 +431,10 @@ mod tests {
     fn swell_uniform_matches_the_shader_layout() {
         assert_eq!(SwellWave::min_size().get(), 32);
         assert_eq!(SwellSet::min_size().get(), 16 + 32 * MAX_SWELLS as u64);
+        let types = include_str!("shaders/water/swell_types.wesl");
+        assert!(types.contains(&format!("array<SwellWave, {MAX_SWELLS}>")));
+        assert!(types.contains(&format!("min(swell_set.count, {MAX_SWELLS}u)")));
         let source = include_str!("shaders/water/swells.wesl");
-        assert!(source.contains(&format!("array<SwellWave, {MAX_SWELLS}>")));
-        assert!(source.contains(&format!("min(swells.count, {MAX_SWELLS}u)")));
         assert!(source.contains("@binding(102)"));
     }
 

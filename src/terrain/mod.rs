@@ -13,12 +13,10 @@ pub mod terrain;
 mod water;
 
 pub use terrain::Terrain;
-pub use water::{
-    SeaState, WaterHeightSource, WaterSurface, sea_swell_height, terrain_gradient,
-};
+pub use water::{SeaState, WaterSurface, terrain_gradient};
 pub(crate) use atmosphere::SkyBox;
 use atmosphere::{
-    TerrainFog, setup_atmosphere, sync_terrain_fog, toggle_atmospheric_fog,
+    TerrainFog, setup_atmosphere, sync_sea_sun, sync_terrain_fog, toggle_atmospheric_fog,
     toggle_fog_light_influence,
 };
 #[derive(Component)]
@@ -46,6 +44,7 @@ impl Plugin for TerrainPlugin {
                 (
                     sync_terrain_fog,
                     (
+                        sync_sea_sun,
                         water::drive_sea_level,
                         water::sync_water_params,
                         water::sync_wetness,

@@ -1,4 +1,5 @@
-import package::shaders::water::swells::{ShoreContext, shore_factor, swell_amplitude_span, swell_height_shored};
+import package::shaders::water::swell_types::{ShoreContext, shore_factor, swell_amplitude_span, swell_height_shored};
+import package::shaders::water::swells::swells;
 import package::shaders::water::types::water;
 
 const COAST_SWASH_RUNUP: f32 = 0.15;
@@ -63,14 +64,14 @@ fn shore_context_at(world_xz: vec2<f32>) -> ShoreContext {
 }
 
 fn coastal_wash_mask(shore: ShoreContext, swell: f32) -> f32 {
-    let span = max(swell_amplitude_span(), 0.05);
+    let span = max(swell_amplitude_span(swells), 0.05);
     return clamp(0.5 + 0.5 * swell / span, 0.0, 1.0);
 }
 
 fn coastal_surface_y(rest_xz: vec2<f32>, time: f32) -> f32 {
     let shore = shore_context_at(rest_xz);
     let terrain_y = water.water_height - shore.rest_depth;
-    let swell = swell_height_shored(rest_xz, time, shore);
+    let swell = swell_height_shored(swells, rest_xz, time, shore);
     let offshore_y = water.water_height + swell;
     let wash = mix(COAST_SWASH_TUCK, COAST_SWASH_RUNUP, coastal_wash_mask(shore, swell));
     let near_land = 1.0 - smoothstep(0.0, COAST_SWASH_BLEND, shore.rest_depth);

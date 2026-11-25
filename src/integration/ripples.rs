@@ -4,7 +4,7 @@ use bevy_shader_kit::WaterMaterial;
 
 use crate::character::{CAPSULE_RADIUS, CAPSULE_TOTAL_HEIGHT, Character, FEET_OFFSET};
 use crate::ripples::{RippleField, RippleSystems};
-use crate::terrain::{WaterHeightSource, WaterSurface};
+use crate::terrain::{SeaState, WaterSurface};
 
 const HULL_RADIUS: f32 = CAPSULE_RADIUS + 0.15;
 const STRADDLE_MARGIN: f32 = 0.05;
@@ -18,8 +18,8 @@ const TREAD_STRENGTH: f32 = 0.02;
 const EXIT_BASE: f32 = 0.03;
 const EXIT_GAIN: f32 = 0.02;
 
-#[derive(Resource, Default)]
-struct SplashMemory {
+#[derive(Component, Default)]
+struct WaterWakeTracker {
     straddling: bool,
     last_wake: Option<(Vec3, f32)>,
     last_tread: f32,
@@ -73,76 +73,77 @@ fn plan_splash(
 }
 
 pub(super) fn register(app: &mut App) {
-    app.init_resource::<SplashMemory>()
-        .add_systems(
-            Update,
-            (
-                emit_character_splashes.in_set(RippleSystems::Emit),
-                publish_ripples.in_set(RippleSystems::Publish),
-            ),
-        );
+    app.add_observer(track_character_wake).add_systems(
+        Update,
+        (
+            emit_character_splashes.in_set(RippleSystems::Emit),
+            publish_ripples.in_set(RippleSystems::Publish),
+        ),
+    );
+}
+
+fn track_character_wake(trigger: On<Add<Character>>, mut commands: Commands) {
+    commands
+        .entity(trigger.entity)
+        .insert(WaterWakeTracker::default());
 }
 
 fn emit_character_splashes(
     time: Res<Time>,
-    sea: Query<&Transform, With<WaterHeightSource>>,
-    characters: Query<(&Transform, &LinearVelocity), With<Character>>,
-    mut memory: ResMut<SplashMemory>,
+    sea_state: Res<SeaState>,
+    mut characters: Query<(&Transform, &LinearVelocity, &mut WaterWakeTracker), With<Character>>,
     mut field: ResMut<RippleField>,
 ) {
-    let Some(water) = sea.iter().next() else {
-        return;
-    };
-    let Some((transform, velocity)) = characters.iter().next() else {
-        return;
-    };
-
     let now = time.elapsed_secs();
-    let feet_y = transform.translation.y - FEET_OFFSET;
-    let head_y = transform.translation.y + CAPSULE_TOTAL_HEIGHT - FEET_OFFSET;
-    let straddling = straddles(feet_y, head_y, water.translation.y);
-    let hull = hull_fraction(feet_y, water.translation.y);
-    let horizontal_speed = Vec2::new(velocity.x, velocity.z).length();
-    let here = Vec3::new(transform.translation.x, 0.0, transform.translation.z);
-    let moved_since_wake = memory
-        .last_wake
-        .map(|(last, _)| here.distance(last))
-        .unwrap_or(f32::MAX);
-    let since_tread = now - memory.last_tread;
+    for (transform, velocity, mut memory) in &mut characters {
+        let surface =
+            sea_state.surface_height_at(transform.translation.x, transform.translation.z, now);
+        let feet_y = transform.translation.y - FEET_OFFSET;
+        let head_y = transform.translation.y + CAPSULE_TOTAL_HEIGHT - FEET_OFFSET;
+        let straddling = straddles(feet_y, head_y, surface);
+        let hull = hull_fraction(feet_y, surface);
+        let horizontal_speed = Vec2::new(velocity.x, velocity.z).length();
+        let here = Vec3::new(transform.translation.x, 0.0, transform.translation.z);
+        let moved_since_wake = memory
+            .last_wake
+            .map(|(last, _)| here.distance(last))
+            .unwrap_or(f32::MAX);
+        let since_tread = now - memory.last_tread;
 
-    match plan_splash(
-        straddling,
-        memory.straddling,
-        velocity.y,
-        horizontal_speed,
-        moved_since_wake,
-        since_tread,
-        hull,
-    ) {
-        Splash::None => {}
-        Splash::Impact(strength) => {
-            field.splash(transform.translation, strength, HULL_RADIUS);
-            memory.last_wake = Some((here, now));
-            memory.last_tread = now;
-        }
-        Splash::Wake(strength) => {
-            if let Some((from, birth)) = memory.last_wake {
-                field.wake(from, here, birth, strength, HULL_RADIUS);
+        match plan_splash(
+            straddling,
+            memory.straddling,
+            velocity.y,
+            horizontal_speed,
+            moved_since_wake,
+            since_tread,
+            hull,
+        ) {
+            Splash::None => {}
+            Splash::Impact(strength) => {
+                field.splash(transform.translation, strength, HULL_RADIUS);
+                memory.last_wake = Some((here, now));
+                memory.last_tread = now;
             }
-            memory.last_wake = Some((here, now));
-            memory.last_tread = now;
+            Splash::Wake(strength) => {
+                if let Some((from, birth)) = memory.last_wake {
+                    field.wake(from, here, birth, strength, HULL_RADIUS);
+                }
+                memory.last_wake = Some((here, now));
+                memory.last_tread = now;
+            }
+            Splash::Tread(strength) => {
+                field.splash(transform.translation, strength, HULL_RADIUS);
+                memory.last_tread = now;
+            }
+            Splash::Exit(strength) => {
+                field.splash(transform.translation, strength, HULL_RADIUS);
+                memory.last_wake = Some((here, now));
+                memory.last_tread = now;
+            }
         }
-        Splash::Tread(strength) => {
-            field.splash(transform.translation, strength, HULL_RADIUS);
-            memory.last_tread = now;
-        }
-        Splash::Exit(strength) => {
-            field.splash(transform.translation, strength, HULL_RADIUS);
-            memory.last_wake = Some((here, now));
-            memory.last_tread = now;
-        }
+        memory.straddling = straddling;
     }
-    memory.straddling = straddling;
 }
 
 fn publish_ripples(
@@ -162,6 +163,7 @@ fn publish_ripples(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy_shader_kit::SwellSet;
 
     #[test]
     fn only_the_surface_straddle_makes_waves() {
@@ -221,5 +223,36 @@ mod tests {
         assert_eq!(pulse, Splash::Tread(TREAD_STRENGTH));
 
         assert_eq!(plan_splash(true, true, 0.0, 6.0, f32::MAX, 9.0, 1.0), Splash::Wake(WAKE_GAIN * 6.0));
+    }
+
+    #[test]
+    fn every_swimmer_keeps_its_own_wake() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<RippleField>()
+            .insert_resource(SeaState {
+                sea_level: 0.0,
+                swells: SwellSet::default(),
+                ..default()
+            })
+            .add_observer(track_character_wake)
+            .add_systems(Update, emit_character_splashes);
+
+        for x in [0.0, 6.0] {
+            app.world_mut().spawn((
+                Transform::from_xyz(x, 0.0, 0.0),
+                LinearVelocity(Vec3::new(0.0, -4.0, 0.0)),
+                Character::default(),
+            ));
+        }
+        app.update();
+        app.update();
+
+        let field = app.world().resource::<RippleField>();
+        assert_eq!(
+            field.waves.len(),
+            2,
+            "both swimmers enter the water and neither erases the other"
+        );
     }
 }

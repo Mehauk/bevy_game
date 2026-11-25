@@ -1,10 +1,10 @@
 use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
-use bevy_shader_kit::{UnderwaterPostProcess, WaterMaterial};
+use bevy_shader_kit::UnderwaterPostProcess;
 
 use crate::camera::MainCamera;
 use crate::distance_field::DistanceFieldView;
 use crate::screenshot::ScreenshotCaptureCamera;
-use crate::terrain::{WaterHeightSource, WaterSurface};
+use crate::terrain::SeaState;
 use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
 use crate::utils::registry::debug_info::{DebugInfoAppExt, debug_info};
 
@@ -75,13 +75,16 @@ fn mirror_underwater_capture(
         .insert((depth_prepass.clone(), *underwater));
 }
 
+fn lens_surface_height(sea_state: &SeaState, camera: &GlobalTransform, time: f32) -> f32 {
+    let lens = camera.translation();
+    sea_state.surface_height_at(lens.x, lens.z, time)
+}
+
 fn sync_underwater_post_process(
     time: Res<Time>,
     toggle: Res<UnderwaterToggle>,
     field_view: Res<DistanceFieldView>,
-    heights: Query<&Transform, With<WaterHeightSource>>,
-    surface: Option<Res<WaterSurface>>,
-    water_materials: Res<Assets<WaterMaterial>>,
+    sea_state: Res<SeaState>,
     cameras: Query<&GlobalTransform, With<MainCamera>>,
     mut post_processes: Query<&mut UnderwaterPostProcess, With<MainCamera>>,
     mut was_submerged: Local<bool>,
@@ -89,31 +92,22 @@ fn sync_underwater_post_process(
     let Ok(mut post_process) = post_processes.single_mut() else {
         return;
     };
-    let Some(water) = heights.iter().next() else {
-        return;
-    };
     let Some(camera) = cameras.iter().next() else {
         return;
     };
 
-    let water_height = water.translation.y;
+    let now = time.elapsed_secs();
     let mut settings = *post_process;
-    settings.time = time.elapsed_secs();
-    settings.water_height = water_height;
-    if let Some(surface) = surface
-        && let Some(material) = water_materials.get(&surface.material)
-    {
-        let params = material.extension.params;
-        settings.max_depth = params.max_depth;
-        settings.phase_g = params.phase_g;
-        settings.scattering = params.scattering;
-        settings.absorption = params.absorption;
-        settings.sun_direction = params.sun_direction;
-        settings.sun_illuminance = params.sun_illuminance;
-        settings.ambient_illuminance = params.ambient_illuminance;
-    }
+    settings.time = now;
+    settings.water_height = sea_state.sea_level;
+    settings.swells = sea_state.swells;
+    settings.optics = sea_state.optics;
 
-    let lens_in_water = lens_submerged(camera.translation().y, water_height, *was_submerged);
+    let lens_in_water = lens_submerged(
+        camera.translation().y,
+        lens_surface_height(&sea_state, camera, now),
+        *was_submerged,
+    );
     *was_submerged = lens_in_water;
     settings.enabled = u32::from(toggle.enabled && lens_in_water && !field_view.active);
     *post_process = settings;
@@ -129,11 +123,12 @@ fn toggle_underwater(mut toggle: ResMut<UnderwaterToggle>, mut output: ResMut<Co
 }
 
 fn submersion_debug_info(
-    heights: Query<&Transform, With<WaterHeightSource>>,
+    time: Res<Time>,
+    sea_state: Res<SeaState>,
     cameras: Query<&GlobalTransform, With<MainCamera>>,
 ) -> Option<String> {
-    let water_height = heights.iter().next()?.translation.y;
     let camera = cameras.iter().next()?;
+    let water_height = lens_surface_height(&sea_state, camera, time.elapsed_secs());
     let delta = camera.translation().y - water_height;
     Some(format!(
         "{} ({delta:+.2}m)",

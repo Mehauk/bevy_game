@@ -12,7 +12,8 @@ import package::shaders::water::coast::{
     COAST_SWASH_BLEND, COAST_SWASH_RUNUP, coastal_wash_mask, shore_context_at, spill_height_at,
     terrain_height_at,
 };
-import package::shaders::water::swells::swell_height_shored;
+import package::shaders::water::swell_types::swell_height_shored;
+import package::shaders::water::swells::swells;
 import package::shaders::water::foam::{
     apply_foam_roughness, blend_foam_color, body_contact_mask, foam_noise_mask, shore_edge_mask,
 };
@@ -36,11 +37,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     ctx.p = pbr_input.world_position.xyz;
     ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);
 
-    ctx.depth = water.max_depth;
+    ctx.depth = water.optics.max_depth;
     @if(DEPTH_PREPASS) {
         let surface_view_z = depth_ndc_to_view_z(in.position.z);
         let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));
-        ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.max_depth);
+        ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.optics.max_depth);
     }
     var coast_rest_depth: f32 = 1.0e6;
     @if(WATER_COAST) {
@@ -49,7 +50,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
             discard;
         }
         coast_rest_depth = water.water_height - terrain_y;
-        ctx.depth = min(ctx.depth, clamp(coast_rest_depth, 0.0, water.max_depth));
+        ctx.depth = min(ctx.depth, clamp(coast_rest_depth, 0.0, water.optics.max_depth));
     }
     var body_distance: f32 = 1.0e6;
     @if(WATER_BODY_FOAM) {
@@ -73,7 +74,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         @if(WATER_COAST) {
             let coast_shore = shore_context_at(ctx.p.xz);
             let surf_zone = smoothstep(3.0, 1.0, coast_rest_depth) * smoothstep(0.0, 0.5, coast_rest_depth) * water.wave_energy;
-            let wash_line = (1.0 - smoothstep(0.0, COAST_SWASH_BLEND, coast_rest_depth)) * coastal_wash_mask(coast_shore, swell_height_shored(ctx.p.xz, water.time, coast_shore)) * water.wave_energy;
+            let wash_line = (1.0 - smoothstep(0.0, COAST_SWASH_BLEND, coast_rest_depth)) * coastal_wash_mask(coast_shore, swell_height_shored(swells, ctx.p.xz, water.time, coast_shore)) * water.wave_energy;
             ctx.edge = max(ctx.edge, max(surf_zone, wash_line));
         }
         ctx.pattern = scrolling_fbm_2d(ctx.p.xz * 2.2, water.time);
@@ -87,7 +88,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
 
     @if(WATER_OPTICS) {
         if (front) {
-            let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.scattering, water.absorption, water.sun_direction, water.sun_illuminance, water.ambient_illuminance, water.phase_g);
+            let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.optics.scattering, water.optics.absorption, water.optics.sun_direction, water.optics.sun_illuminance, water.optics.ambient_illuminance, water.optics.phase_g);
             out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);
         }
     }

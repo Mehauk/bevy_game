@@ -8,8 +8,8 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use bevy_shader_kit::{
-    ShoreContext, SdfVolume, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WetSandMaterial,
-    shore_factor,
+    ShoreContext, SdfVolume, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WaterOptics,
+    WetSandMaterial, shore_factor,
 };
 
 use super::coast::bake_coast_maps;
@@ -20,9 +20,6 @@ use crate::utils::registry::commands::{CommandArgs, CommandOutput};
 
 #[derive(Component)]
 pub struct Sea;
-
-#[derive(Component)]
-pub struct WaterHeightSource;
 
 #[derive(Resource)]
 pub struct WaterSurface {
@@ -38,6 +35,8 @@ pub struct SeaState {
     pub sea_level: f32,
     pub level_rate: f32,
     pub wetness_height: f32,
+    pub swells: SwellSet,
+    pub optics: WaterOptics,
 }
 
 impl Default for SeaState {
@@ -50,7 +49,20 @@ impl Default for SeaState {
             sea_level: -0.1,
             level_rate: 0.0,
             wetness_height: f32::MIN,
+            swells: SWELLS,
+            optics: WaterOptics::default(),
         }
+    }
+}
+
+impl SeaState {
+    pub fn surface_height_at(&self, x: f32, z: f32, time: f32) -> f32 {
+        self.sea_level + self.swells.height_at(x, z, time)
+    }
+
+    pub fn shore_surface_height_at(&self, terrain: &Terrain, x: f32, z: f32, time: f32) -> f32 {
+        let shore = shore_context(terrain, self, x, z);
+        self.sea_level + self.swells.height_at_shored(x, z, time, shore)
     }
 }
 
@@ -114,7 +126,7 @@ pub fn terrain_gradient(terrain: &Terrain, x: f32, z: f32) -> Vec2 {
     )
 }
 
-pub fn shore_context(terrain: &Terrain, sea: &SeaState, x: f32, z: f32) -> ShoreContext {
+fn shore_context(terrain: &Terrain, sea: &SeaState, x: f32, z: f32) -> ShoreContext {
     let rest_depth = sea.sea_level - terrain.sample_ground_height(x, z);
     let gradient = terrain_gradient(terrain, x, z);
     let length = gradient.length();
@@ -128,10 +140,6 @@ pub fn shore_context(terrain: &Terrain, sea: &SeaState, x: f32, z: f32) -> Shore
         shore_factor: shore_factor(rest_depth),
         energy: sea.wave_energy,
     }
-}
-
-pub fn sea_swell_height(terrain: &Terrain, sea: &SeaState, x: f32, z: f32, time: f32) -> f32 {
-    SWELLS.height_at_shored(x, z, time, shore_context(terrain, sea, x, z))
 }
 
 fn empty_sdf_image(images: &mut Assets<Image>) -> Handle<Image> {
@@ -176,7 +184,7 @@ pub fn setup_water_surface(
             ..default()
         },
         extension: WaterMaterialExt {
-            swells: SWELLS,
+            swells: sea_state.swells,
             body_volume: SdfVolume::from_bounds(
                 Vec3::splat(-0.5),
                 Vec3::splat(0.5),
@@ -196,7 +204,6 @@ pub fn setup_water_surface(
     commands.spawn((
         Name::new("Sea"),
         Sea,
-        WaterHeightSource,
         Transform::from_xyz(0.0, sea_state.sea_level, 0.0),
         Mesh3d(
             meshes.add(
@@ -245,6 +252,7 @@ pub(super) fn sync_water_params(
     params.time = time.elapsed_secs();
     params.water_height = sea_state.sea_level;
     params.wave_energy = sea_state.wave_energy;
+    params.optics = sea_state.optics;
     material.extension.params = params;
 }
 
@@ -286,4 +294,52 @@ pub(super) fn set_wave_energy(
     };
     sea_state.wave_energy = energy.clamp(0.0, 1.0);
     output.set(format!("Wave energy: {:.2}", sea_state.wave_energy));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SWELL_SPAN: f32 = 0.225;
+
+    #[test]
+    fn a_flat_swell_set_rests_on_the_sea_level() {
+        let sea = SeaState {
+            sea_level: 1.5,
+            swells: SwellSet::default(),
+            ..default()
+        };
+        assert_eq!(sea.surface_height_at(3.0, -8.0, 4.0), 1.5);
+    }
+
+    #[test]
+    fn the_swell_stays_inside_its_amplitudes() {
+        let sea = SeaState {
+            sea_level: 2.0,
+            ..default()
+        };
+        for step in 0..12 {
+            let time = step as f32 * 0.7;
+            let height = sea.surface_height_at(12.0, -30.0, time);
+            assert!(
+                (height - sea.sea_level).abs() <= SWELL_SPAN + 1.0e-3,
+                "the surface at t={time} left the swell envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn dry_ground_feels_no_swell() {
+        let terrain = Terrain::default();
+        let ground = terrain.sample_ground_height(0.0, 0.0);
+        let sea = SeaState {
+            sea_level: ground - 1.0,
+            ..default()
+        };
+        assert_eq!(
+            sea.shore_surface_height_at(&terrain, 0.0, 0.0, 3.0),
+            sea.sea_level,
+            "shoaling damps the swell to nothing once the ground breaks the surface"
+        );
+    }
 }

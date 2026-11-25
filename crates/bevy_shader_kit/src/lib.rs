@@ -7,6 +7,7 @@ use bevy::{
 
 pub mod bake;
 pub mod compose;
+pub mod debug;
 pub mod field;
 pub mod post_process;
 pub mod underwater;
@@ -14,6 +15,10 @@ pub mod water;
 pub mod wet;
 
 pub use bake::{GpuBakeSdfRequest, GpuSdfBakePlugin, SdfBakeQueue, uninit_sdf_image};
+pub use debug::{
+    DebugCurtainExt, DebugCurtainMaterial, DebugCurtainParams, MAX_SURFACE_DEBUG_CELLS, SurfaceDebug,
+    region_color,
+};
 pub use post_process::{PostProcessEffect, PostProcessPlugin};
 pub use underwater::UnderwaterPostProcess;
 pub use wet::{WetSandExt, WetSandMaterial, Wetness};
@@ -57,11 +62,14 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/coast.wesl");
         load_shader_library!(app, "shaders/water/body.wesl");
         load_shader_library!(app, "shaders/post_process/bindings.wesl");
+        load_shader_library!(app, "shaders/debug/region_color.wesl");
+        load_shader_library!(app, "shaders/debug/surface_debug.wesl");
         embedded_asset!(app, "shaders/sdf/view_mode.wesl");
         embedded_asset!(app, "shaders/sdf/bake_compute.wesl");
         embedded_asset!(app, "shaders/water/water.wesl");
         embedded_asset!(app, "shaders/water/water_vertex.wesl");
         embedded_asset!(app, "shaders/wet/wet_sand.wesl");
+        embedded_asset!(app, "shaders/debug/curtain.wesl");
         embedded_asset!(app, "shaders/post_process/underwater.wesl");
 
         app.add_plugins(GpuSdfBakePlugin)

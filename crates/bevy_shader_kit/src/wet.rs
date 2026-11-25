@@ -5,6 +5,8 @@ use bevy::{
     shader::ShaderRef,
 };
 
+use crate::debug::SurfaceDebug;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, ShaderType, Reflect)]
 pub struct Wetness {
@@ -25,10 +27,12 @@ impl Default for Wetness {
     }
 }
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct WetSandExt {
     #[uniform(100)]
     pub wetness: Wetness,
+    #[uniform(101)]
+    pub debug: SurfaceDebug,
 }
 
 impl MaterialExtension for WetSandExt {

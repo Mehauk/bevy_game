@@ -6,6 +6,7 @@ use crate::{
     utils::registry::{
         commands::{CommandAppExt, command},
         debug_info::{DebugInfoAppExt, debug_info},
+        debug_views::{DebugViewAppExt, debug_view},
     },
 };
 
@@ -24,7 +25,7 @@ use chunks::{
     attach_finished_chunk_meshes, chunk_debug_info, spawn_terrain_chunks, sync_chunk_colliders,
     update_chunk_lods,
 };
-pub use chunks::TerrainViewer;
+pub use chunks::{TerrainChunk, TerrainSurfaceMaterial, TerrainViewer};
 pub use terrain::Terrain;
 pub use water::{Sea, SeaState, WaterSurface, terrain_gradient};
 
@@ -77,5 +78,7 @@ impl Plugin for TerrainPlugin {
         command!(app, "Set the water level", water::set_water_level);
         command!(app, "Set the wave energy", water::set_wave_energy);
         debug_info!(app, "Chunks", chunk_debug_info);
+        debug_view!(app, "chunks", "Chunk grid painted on the terrain surface");
+        debug_view!(app, "lod", "Chunk LOD regions painted on the terrain surface");
     }
 }

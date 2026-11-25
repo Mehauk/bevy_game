@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FEATURES: [&str; 12] = [
+const FEATURES: [&str; 13] = [
     "camera",
     "character",
     "commands",
+    "debug_views",
     "dev",
     "distance_field",
     "docgen",

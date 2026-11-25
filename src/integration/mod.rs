@@ -8,6 +8,7 @@ use crate::state::PlayState;
 mod body_foam;
 mod bridges;
 mod currents;
+mod debug_views;
 mod distance_field;
 mod input_wiring;
 mod menu_callbacks;
@@ -45,6 +46,7 @@ impl Plugin for IntegrationPlugin {
 
         body_foam::register(app);
         currents::register(app);
+        debug_views::register(app);
         input_wiring::register(app);
         menu_callbacks::register(app);
         menu_wiring::register(app);

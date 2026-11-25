@@ -1,6 +1,7 @@
 mod camera;
 mod character;
 mod commands;
+mod debug_views;
 mod dev;
 mod distance_field;
 mod docgen;
@@ -27,6 +28,7 @@ use bevy_shader_kit::ShaderKitPlugin;
 use camera::CameraPlugin;
 use character::CharacterPlugin;
 use commands::CommandsPlugin;
+use debug_views::DebugViewPlugin;
 use dev::DevUtilsPlugin;
 use distance_field::DistanceFieldPlugin;
 use docgen::DocgenPlugin;
@@ -67,6 +69,7 @@ fn main() {
             ProfilerPlugin,
             CameraPlugin,
             CharacterPlugin,
+            DebugViewPlugin,
             DistanceFieldPlugin,
             TerrainPlugin,
             RipplePlugin,

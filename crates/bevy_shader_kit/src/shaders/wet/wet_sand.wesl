@@ -1,6 +1,7 @@
 import bevy_pbr::render::forward_io::{VertexOutput, FragmentOutput};
 import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
 import bevy_pbr::render::pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing};
+import package::shaders::debug::surface_debug::surface_debug_overlay;
 
 struct Wetness {
     height: f32,
@@ -34,6 +35,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
         wet,
     );
     out.color = apply_pbr_lighting(pbr_input);
+    out.color = surface_debug_overlay(out.color, pbr_input.world_position.xz);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

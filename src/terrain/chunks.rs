@@ -5,7 +5,7 @@ use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, block_on, poll_once},
 };
-use bevy_shader_kit::{WetSandExt, WetSandMaterial, Wetness};
+use bevy_shader_kit::{WetSandExt, WetSandMaterial};
 
 use super::terrain::{StitchFlags, Terrain, build_chunk_collider, build_chunk_mesh};
 
@@ -27,6 +27,12 @@ pub struct TerrainChunk {
     pub coord: IVec2,
     pub lod: u8,
     pub flags: StitchFlags,
+}
+
+impl TerrainChunk {
+    pub fn built_lod(&self) -> Option<u8> {
+        (self.lod != UNBUILT).then_some(self.lod)
+    }
 }
 
 #[derive(Component)]
@@ -59,9 +65,7 @@ pub(super) fn spawn_terrain_chunks(
             reflectance: 0.15,
             ..default()
         },
-        extension: WetSandExt {
-            wetness: Wetness::default(),
-        },
+        extension: WetSandExt::default(),
     });
     commands.insert_resource(TerrainSurfaceMaterial {
         material: material.clone(),
@@ -306,7 +310,11 @@ mod tests {
             13,
             "the viewer at the origin keeps colliders within two chunks"
         );
-        assert_eq!(count::<Mesh3d>(app.world()), 0);
+        assert_eq!(
+            count::<Mesh3d>(app.world()) + count::<ChunkMeshTask>(app.world()),
+            25,
+            "every chunk has either a finished mesh or a pending build, never neither"
+        );
         assert!(app.world().contains_resource::<TerrainSurfaceMaterial>());
     }
 

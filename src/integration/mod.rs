@@ -16,6 +16,7 @@ mod post_process;
 mod ripples;
 mod state_pause;
 mod submersion;
+mod terrain_viewer;
 
 pub struct IntegrationPlugin;
 
@@ -53,5 +54,6 @@ impl Plugin for IntegrationPlugin {
         ripples::register(app);
         state_pause::register(app);
         submersion::register(app);
+        terrain_viewer::register(app);
     }
 }

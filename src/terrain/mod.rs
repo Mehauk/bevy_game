@@ -20,7 +20,11 @@ use atmosphere::{
     TerrainFog, setup_atmosphere, sync_sea_sun, sync_terrain_fog, toggle_atmospheric_fog,
     toggle_fog_light_influence,
 };
-use chunks::{attach_finished_chunk_meshes, chunk_debug_info, spawn_terrain_chunks};
+use chunks::{
+    attach_finished_chunk_meshes, chunk_debug_info, spawn_terrain_chunks, sync_chunk_colliders,
+    update_chunk_lods,
+};
+pub use chunks::TerrainViewer;
 pub use terrain::Terrain;
 pub use water::{Sea, SeaState, WaterSurface, terrain_gradient};
 
@@ -30,6 +34,7 @@ impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TerrainFog>()
             .init_resource::<Terrain>()
+            .init_resource::<TerrainViewer>()
             .init_resource::<SeaState>()
             .add_plugins(MaterialPlugin::<WetSandMaterial>::default());
         let spawn_ground = app
@@ -50,6 +55,8 @@ impl Plugin for TerrainPlugin {
                 Update,
                 (
                     sync_terrain_fog,
+                    update_chunk_lods,
+                    sync_chunk_colliders,
                     attach_finished_chunk_meshes,
                     (
                         sync_sea_sun,

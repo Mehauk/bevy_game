@@ -7,6 +7,9 @@ const COAST_TROUGH_CLEARANCE: f32 = 0.03;
 const COAST_SPAN_FLOOR: f32 = 0.05;
 const COAST_SHOAL_MAX: f32 = 2.5;
 const COAST_BLUR_TEXELS: f32 = 4.0;
+const COAST_DRY_TUCK: f32 = 0.04;
+const COAST_DRY_TUCK_INNER: f32 = 0.01;
+const COAST_DRY_TUCK_OUTER: f32 = -0.08;
 
 struct CoastField {
     bounds_min: vec2<f32>,
@@ -93,11 +96,15 @@ fn coastal_wash_mask(shore: ShoreContext, swell: f32) -> f32 {
     return clamp(0.5 + 0.5 * swell / swell_span(), 0.0, 1.0);
 }
 
+fn dry_side_tuck(rest_depth: f32) -> f32 {
+    return -COAST_DRY_TUCK * (1.0 - smoothstep(COAST_DRY_TUCK_OUTER, COAST_DRY_TUCK_INNER, rest_depth));
+}
+
 fn coastal_surface_y(rest_xz: vec2<f32>, time: f32, swell_atten: f32) -> f32 {
     let shore = shore_context_at(rest_xz);
     let swell = swell_height_shored(swells, rest_xz, time, shore) * swell_atten;
     let trough_floor = -max(shore.rest_depth - COAST_TROUGH_CLEARANCE, 0.0);
-    return water.water_height + max(swell, trough_floor);
+    return water.water_height + max(swell, trough_floor) + dry_side_tuck(shore.rest_depth);
 }
 
 fn coastal_normal(rest_xz: vec2<f32>, time: f32, swell_atten: f32) -> vec3<f32> {

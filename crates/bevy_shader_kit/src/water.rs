@@ -298,6 +298,16 @@ pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
     ]
 }
 
+pub fn apply_water_specialization(descriptor: &mut RenderPipelineDescriptor, key: &WaterMaterialKey) {
+    descriptor.vertex.shader_defs.extend(water_shader_defs(key));
+    if let Some(fragment) = descriptor.fragment.as_mut() {
+        fragment.shader_defs.extend(water_shader_defs(key));
+        if let Some(uuid) = key.override_shader {
+            fragment.shader = Handle::from(uuid);
+        }
+    }
+}
+
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 #[bind_group_data(WaterMaterialKey)]
 pub struct WaterMaterialExt {
@@ -362,12 +372,7 @@ impl MaterialExtension for WaterMaterialExt {
         _layout: &MeshVertexBufferLayoutRef,
         key: MaterialExtensionKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        if let Some(fragment) = descriptor.fragment.as_mut() {
-            fragment.shader_defs.extend(water_shader_defs(&key.bind_group_data));
-            if let Some(uuid) = key.bind_group_data.override_shader {
-                fragment.shader = Handle::from(uuid);
-            }
-        }
+        apply_water_specialization(descriptor, &key.bind_group_data);
         Ok(())
     }
 }
@@ -613,5 +618,46 @@ mod tests {
         assert!(defs.contains(&ShaderDefVal::Bool("WATER_FOAM".into(), true)));
         assert!(defs.contains(&ShaderDefVal::Bool("WATER_OPTICS".into(), false)));
         assert!(defs.contains(&ShaderDefVal::Bool("WATER_RIPPLES".into(), true)));
+    }
+
+    #[test]
+    fn defs_reach_both_shader_stages() {
+        let key = WaterMaterialKey::from(&WaterMaterialExt {
+            coastal: true,
+            ..default()
+        });
+        let mut descriptor = RenderPipelineDescriptor::default();
+        descriptor.fragment = Some(Default::default());
+        apply_water_specialization(&mut descriptor, &key);
+        for def in water_shader_defs(&key) {
+            assert!(
+                descriptor.vertex.shader_defs.contains(&def),
+                "the vertex stage is missing {def:?}"
+            );
+            assert!(
+                descriptor
+                    .fragment
+                    .as_ref()
+                    .unwrap()
+                    .shader_defs
+                    .contains(&def),
+                "the fragment stage is missing {def:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_override_shader_replaces_only_the_fragment() {
+        let uuid = Uuid::new_v4();
+        let key = WaterMaterialKey::from(&WaterMaterialExt {
+            override_shader: Some(Handle::from(uuid)),
+            ..default()
+        });
+        let mut descriptor = RenderPipelineDescriptor::default();
+        descriptor.fragment = Some(Default::default());
+        let vertex_shader = descriptor.vertex.shader.clone();
+        apply_water_specialization(&mut descriptor, &key);
+        assert_eq!(descriptor.fragment.as_ref().unwrap().shader, Handle::from(uuid));
+        assert_eq!(descriptor.vertex.shader, vertex_shader);
     }
 }

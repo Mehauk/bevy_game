@@ -44,6 +44,8 @@ pub(super) fn setup_atmosphere(
         DirectionalLight {
             color: Color::srgb(0.98, 0.95, 0.82),
             shadow_maps_enabled: true,
+            shadow_depth_bias: 0.12,
+            shadow_normal_bias: 2.8,
             ..default()
         },
         Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(-0.15, -0.05, 0.25), Vec3::Y),

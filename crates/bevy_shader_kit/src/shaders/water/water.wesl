@@ -10,7 +10,7 @@ import package::shaders::sdf::volume::volume_sample_world;
 import package::shaders::water::body::{body_sdf, body_volume};
 import package::shaders::water::coast::{
     COAST_SWASH_BLEND, coastal_wash_mask, max_crest_height, shore_context_at, spill_height_at,
-    terrain_height_at,
+    terrain_gradient_at, terrain_height_at,
 };
 import package::shaders::water::swell_types::swell_height_shored;
 import package::shaders::water::swells::swells;
@@ -22,6 +22,7 @@ import package::shaders::water::ripples::{ripple_foam_edge, ripple_normal, rippl
 import package::shaders::water::types::{WaterContext, water};
 
 const WATER_VIEW_FADE_RANGE: f32 = 60.0;
+const WATER_SHORE_FOAM_SLOPE: f32 = 0.1;
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOutput {
@@ -66,7 +67,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     }
 
     @if(WATER_FOAM) {
-        ctx.edge = max(shore_edge_mask(ctx.depth, water.foam_width), ripple_foam_edge(length(ctx.ripple), water.ripple_foam));
+        var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);
+        @if(WATER_COAST) {
+            shore_edge = shore_edge * smoothstep(0.0, WATER_SHORE_FOAM_SLOPE, length(terrain_gradient_at(ctx.p.xz)));
+        }
+        ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));
         @if(WATER_BODY_FOAM) {
             let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));
             ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));

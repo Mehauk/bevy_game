@@ -1,0 +1,3 @@
+- [ ] add splash to the copy button and change copy to copied for a duration
+- [ ] pause game when window not focues, unpause when focues.
+  - [ ] make this a toggle command (toggle_should_pause_in_background)

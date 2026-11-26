@@ -253,22 +253,12 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
-pub struct CoastField {
-    pub bounds_min: Vec2,
-    pub texel: Vec2,
-    pub inv_size: Vec2,
-    pub resolution: Vec2,
-}
-
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct WaterMaterialKey {
     pub foam: bool,
     pub optics: bool,
     pub ripples: bool,
     pub body_foam: bool,
-    pub coastal: bool,
     pub override_shader: Option<Uuid>,
 }
 
@@ -279,7 +269,6 @@ impl From<&WaterMaterialExt> for WaterMaterialKey {
             optics: ext.optics,
             ripples: ext.ripples,
             body_foam: ext.body_foam,
-            coastal: ext.coastal,
             override_shader: ext.override_shader.as_ref().and_then(|shader| match shader.id() {
                 AssetId::Uuid { uuid } => Some(uuid),
                 AssetId::Index { .. } => None,
@@ -294,7 +283,6 @@ pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
         ShaderDefVal::Bool("WATER_OPTICS".into(), key.optics),
         ShaderDefVal::Bool("WATER_RIPPLES".into(), key.ripples),
         ShaderDefVal::Bool("WATER_BODY_FOAM".into(), key.body_foam),
-        ShaderDefVal::Bool("WATER_COAST".into(), key.coastal),
     ]
 }
 
@@ -321,15 +309,10 @@ pub struct WaterMaterialExt {
     pub body_volume: SdfVolume,
     #[texture(104, dimension = "3d", sample_type = "float", filterable = false)]
     pub body_sdf: Handle<Image>,
-    #[uniform(105)]
-    pub coast: CoastField,
-    #[texture(106, dimension = "2d", sample_type = "float", filterable = false)]
-    pub coast_map: Handle<Image>,
     pub foam: bool,
     pub optics: bool,
     pub ripples: bool,
     pub body_foam: bool,
-    pub coastal: bool,
     pub override_shader: Option<Handle<Shader>>,
 }
 
@@ -341,13 +324,10 @@ impl Default for WaterMaterialExt {
             swells: default(),
             body_volume: default(),
             body_sdf: default(),
-            coast: default(),
-            coast_map: default(),
             foam: true,
             optics: true,
             ripples: true,
             body_foam: false,
-            coastal: false,
             override_shader: None,
         }
     }
@@ -483,14 +463,6 @@ mod tests {
     }
 
     #[test]
-    fn coast_uniform_matches_the_shader_layout() {
-        assert_eq!(CoastField::min_size().get(), 32);
-        let source = include_str!("shaders/water/coast.wesl");
-        assert!(source.contains("@binding(105)"));
-        assert!(source.contains("@binding(106)"));
-    }
-
-    #[test]
     fn deep_water_keeps_the_full_swell() {
         let set = SwellSet {
             count: 1,
@@ -623,7 +595,7 @@ mod tests {
     #[test]
     fn defs_reach_both_shader_stages() {
         let key = WaterMaterialKey::from(&WaterMaterialExt {
-            coastal: true,
+            body_foam: true,
             ..default()
         });
         let mut descriptor = RenderPipelineDescriptor::default();

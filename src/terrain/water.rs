@@ -14,7 +14,6 @@ use bevy_shader_kit::{
 };
 
 use super::chunks::{TerrainSurfaceMaterial, TerrainViewer};
-use super::heightmap::bake_height_map;
 use super::terrain::Terrain;
 use crate::utils::registry::commands::{CommandArgs, CommandOutput};
 
@@ -207,6 +206,7 @@ fn ring_step(ring: u32) -> f32 {
     CLIPMAP_BASE_STEP * (1u32 << ring) as f32
 }
 
+#[cfg(test)]
 fn clipmap_half_extent() -> f32 {
     ring_step(CLIPMAP_RINGS - 1) * CLIPMAP_RING_CELLS as f32 * 0.5
 }
@@ -323,10 +323,8 @@ pub fn setup_water_surface(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut water_materials: ResMut<Assets<WaterMaterial>>,
-    terrain: Res<Terrain>,
     sea_state: Res<SeaState>,
 ) {
-    let coast = bake_height_map(&terrain, &mut images);
     let material = water_materials.add(WaterMaterial {
         base: StandardMaterial {
             base_color: Color::srgb(0.6, 0.75, 0.72),
@@ -349,16 +347,12 @@ pub fn setup_water_surface(
                 Vec3::splat(2.0),
             ),
             body_sdf: empty_sdf_image(&mut images),
-            coast: coast.field,
-            coast_map: coast.image.clone(),
-            coastal: true,
             ..default()
         },
     });
     commands.insert_resource(WaterSurface {
         material: material.clone(),
     });
-    commands.insert_resource(coast);
     commands.spawn((
         Name::new("Sea"),
         Sea,
@@ -476,16 +470,6 @@ fn flip_extension_flag(
     let value = flag(&mut material.extension);
     *value = !*value;
     output.set(format!("{label}: {}", if *value { "on" } else { "off" }));
-}
-
-pub(super) fn toggle_water_coast(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water coast", |ext| {
-        &mut ext.coastal
-    });
 }
 
 pub(super) fn toggle_water_ripples(
@@ -748,10 +732,7 @@ mod tests {
         let mut materials = Assets::<WaterMaterial>::default();
         let handle = materials.add(WaterMaterial {
             base: StandardMaterial::default(),
-            extension: WaterMaterialExt {
-                coastal: true,
-                ..default()
-            },
+            extension: WaterMaterialExt::default(),
         });
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -765,11 +746,9 @@ mod tests {
             .insert_resource(materials)
             .init_resource::<CommandOutput>()
             .add_systems(Update, (drive_sea_level, sync_water_params));
-        let coast = app.world_mut().register_system(toggle_water_coast);
         let swells = app.world_mut().register_system(toggle_water_swells);
         let tides = app.world_mut().register_system(toggle_water_tides);
         app.update();
-        app.world_mut().run_system(coast).unwrap();
         app.world_mut().run_system(swells).unwrap();
         app.world_mut().run_system(tides).unwrap();
         for _ in 0..4 {
@@ -781,10 +760,6 @@ mod tests {
             .resource::<Assets<WaterMaterial>>()
             .get(&handle)
             .unwrap();
-        assert!(
-            !material.extension.coastal,
-            "sync_water_params must not restore the coast flag"
-        );
         assert_eq!(material.extension.swells, SwellSet::default());
         let sea = app.world().resource::<SeaState>();
         assert!(!sea.tides_enabled);

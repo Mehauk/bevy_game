@@ -31,7 +31,7 @@ pub use compose::{
     water_blueprint,
 };
 pub use water::{
-    CoastField, MAX_RIPPLES, MAX_SWELLS, REFRACTION_STRENGTH, RippleSet, RippleWave, ShoreContext,
+    MAX_RIPPLES, MAX_SWELLS, REFRACTION_STRENGTH, RippleSet, RippleWave, ShoreContext,
     SHORE_ZONE, SHOAL_DEPTH, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WaterMaterialKey,
     WaterOptics, WaterParams, shore_factor, shore_horiz_damp, shore_vert_damp, water_shader_defs,
 };
@@ -59,7 +59,6 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/optics.wesl");
         load_shader_library!(app, "shaders/water/swell_types.wesl");
         load_shader_library!(app, "shaders/water/swells.wesl");
-        load_shader_library!(app, "shaders/water/coast.wesl");
         load_shader_library!(app, "shaders/water/body.wesl");
         load_shader_library!(app, "shaders/post_process/bindings.wesl");
         load_shader_library!(app, "shaders/debug/region_color.wesl");

@@ -14,7 +14,6 @@ mod atmosphere;
 mod chunks;
 mod erosion;
 mod grid;
-mod heightmap;
 pub mod terrain;
 mod water;
 
@@ -28,12 +27,11 @@ use chunks::{
     update_chunk_lods,
 };
 pub use chunks::{TerrainChunk, TerrainSurfaceMaterial, TerrainViewer};
-use heightmap::sync_height_map;
 use terrain::{regenerate_terrain, set_terrain_generator, toggle_erosion};
 pub use terrain::Terrain;
 use water::{
-    toggle_water_body_foam, toggle_water_coast, toggle_water_foam, toggle_water_optics,
-    toggle_water_ripples, toggle_water_swells, toggle_water_tides, toggle_water_wetness,
+    toggle_water_body_foam, toggle_water_foam, toggle_water_optics, toggle_water_ripples,
+    toggle_water_swells, toggle_water_tides, toggle_water_wetness,
 };
 pub use water::{Sea, SeaState, WaterSurface, terrain_gradient};
 
@@ -79,7 +77,6 @@ impl Plugin for TerrainPlugin {
                     update_chunk_lods,
                     sync_chunk_colliders,
                     attach_finished_chunk_meshes,
-                    sync_height_map,
                     sync_spawn_ground_height,
                     (
                         sync_sea_sun,
@@ -107,11 +104,6 @@ impl Plugin for TerrainPlugin {
             set_terrain_generator
         );
         command!(app, "Regenerate the terrain", regenerate_terrain);
-        command!(
-            app,
-            "Toggle coastal shoaling on the water surface",
-            toggle_water_coast
-        );
         command!(app, "Toggle water ripples", toggle_water_ripples);
         command!(app, "Toggle water foam", toggle_water_foam);
         command!(app, "Toggle underwater light optics", toggle_water_optics);

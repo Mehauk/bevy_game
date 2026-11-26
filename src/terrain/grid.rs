@@ -118,10 +118,12 @@ impl HeightGrid {
         }
     }
 
+    #[cfg(test)]
     pub fn resolution(&self) -> UVec2 {
         self.resolution
     }
 
+    #[cfg(test)]
     pub fn bounds_min(&self) -> Vec2 {
         self.bounds_min
     }
@@ -130,14 +132,17 @@ impl HeightGrid {
         self.texel
     }
 
+    #[cfg(test)]
     pub fn inv_size(&self) -> Vec2 {
         self.inv_size
     }
 
+    #[cfg(test)]
     pub fn heights(&self) -> &[f32] {
         &self.heights
     }
 
+    #[cfg(test)]
     pub fn spill(&self) -> &[f32] {
         &self.spill
     }
@@ -218,7 +223,7 @@ mod tests {
         HeightGrid::new(UVec2::splat(resolution), bounds_min, texel, heights)
     }
 
-    fn shader_mirror(grid: &HeightGrid, x: f32, z: f32) -> f32 {
+    fn corner_bilinear(grid: &HeightGrid, x: f32, z: f32) -> f32 {
         let resolution = grid.resolution().as_vec2();
         let uv = (Vec2::new(x, z) - grid.bounds_min()) * grid.inv_size();
         let pos = (uv * resolution - Vec2::splat(0.5))
@@ -269,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_mirrors_the_coast_shader_exactly() {
+    fn the_grid_sample_is_the_corner_bilinear() {
         let grid = asymmetric_grid(8);
         let texel = grid.texel();
         let mut points = vec![
@@ -302,16 +307,16 @@ mod tests {
         for (x, z) in points {
             assert_eq!(
                 grid.sample(x, z),
-                shader_mirror(&grid, x, z),
-                "the cpu sample must bit-match the coast.wesl bilinear at ({x}, {z})"
+                corner_bilinear(&grid, x, z),
+                "the bilinear sample must match the corner blend at ({x}, {z})"
             );
         }
     }
 
     #[test]
-    fn the_spill_sample_mirrors_the_coast_shader() {
+    fn the_spill_sample_takes_the_lowest_corner() {
         let grid = asymmetric_grid(8);
-        let spill_mirror = |x: f32, z: f32| -> f32 {
+        let corner_min = |x: f32, z: f32| -> f32 {
             let resolution = grid.resolution().as_vec2();
             let uv = (Vec2::new(x, z) - grid.bounds_min()) * grid.inv_size();
             let origin = (uv * resolution - Vec2::splat(0.5))
@@ -334,8 +339,8 @@ mod tests {
                 let z = grid.bounds_min().y + iz as f32 * grid.texel().y;
                 assert_eq!(
                     grid.sample_spill(x, z),
-                    spill_mirror(x, z),
-                    "the cpu spill sample must bit-match spill_height_at at ({x}, {z})"
+                    corner_min(x, z),
+                    "the spill sample must match the corner minimum at ({x}, {z})"
                 );
             }
         }

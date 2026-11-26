@@ -219,9 +219,6 @@ pub fn water_blueprint() -> ShaderBlueprint {
             "import package::shaders::noise::fbm2d::scrolling_fbm_2d;",
             "import package::shaders::sdf::volume::volume_sample_world;",
             "import package::shaders::water::body::{body_sdf, body_volume};",
-            "import package::shaders::water::coast::{\n    COAST_SWASH_BLEND, coastal_wash_mask, max_crest_height, shore_context_at,\n    spill_height_at, terrain_gradient_at, terrain_height_at,\n};",
-            "import package::shaders::water::swell_types::swell_height_shored;",
-            "import package::shaders::water::swells::swells;",
             "import package::shaders::water::foam::{\n    apply_foam_roughness, blend_foam_color, body_contact_mask, foam_noise_mask, shore_edge_mask,\n};",
             "import package::shaders::water::optics::water_volume_in_scatter;",
             "import package::shaders::water::ripples::{ripple_foam_edge, ripple_normal, ripple_slope};",
@@ -229,7 +226,6 @@ pub fn water_blueprint() -> ShaderBlueprint {
         ],
         declarations: vec![
             "const WATER_VIEW_FADE_RANGE: f32 = 60.0;",
-            "const WATER_SHORE_FOAM_SLOPE: f32 = 0.1;",
         ],
         shader_defs: Vec::new(),
         entry: WATER_FRAGMENT_ENTRY,
@@ -242,7 +238,7 @@ pub fn water_blueprint() -> ShaderBlueprint {
                 default: "        let surface_view_z = depth_ndc_to_view_z(in.position.z);\n        let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));\n        ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.optics.max_depth);\n",
             },
             BlueprintSegment::Text(
-                "    }\n    var coast_rest_depth: f32 = 1.0e6;\n    @if(WATER_COAST) {\n        let terrain_y = terrain_height_at(ctx.p.xz);\n        if (water.water_height + max_crest_height() < spill_height_at(ctx.p.xz)) {\n            discard;\n        }\n        coast_rest_depth = water.water_height - terrain_y;\n        ctx.depth = min(ctx.depth, clamp(coast_rest_depth, 0.0, water.optics.max_depth));\n    }\n    var body_distance: f32 = 1.0e6;\n    @if(WATER_BODY_FOAM) {\n        body_distance = volume_sample_world(body_volume, body_sdf, ctx.p);\n        ctx.depth = min(ctx.depth, max(body_distance, 0.0));\n    }\n    pbr_input.material.thickness = ctx.depth;\n\n    ctx.ripple = vec2<f32>(0.0);\n    @if(WATER_RIPPLES) {\n",
+                "    }\n    var body_distance: f32 = 1.0e6;\n    @if(WATER_BODY_FOAM) {\n        body_distance = volume_sample_world(body_volume, body_sdf, ctx.p);\n        ctx.depth = min(ctx.depth, max(body_distance, 0.0));\n    }\n    pbr_input.material.thickness = ctx.depth;\n\n    ctx.ripple = vec2<f32>(0.0);\n    @if(WATER_RIPPLES) {\n",
             ),
             BlueprintSegment::Slot {
                 hook: ShaderHook::RippleField,
@@ -253,10 +249,10 @@ pub fn water_blueprint() -> ShaderBlueprint {
             ),
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamEdge,
-                default: "        var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);\n        @if(WATER_COAST) {\n            shore_edge = shore_edge * smoothstep(0.0, WATER_SHORE_FOAM_SLOPE, length(terrain_gradient_at(ctx.p.xz)));\n        }\n        ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));\n",
+                default: "        var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);\n        ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));\n",
             },
             BlueprintSegment::Text(
-                "        @if(WATER_BODY_FOAM) {\n            let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));\n            ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));\n        }\n        @if(WATER_COAST) {\n            let coast_shore = shore_context_at(ctx.p.xz);\n            let surf_zone = smoothstep(3.0, 1.0, coast_rest_depth) * smoothstep(0.0, 0.5, coast_rest_depth) * water.wave_energy;\n            let wash_line = (1.0 - smoothstep(0.0, COAST_SWASH_BLEND, coast_rest_depth)) * coastal_wash_mask(coast_shore, swell_height_shored(swells, ctx.p.xz, water.time, coast_shore)) * water.wave_energy;\n            ctx.edge = max(ctx.edge, max(surf_zone, wash_line));\n        }\n",
+                "        @if(WATER_BODY_FOAM) {\n            let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));\n            ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));\n        }\n",
             ),
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamPattern,

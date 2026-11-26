@@ -9,8 +9,10 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use bevy_shader_kit::{
-    ShoreContext, SdfVolume, SwellSet, SwellWave, WaterCaustics, WaterDetail, WaterDye,
-    WaterMaterial, WaterMaterialExt, WaterOptics, WaterParams, WetSandMaterial, shore_factor,
+    FftBakeReceiver, FftSwellField, FftWaterTextures, ShoreContext, SdfVolume, SwellSet, SwellWave,
+    WaterCaustics, WaterDetail, WaterDye, WaterMaterial, WaterMaterialExt, WaterOptics, WaterParams,
+    WetSandMaterial, fft_derivatives_image, fft_displacement_image, fft_placeholder_image,
+    shore_factor, shore_vert_damp, spawn_fft_bake,
 };
 
 use super::chunks::{TerrainSurfaceMaterial, TerrainViewer};
@@ -43,6 +45,42 @@ pub struct SeaState {
     pub tides_enabled: bool,
     pub swells_enabled: bool,
     pub wetness_enabled: bool,
+    pub fft_enabled: bool,
+    pub swell_strength: f32,
+    pub chop_strength: f32,
+    pub fft_swell: Option<FftSwellField>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeatherPreset {
+    Calm,
+    Moderate,
+    Storm,
+}
+
+impl WeatherPreset {
+    pub fn energy(self) -> f32 {
+        match self {
+            WeatherPreset::Calm => 0.0,
+            WeatherPreset::Moderate => 0.5,
+            WeatherPreset::Storm => 1.0,
+        }
+    }
+}
+
+pub fn weather_strengths(energy: f32) -> (f32, f32) {
+    let energy = energy.clamp(0.0, 1.0);
+    if energy <= 0.5 {
+        let t = energy / 0.5;
+        (mix(0.10, 0.50, t), mix(0.25, 0.70, t))
+    } else {
+        let t = (energy - 0.5) / 0.5;
+        (mix(0.50, 1.20, t), mix(0.70, 1.00, t))
+    }
+}
+
+fn mix(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
 
 impl Default for SeaState {
@@ -64,6 +102,10 @@ impl Default for SeaState {
             tides_enabled: true,
             swells_enabled: true,
             wetness_enabled: true,
+            fft_enabled: true,
+            swell_strength: 0.5,
+            chop_strength: 0.7,
+            fft_swell: None,
         }
     }
 }
@@ -77,11 +119,28 @@ impl SeaState {
         }
     }
 
+    pub fn effective_fft_strengths(&self) -> (f32, f32) {
+        if self.fft_enabled && self.swells_enabled {
+            (self.swell_strength, self.chop_strength)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    pub fn fft_swell_height_at(&self, x: f32, z: f32, time: f32) -> Option<f32> {
+        if !self.fft_enabled || !self.swells_enabled {
+            return None;
+        }
+        let field = self.fft_swell.as_ref()?;
+        Some(field.height_at(x, z, time) * self.swell_strength)
+    }
+
     pub fn shore_surface_height_at(&self, terrain: &Terrain, x: f32, z: f32, time: f32) -> f32 {
         let shore = shore_context(terrain, self, x, z);
-        let swell = self
-            .effective_swells()
-            .height_at_shored(x, z, time, shore);
+        let swell = match self.fft_swell_height_at(x, z, time) {
+            Some(height) => height * shore_vert_damp(shore.rest_depth),
+            None => self.effective_swells().height_at_shored(x, z, time, shore),
+        };
         let trough_floor = -(shore.rest_depth - TROUGH_CLEARANCE).max(0.0);
         self.sea_level + swell.max(trough_floor)
     }
@@ -101,6 +160,11 @@ impl SeaState {
     }
 
     fn max_crest_height(&self) -> f32 {
+        if let Some(field) = self.fft_swell.as_ref() {
+            if self.fft_enabled && self.swells_enabled {
+                return field.crest_span * self.swell_strength.max(0.0) + COAST_SPAN_FLOOR;
+            }
+        }
         let span = self
             .effective_swells()
             .amplitude_span()
@@ -120,6 +184,8 @@ const TROUGH_CLEARANCE: f32 = 0.03;
 const WETNESS_DECAY: f32 = 0.01;
 const COAST_SPAN_FLOOR: f32 = 0.05;
 const COAST_SHOAL_MAX: f32 = 2.5;
+const WHITECAP_BASE: f32 = 0.2;
+const WHITECAP_ENERGY: f32 = 0.6;
 
 const SWELLS: SwellSet = SwellSet {
     count: 3,
@@ -333,6 +399,7 @@ pub fn setup_water_surface(
     mut water_materials: ResMut<Assets<WaterMaterial>>,
     sea_state: Res<SeaState>,
 ) {
+    let placeholder = images.add(fft_placeholder_image());
     let material = water_materials.add(WaterMaterial {
         base: StandardMaterial {
             base_color: Color::srgb(0.6, 0.75, 0.72),
@@ -362,12 +429,24 @@ pub fn setup_water_surface(
                 Vec3::splat(2.0),
             ),
             body_sdf: empty_sdf_image(&mut images),
+            swell_displacement: placeholder.clone(),
+            swell_derivatives: placeholder.clone(),
+            chop_displacement: placeholder.clone(),
+            chop_derivatives: placeholder.clone(),
             ..default()
         },
     });
     commands.insert_resource(WaterSurface {
         material: material.clone(),
     });
+    commands.insert_resource(FftWaterTextures {
+        ready: false,
+        swell_displacement: placeholder.clone(),
+        swell_derivatives: placeholder.clone(),
+        chop_displacement: placeholder.clone(),
+        chop_derivatives: placeholder,
+    });
+    commands.insert_resource(spawn_fft_bake());
     commands.spawn((
         Name::new("Sea"),
         Sea,
@@ -376,6 +455,45 @@ pub fn setup_water_surface(
         MeshMaterial3d(material),
         NotShadowCaster,
     ));
+}
+
+pub(super) fn poll_fft_bake(
+    mut commands: Commands,
+    receiver: Option<Res<FftBakeReceiver>>,
+    mut images: ResMut<Assets<Image>>,
+    textures: Option<ResMut<FftWaterTextures>>,
+    mut sea_state: ResMut<SeaState>,
+) {
+    let Some(receiver) = receiver else {
+        return;
+    };
+    let baked = match receiver.receiver.lock() {
+        Ok(guard) => match guard.try_recv() {
+            Ok(baked) => Some(baked),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
+    let Some((swell, chop)) = baked else {
+        return;
+    };
+    let swell_displacement_image = fft_displacement_image(&swell);
+    let swell_derivatives_image = fft_derivatives_image(&swell);
+    let chop_displacement_image = fft_displacement_image(&chop);
+    let chop_derivatives_image = fft_derivatives_image(&chop);
+    let swell_displacement = images.add(swell_displacement_image);
+    let swell_derivatives = images.add(swell_derivatives_image);
+    let chop_displacement = images.add(chop_displacement_image);
+    let chop_derivatives = images.add(chop_derivatives_image);
+    if let Some(mut textures) = textures {
+        textures.ready = true;
+        textures.swell_displacement = swell_displacement;
+        textures.swell_derivatives = swell_derivatives;
+        textures.chop_displacement = chop_displacement;
+        textures.chop_derivatives = chop_derivatives;
+    }
+    sea_state.fft_swell = Some(swell.swell_field);
+    commands.remove_resource::<FftBakeReceiver>();
 }
 
 pub(super) fn drive_sea_level(time: Res<Time>, mut sea_state: ResMut<SeaState>) {
@@ -408,6 +526,7 @@ pub(super) fn sync_water_params(
     time: Res<Time>,
     sea_state: Res<SeaState>,
     surface: Option<Res<WaterSurface>>,
+    fft_textures: Option<Res<FftWaterTextures>>,
     mut materials: ResMut<Assets<WaterMaterial>>,
 ) {
     let Some(surface) = surface else {
@@ -427,6 +546,23 @@ pub(super) fn sync_water_params(
     material.extension.detail_settings = sea_state.detail;
     material.extension.dye_settings = sea_state.dye;
     material.extension.caustics_settings = sea_state.caustics;
+
+    let (swell_strength, chop_strength) = sea_state.effective_fft_strengths();
+    let mut fft_params = material.extension.fft_params;
+    fft_params.swell_strength = swell_strength;
+    fft_params.chop_strength = chop_strength;
+    fft_params.whitecap_gain = WHITECAP_BASE + WHITECAP_ENERGY * sea_state.wave_energy;
+    material.extension.fft_params = fft_params;
+    if let Some(textures) = fft_textures {
+        if textures.ready {
+            material.extension.swell_displacement = textures.swell_displacement.clone();
+            material.extension.swell_derivatives = textures.swell_derivatives.clone();
+            material.extension.chop_displacement = textures.chop_displacement.clone();
+            material.extension.chop_derivatives = textures.chop_derivatives.clone();
+        }
+        material.extension.fft =
+            textures.ready && sea_state.fft_enabled && sea_state.swells_enabled;
+    }
 }
 
 pub(super) fn sync_wetness(
@@ -642,6 +778,67 @@ pub(super) fn toggle_water_swells(
     } else {
         "Swells: off"
     });
+}
+
+pub(super) fn toggle_water_fft(
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    sea_state.fft_enabled = !sea_state.fft_enabled;
+    output.set(if sea_state.fft_enabled {
+        "FFT water: on"
+    } else {
+        "FFT water: off"
+    });
+}
+
+pub(super) fn set_water_weather(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let preset = match args.args.first().map(|name| name.as_str()) {
+        Some("calm") => WeatherPreset::Calm,
+        Some("moderate") => WeatherPreset::Moderate,
+        Some("storm") => WeatherPreset::Storm,
+        _ => {
+            output.set("Usage: set_water_weather <calm|moderate|storm>");
+            return;
+        }
+    };
+    sea_state.wave_energy = preset.energy();
+    let (swell, chop) = weather_strengths(preset.energy());
+    sea_state.swell_strength = swell;
+    sea_state.chop_strength = chop;
+    output.set(format!(
+        "Weather: {preset:?} (swell {swell:.2}, chop {chop:.2})"
+    ));
+}
+
+pub(super) fn set_swell_strength(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(strength) = args.get_f32(0) else {
+        output.set("Usage: set_swell_strength <strength>");
+        return;
+    };
+    sea_state.swell_strength = strength.clamp(0.0, 2.0);
+    output.set(format!("Swell strength: {:.2}", sea_state.swell_strength));
+}
+
+pub(super) fn set_chop_strength(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(strength) = args.get_f32(0) else {
+        output.set("Usage: set_chop_strength <strength>");
+        return;
+    };
+    sea_state.chop_strength = strength.clamp(0.0, 2.0);
+    output.set(format!("Chop strength: {:.2}", sea_state.chop_strength));
 }
 
 pub(super) fn toggle_water_wetness(
@@ -1105,6 +1302,140 @@ mod tests {
         let sea = app.world().resource::<SeaState>();
         assert_eq!(sea.dye.deep, Vec3::new(0.1, 0.2, 0.3));
         assert_eq!(sea.dye.shallow, WaterDye::default().shallow);
+    }
+
+    #[test]
+    fn weather_presets_land_on_their_marks() {
+        let calm = weather_strengths(WeatherPreset::Calm.energy());
+        let moderate = weather_strengths(WeatherPreset::Moderate.energy());
+        let storm = weather_strengths(WeatherPreset::Storm.energy());
+        assert!((calm.0 - 0.10).abs() < 1e-5 && (calm.1 - 0.25).abs() < 1e-5);
+        assert!((moderate.0 - 0.50).abs() < 1e-5 && (moderate.1 - 0.70).abs() < 1e-5);
+        assert!((storm.0 - 1.20).abs() < 1e-5 && (storm.1 - 1.00).abs() < 1e-5);
+        for step in 0..10 {
+            let lower = weather_strengths(step as f32 * 0.1);
+            let upper = weather_strengths(step as f32 * 0.1 + 0.1);
+            assert!(upper.0 >= lower.0 && upper.1 >= lower.1, "weather must ramp up");
+        }
+    }
+
+    #[test]
+    fn the_weather_command_blends_the_bands() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SeaState::default())
+            .insert_resource(CommandArgs {
+                args: vec!["storm".to_string()],
+            })
+            .init_resource::<CommandOutput>();
+        let weather = app.world_mut().register_system(set_water_weather);
+        app.world_mut().run_system(weather).unwrap();
+
+        let sea = app.world().resource::<SeaState>();
+        assert_eq!(sea.wave_energy, 1.0);
+        assert!((sea.swell_strength - 1.2).abs() < 1e-5);
+        assert!((sea.chop_strength - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_fft_toggle_sticks() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SeaState::default())
+            .init_resource::<CommandOutput>();
+        let toggle = app.world_mut().register_system(toggle_water_fft);
+        app.world_mut().run_system(toggle).unwrap();
+        assert!(!app.world().resource::<SeaState>().fft_enabled);
+        app.world_mut().run_system(toggle).unwrap();
+        assert!(app.world().resource::<SeaState>().fft_enabled);
+    }
+
+    #[test]
+    fn swells_off_zero_the_fft_strengths() {
+        let sea = SeaState {
+            swells_enabled: false,
+            ..default()
+        };
+        assert_eq!(sea.effective_fft_strengths(), (0.0, 0.0));
+        assert!(sea.fft_swell_height_at(2.0, 3.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn the_fft_swell_drives_the_shore_height() {
+        let band = bevy_shader_kit::bake_band(&bevy_shader_kit::FftBandConfig {
+            tile_size: 8.0,
+            resolution: 16,
+            frames: 4,
+            loop_period: 2.0,
+            wind_speed: 10.0,
+            wind_direction: Vec2::X,
+            fetch: 100.0,
+            directional_spread: 4.0,
+            min_wavelength: 1.0,
+            max_wavelength: 8.0,
+            choppiness: 1.0,
+            amplitude: 1.0,
+            seed: 7,
+        });
+        let terrain = Terrain::default();
+        let sea = SeaState {
+            sea_level: 5.0,
+            swell_strength: 1.0,
+            fft_swell: Some(band.swell_field.clone()),
+            ..default()
+        };
+        let mut heights = Vec::new();
+        for step in 0..8 {
+            let time = step as f32 * 0.3;
+            let height = sea.shore_surface_height_at(&terrain, 3.0, -4.0, time);
+            assert!(height.is_finite());
+            heights.push(height);
+        }
+        assert!(
+            heights.windows(2).any(|pair| (pair[1] - pair[0]).abs() > 1e-4),
+            "the fft swell must move the shore surface"
+        );
+        let start = sea.shore_surface_height_at(&terrain, 3.0, -4.0, 0.0);
+        let looped = sea.shore_surface_height_at(&terrain, 3.0, -4.0, band.loop_period);
+        assert!((start - looped).abs() < 1e-4, "the loop must close at the shore too");
+    }
+
+    #[test]
+    fn fft_strengths_reach_the_material() {
+        let mut materials = Assets::<WaterMaterial>::default();
+        let handle = materials.add(WaterMaterial {
+            base: StandardMaterial::default(),
+            extension: WaterMaterialExt::default(),
+        });
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(20),
+            ))
+            .insert_resource(SeaState {
+                swell_strength: 0.9,
+                chop_strength: 0.4,
+                ..default()
+            })
+            .insert_resource(WaterSurface {
+                material: handle.clone(),
+            })
+            .insert_resource(FftWaterTextures {
+                ready: false,
+                ..default()
+            })
+            .insert_resource(materials)
+            .add_systems(Update, sync_water_params);
+        app.update();
+
+        let material = app
+            .world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(&handle)
+            .unwrap();
+        assert!((material.extension.fft_params.swell_strength - 0.9).abs() < 1e-6);
+        assert!((material.extension.fft_params.chop_strength - 0.4).abs() < 1e-6);
+        assert!(!material.extension.fft, "fft stays off until the bake lands");
     }
 
     #[test]

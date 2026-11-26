@@ -229,6 +229,7 @@ pub fn water_blueprint() -> ShaderBlueprint {
             "import package::shaders::water::caustics::{caustic_gain, caustic_pattern};",
             "import package::shaders::water::detail::{detail, detail_foam, detail_slope};",
             "import package::shaders::water::dye::{depth_blend, depth_tint, dyed_base_color};",
+            "import package::shaders::water::fft::fft_surface;",
             "import package::shaders::water::foam::{\n    apply_foam_roughness, blend_foam_color, body_contact_mask, foam_noise_mask, shore_edge_mask,\n};",
             "import package::shaders::water::optics::water_volume_in_scatter;",
             "import package::shaders::water::refract::{refracted_probe, refracted_uv};",
@@ -242,11 +243,11 @@ pub fn water_blueprint() -> ShaderBlueprint {
         entry: WATER_FRAGMENT_ENTRY,
         segments: vec![
             BlueprintSegment::Text(
-                "    var out: FragmentOutput;\n    var pbr_input = pbr_input_from_standard_material(in, front);\n    pbr_input.material.base_color = alpha_discard(\n        pbr_input.material.flags,\n        pbr_input.material.alpha_cutoff,\n        pbr_input.material.base_color,\n    );\n\n    var ctx: WaterContext;\n    ctx.p = pbr_input.world_position.xyz;\n    ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);\n\n    ctx.detail = vec2<f32>(0.0);\n    ctx.ripple = vec2<f32>(0.0);\n    ctx.slope = vec2<f32>(0.0);\n",
+                "    var out: FragmentOutput;\n    var pbr_input = pbr_input_from_standard_material(in, front);\n    pbr_input.material.base_color = alpha_discard(\n        pbr_input.material.flags,\n        pbr_input.material.alpha_cutoff,\n        pbr_input.material.base_color,\n    );\n\n    var ctx: WaterContext;\n    ctx.p = pbr_input.world_position.xyz;\n    ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);\n\n    ctx.detail = vec2<f32>(0.0);\n    ctx.ripple = vec2<f32>(0.0);\n    ctx.slope = vec2<f32>(0.0);\n    ctx.fft_foam = 0.0;\n",
             ),
             BlueprintSegment::Slot {
                 hook: ShaderHook::SurfaceDetail,
-                default: "    @if(WATER_DETAIL) {\n        ctx.detail = detail_slope(ctx.p.xz, water.time);\n        ctx.slope = ctx.detail * detail.normal_gain;\n    }\n",
+                default: "    @if(WATER_DETAIL) {\n        ctx.detail = detail_slope(ctx.p.xz, water.time);\n        ctx.slope = ctx.detail * detail.normal_gain;\n    }\n    @if(WATER_FFT) {\n        let fft_s = fft_surface(ctx.p.xz, water.time);\n        ctx.detail = ctx.detail * fft_s.w;\n        ctx.slope = ctx.slope + fft_s.xy;\n        ctx.fft_foam = fft_s.z;\n    }\n",
             },
             BlueprintSegment::Slot {
                 hook: ShaderHook::RippleField,
@@ -269,7 +270,7 @@ pub fn water_blueprint() -> ShaderBlueprint {
             BlueprintSegment::Text("\n    @if(WATER_FOAM) {\n"),
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamEdge,
-                default: "        var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);\n        ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));\n",
+                default: "        var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);\n        ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));\n        @if(WATER_FFT) {\n            ctx.edge = max(ctx.edge, ctx.fft_foam);\n        }\n",
             },
             BlueprintSegment::Text(
                 "        @if(WATER_DETAIL) {\n            ctx.edge = max(ctx.edge, detail_foam(ctx.detail));\n        }\n        @if(WATER_BODY_FOAM) {\n            let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));\n            ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));\n        }\n",

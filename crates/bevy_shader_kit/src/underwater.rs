@@ -22,8 +22,8 @@ pub struct UnderwaterPostProcess {
     pub meniscus_thickness: f32,
     pub distortion_strength: f32,
     pub enabled: u32,
-    pub pad0: f32,
-    pub pad1: f32,
+    pub fft_swell_height: f32,
+    pub fft_on: f32,
     pub pad2: f32,
     pub meniscus_color: Vec3,
 }
@@ -38,8 +38,8 @@ impl Default for UnderwaterPostProcess {
             meniscus_thickness: 0.06,
             distortion_strength: 0.02,
             enabled: 0,
-            pad0: 0.0,
-            pad1: 0.0,
+            fft_swell_height: 0.0,
+            fft_on: 0.0,
             pad2: 0.0,
             meniscus_color: Vec3::new(0.55, 0.75, 0.72),
         }
@@ -76,6 +76,8 @@ mod tests {
             "meniscus_thickness:",
             "distortion_strength:",
             "enabled:",
+            "fft_swell_height:",
+            "fft_on:",
             "meniscus_color:",
         ] {
             assert!(

@@ -8,6 +8,7 @@ use bevy::{
 pub mod bake;
 pub mod compose;
 pub mod debug;
+pub mod fft;
 pub mod field;
 pub mod post_process;
 pub mod underwater;
@@ -15,6 +16,12 @@ pub mod water;
 pub mod wet;
 
 pub use bake::{GpuBakeSdfRequest, GpuSdfBakePlugin, SdfBakeQueue, uninit_sdf_image};
+pub use fft::{
+    CHOP_FADE, CHOP_LOOP_PERIOD, CHOP_TILE_SIZE, FftBandConfig, FftBakeReceiver, FftBakedBand,
+    FftSwellField, FftWaterTextures, FFT_FRAMES, FFT_RESOLUTION, SWELL_FADE, SWELL_LOOP_PERIOD,
+    SWELL_TILE_SIZE, bake_band, bake_water_bands, fft_derivatives_image, fft_displacement_image,
+    fft_placeholder_image, fft_sampler_descriptor, quantized_omega, spawn_fft_bake,
+};
 pub use debug::{
     DebugCurtainExt, DebugCurtainMaterial, DebugCurtainParams, MAX_SURFACE_DEBUG_CELLS, SurfaceDebug,
     region_color,
@@ -61,6 +68,8 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/optics.wesl");
         load_shader_library!(app, "shaders/water/swell_types.wesl");
         load_shader_library!(app, "shaders/water/swells.wesl");
+        load_shader_library!(app, "shaders/water/fft_types.wesl");
+        load_shader_library!(app, "shaders/water/fft.wesl");
         load_shader_library!(app, "shaders/water/body.wesl");
         load_shader_library!(app, "shaders/water/detail.wesl");
         load_shader_library!(app, "shaders/water/dye.wesl");

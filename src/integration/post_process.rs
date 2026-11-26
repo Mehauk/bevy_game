@@ -108,6 +108,10 @@ fn sync_underwater_post_process(
     settings.water_height = sea_state.sea_level;
     settings.swells = sea_state.effective_swells();
     settings.optics = sea_state.optics;
+    let lens = camera.translation();
+    let fft_swell = sea_state.fft_swell_height_at(lens.x, lens.z, now);
+    settings.fft_swell_height = fft_swell.unwrap_or(0.0);
+    settings.fft_on = f32::from(fft_swell.is_some());
 
     let lens_in_water = lens_surface_height(&sea_state, &terrain, camera, now)
         .is_some_and(|surface| {

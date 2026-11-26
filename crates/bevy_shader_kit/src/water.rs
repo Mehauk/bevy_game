@@ -15,6 +15,10 @@ use bevy::{
 };
 
 use crate::field::SdfVolume;
+use crate::fft::{
+    CHOP_FADE, CHOP_LOOP_PERIOD, CHOP_TILE_SIZE, FFT_FRAMES, SWELL_FADE, SWELL_LOOP_PERIOD,
+    SWELL_TILE_SIZE,
+};
 
 pub const MAX_RIPPLES: usize = 32;
 pub const MAX_SWELLS: usize = 4;
@@ -189,6 +193,46 @@ impl Default for WaterCaustics {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
+pub struct FftWaterParams {
+    pub swell_tile_size: f32,
+    pub swell_period: f32,
+    pub swell_strength: f32,
+    pub swell_fade_start: f32,
+    pub swell_fade_end: f32,
+    pub chop_tile_size: f32,
+    pub chop_period: f32,
+    pub chop_strength: f32,
+    pub chop_fade_start: f32,
+    pub chop_fade_end: f32,
+    pub whitecap_threshold: f32,
+    pub whitecap_gain: f32,
+    pub frames: u32,
+    pub pad0: u32,
+}
+
+impl Default for FftWaterParams {
+    fn default() -> Self {
+        Self {
+            swell_tile_size: SWELL_TILE_SIZE,
+            swell_period: SWELL_LOOP_PERIOD,
+            swell_strength: 0.5,
+            swell_fade_start: SWELL_FADE.0,
+            swell_fade_end: SWELL_FADE.1,
+            chop_tile_size: CHOP_TILE_SIZE,
+            chop_period: CHOP_LOOP_PERIOD,
+            chop_strength: 0.7,
+            chop_fade_start: CHOP_FADE.0,
+            chop_fade_end: CHOP_FADE.1,
+            whitecap_threshold: 0.55,
+            whitecap_gain: 0.35,
+            frames: FFT_FRAMES,
+            pad0: 0,
+        }
+    }
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, ShaderType, Reflect)]
 pub struct SwellWave {
     pub direction: Vec2,
@@ -343,6 +387,7 @@ pub struct WaterMaterialKey {
     pub dye: bool,
     pub caustics: bool,
     pub refract: bool,
+    pub fft: bool,
     pub override_shader: Option<Uuid>,
 }
 
@@ -357,6 +402,7 @@ impl From<&WaterMaterialExt> for WaterMaterialKey {
             dye: ext.dye,
             caustics: ext.caustics,
             refract: ext.refract,
+            fft: ext.fft,
             override_shader: ext.override_shader.as_ref().and_then(|shader| match shader.id() {
                 AssetId::Uuid { uuid } => Some(uuid),
                 AssetId::Index { .. } => None,
@@ -375,6 +421,7 @@ pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
         ShaderDefVal::Bool("WATER_DYE".into(), key.dye),
         ShaderDefVal::Bool("WATER_CAUSTICS".into(), key.caustics),
         ShaderDefVal::Bool("WATER_REFRACT".into(), key.refract),
+        ShaderDefVal::Bool("WATER_FFT".into(), key.fft),
     ]
 }
 
@@ -407,6 +454,17 @@ pub struct WaterMaterialExt {
     pub dye_settings: WaterDye,
     #[uniform(107)]
     pub caustics_settings: WaterCaustics,
+    #[uniform(108)]
+    pub fft_params: FftWaterParams,
+    #[texture(109, dimension = "2d_array")]
+    #[sampler(113)]
+    pub swell_displacement: Handle<Image>,
+    #[texture(110, dimension = "2d_array")]
+    pub swell_derivatives: Handle<Image>,
+    #[texture(111, dimension = "2d_array")]
+    pub chop_displacement: Handle<Image>,
+    #[texture(112, dimension = "2d_array")]
+    pub chop_derivatives: Handle<Image>,
     pub foam: bool,
     pub optics: bool,
     pub ripples: bool,
@@ -415,6 +473,7 @@ pub struct WaterMaterialExt {
     pub dye: bool,
     pub caustics: bool,
     pub refract: bool,
+    pub fft: bool,
     pub override_shader: Option<Handle<Shader>>,
 }
 
@@ -429,6 +488,11 @@ impl Default for WaterMaterialExt {
             detail_settings: default(),
             dye_settings: default(),
             caustics_settings: default(),
+            fft_params: default(),
+            swell_displacement: default(),
+            swell_derivatives: default(),
+            chop_displacement: default(),
+            chop_derivatives: default(),
             foam: true,
             optics: true,
             ripples: true,
@@ -437,6 +501,7 @@ impl Default for WaterMaterialExt {
             dye: true,
             caustics: true,
             refract: true,
+            fft: false,
             override_shader: None,
         }
     }
@@ -485,6 +550,7 @@ mod tests {
         assert!(key.foam);
         assert!(!key.optics);
         assert!(key.ripples);
+        assert!(!key.fft);
         assert_eq!(key.override_shader, None);
     }
 
@@ -729,7 +795,7 @@ mod tests {
 
     #[test]
     fn detail_uniform_matches_the_shader_layout() {
-        assert_eq!(WaterDetail::min_size().get(), 48);
+        assert_eq!(WaterDetail::min_size().get(), 56);
         let source = include_str!("shaders/water/detail.wesl");
         for field in [
             "drift",
@@ -782,6 +848,46 @@ mod tests {
             );
         }
         assert!(source.contains("@binding(107)"));
+    }
+
+    #[test]
+    fn fft_uniform_matches_the_shader_layout() {
+        assert_eq!(FftWaterParams::min_size().get(), 56);
+        let source = include_str!("shaders/water/fft_types.wesl");
+        for field in [
+            "swell_tile_size",
+            "swell_period",
+            "swell_strength",
+            "swell_fade_start",
+            "swell_fade_end",
+            "chop_tile_size",
+            "chop_period",
+            "chop_strength",
+            "chop_fade_start",
+            "chop_fade_end",
+            "whitecap_threshold",
+            "whitecap_gain",
+            "frames",
+        ] {
+            assert!(
+                source.contains(&format!("{field}:")),
+                "fft_types.wesl is missing the `{field}` field"
+            );
+        }
+        for binding in ["@binding(108)", "@binding(109)", "@binding(110)", "@binding(111)", "@binding(112)", "@binding(113)"] {
+            assert!(source.contains(binding), "fft_types.wesl is missing {binding}");
+        }
+    }
+
+    #[test]
+    fn defs_carry_the_fft_flag() {
+        let off = water_shader_defs(&WaterMaterialKey::from(&WaterMaterialExt::default()));
+        assert!(off.contains(&ShaderDefVal::Bool("WATER_FFT".into(), false)));
+        let on = water_shader_defs(&WaterMaterialKey::from(&WaterMaterialExt {
+            fft: true,
+            ..default()
+        }));
+        assert!(on.contains(&ShaderDefVal::Bool("WATER_FFT".into(), true)));
     }
 
     #[test]

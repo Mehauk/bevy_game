@@ -27,4 +27,5 @@ struct WaterContext {
     slope: vec2<f32>,
     blend: f32,
     tint: f32,
+    fft_foam: f32,
 }

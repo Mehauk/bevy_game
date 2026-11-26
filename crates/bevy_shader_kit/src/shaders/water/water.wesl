@@ -12,6 +12,7 @@ import package::shaders::water::body::{body_sdf, body_volume};
 import package::shaders::water::caustics::{caustic_gain, caustic_pattern};
 import package::shaders::water::detail::{detail, detail_foam, detail_slope};
 import package::shaders::water::dye::{depth_blend, depth_tint, dyed_base_color};
+import package::shaders::water::fft::fft_surface;
 import package::shaders::water::foam::{
     apply_foam_roughness, blend_foam_color, body_contact_mask, foam_noise_mask, shore_edge_mask,
 };
@@ -39,9 +40,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     ctx.detail = vec2<f32>(0.0);
     ctx.ripple = vec2<f32>(0.0);
     ctx.slope = vec2<f32>(0.0);
+    ctx.fft_foam = 0.0;
     @if(WATER_DETAIL) {
         ctx.detail = detail_slope(ctx.p.xz, water.time);
         ctx.slope = ctx.detail * detail.normal_gain;
+    }
+    @if(WATER_FFT) {
+        let fft_s = fft_surface(ctx.p.xz, water.time);
+        ctx.detail = ctx.detail * fft_s.w;
+        ctx.slope = ctx.slope + fft_s.xy;
+        ctx.fft_foam = fft_s.z;
     }
     @if(WATER_RIPPLES) {
         ctx.ripple = ripple_slope(ctx.p.xz, water.time);
@@ -83,6 +91,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) front: bool) -> FragmentOut
     @if(WATER_FOAM) {
         var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);
         ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));
+        @if(WATER_FFT) {
+            ctx.edge = max(ctx.edge, ctx.fft_foam);
+        }
         @if(WATER_DETAIL) {
             ctx.edge = max(ctx.edge, detail_foam(ctx.detail));
         }

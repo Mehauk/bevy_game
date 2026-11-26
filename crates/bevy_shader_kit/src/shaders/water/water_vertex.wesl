@@ -7,6 +7,7 @@ import bevy_pbr::render::{
     forward_io::{Vertex, UncompressedVertex, VertexOutput, decompress_vertex},
     view_transformations::position_world_to_clip,
 };
+import package::shaders::water::fft::{fft_vertex_displacement, fft_vertex_normal};
 import package::shaders::water::swell_types::{swell_normal, swell_offset};
 import package::shaders::water::swells::swells;
 import package::shaders::water::types::water;
@@ -64,10 +65,17 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 @if(VERTEX_POSITIONS)
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     let swell_rest = out.world_position.xz;
+@if(WATER_FFT && VERTEX_POSITIONS)
+    let fft_dist = length(swell_rest - view.world_position.xz);
+@if(WATER_FFT && VERTEX_POSITIONS)
+    out.world_position = vec4<f32>(out.world_position.xyz + fft_vertex_displacement(swell_rest, water.time, fft_dist), out.world_position.w);
+@if(WATER_FFT && VERTEX_NORMALS && VERTEX_POSITIONS && !SKINNED)
+    out.world_normal = fft_vertex_normal(swell_rest, water.time, fft_dist);
+@if(!WATER_FFT && VERTEX_POSITIONS)
     let swell_atten = 1.0 - smoothstep(32.0, 60.0, length(swell_rest - view.world_position.xz));
-@if(VERTEX_POSITIONS)
+@if(!WATER_FFT && VERTEX_POSITIONS)
     out.world_position = vec4<f32>(out.world_position.xyz + swell_offset(swells, swell_rest, water.time) * swell_atten, out.world_position.w);
-@if(VERTEX_NORMALS && VERTEX_POSITIONS && !SKINNED)
+@if(!WATER_FFT && VERTEX_NORMALS && VERTEX_POSITIONS && !SKINNED)
     out.world_normal = normalize(mix(vec3(0.0, 1.0, 0.0), swell_normal(swells, swell_rest, water.time), swell_atten));
 @if(VERTEX_POSITIONS)
     out.position = position_world_to_clip(out.world_position.xyz);

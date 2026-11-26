@@ -30,7 +30,8 @@ pub use chunks::{TerrainChunk, TerrainSurfaceMaterial, TerrainViewer};
 use terrain::{regenerate_terrain, set_terrain_generator, toggle_erosion};
 pub use terrain::Terrain;
 use water::{
-    toggle_water_body_foam, toggle_water_caustics, toggle_water_detail, toggle_water_dye,
+    set_chop_strength, set_swell_strength, set_water_weather, toggle_water_body_foam,
+    toggle_water_caustics, toggle_water_detail, toggle_water_dye, toggle_water_fft,
     toggle_water_foam, toggle_water_optics, toggle_water_refraction, toggle_water_ripples,
     toggle_water_swells, toggle_water_tides, toggle_water_wetness,
 };
@@ -82,6 +83,7 @@ impl Plugin for TerrainPlugin {
                     (
                         sync_sea_sun,
                         water::drive_sea_level,
+                        water::poll_fft_bake,
                         water::sync_water_clipmap,
                         water::sync_water_params,
                         water::sync_wetness,
@@ -118,6 +120,10 @@ impl Plugin for TerrainPlugin {
         command!(app, "Toggle water refraction", toggle_water_refraction);
         command!(app, "Toggle the tides", toggle_water_tides);
         command!(app, "Toggle ocean swells", toggle_water_swells);
+        command!(app, "Toggle FFT water", toggle_water_fft);
+        command!(app, "Set the water weather", set_water_weather);
+        command!(app, "Set the FFT swell strength", set_swell_strength);
+        command!(app, "Set the FFT chop strength", set_chop_strength);
         command!(app, "Toggle wet sand", toggle_water_wetness);
         debug_info!(app, "Chunks", chunk_debug_info);
         debug_view!(app, "chunks", "Chunk grid painted on the terrain surface");

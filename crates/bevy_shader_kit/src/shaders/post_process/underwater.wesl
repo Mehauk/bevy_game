@@ -17,8 +17,8 @@ struct UnderwaterSettings {
     meniscus_thickness: f32,
     distortion_strength: f32,
     enabled: u32,
-    pad0: f32,
-    pad1: f32,
+    fft_swell_height: f32,
+    fft_on: f32,
     pad2: f32,
     meniscus_color: vec3<f32>,
 }
@@ -31,7 +31,8 @@ const DISTORTION_FADE: f32 = 0.35;
 const DISTORTION_WAVE_SCALE: f32 = 1.5;
 
 fn surface_height(p: vec2<f32>, time: f32) -> f32 {
-    return settings.water_height + swell_height(settings.swells, p, time);
+    let legacy = swell_height(settings.swells, p, time);
+    return settings.water_height + mix(legacy, settings.fft_swell_height, settings.fft_on);
 }
 
 @fragment

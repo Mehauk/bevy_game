@@ -8,7 +8,7 @@ struct WaterParams {
     ripple_normal: f32,
     ripple_foam: f32,
     wave_energy: f32,
-    pad0: f32,
+    refraction: f32,
     optics: WaterOptics,
 }
 
@@ -23,4 +23,8 @@ struct WaterContext {
     pattern: f32,
     foam: f32,
     ripple: vec2<f32>,
+    detail: vec2<f32>,
+    slope: vec2<f32>,
+    blend: f32,
+    tint: f32,
 }

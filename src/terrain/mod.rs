@@ -30,7 +30,8 @@ pub use chunks::{TerrainChunk, TerrainSurfaceMaterial, TerrainViewer};
 use terrain::{regenerate_terrain, set_terrain_generator, toggle_erosion};
 pub use terrain::Terrain;
 use water::{
-    toggle_water_body_foam, toggle_water_foam, toggle_water_optics, toggle_water_ripples,
+    toggle_water_body_foam, toggle_water_caustics, toggle_water_detail, toggle_water_dye,
+    toggle_water_foam, toggle_water_optics, toggle_water_refraction, toggle_water_ripples,
     toggle_water_swells, toggle_water_tides, toggle_water_wetness,
 };
 pub use water::{Sea, SeaState, WaterSurface, terrain_gradient};
@@ -97,6 +98,9 @@ impl Plugin for TerrainPlugin {
         );
         command!(app, "Set the water level", water::set_water_level);
         command!(app, "Set the wave energy", water::set_wave_energy);
+        command!(app, "Set the water dye color", water::set_water_color);
+        command!(app, "Set the water refraction", water::set_water_refraction);
+        command!(app, "Set the caustic strength", water::set_caustic_strength);
         command!(app, "Toggle terrain erosion", toggle_erosion);
         command!(
             app,
@@ -108,6 +112,10 @@ impl Plugin for TerrainPlugin {
         command!(app, "Toggle water foam", toggle_water_foam);
         command!(app, "Toggle underwater light optics", toggle_water_optics);
         command!(app, "Toggle body foam", toggle_water_body_foam);
+        command!(app, "Toggle surface detail", toggle_water_detail);
+        command!(app, "Toggle water dye", toggle_water_dye);
+        command!(app, "Toggle water caustics", toggle_water_caustics);
+        command!(app, "Toggle water refraction", toggle_water_refraction);
         command!(app, "Toggle the tides", toggle_water_tides);
         command!(app, "Toggle ocean swells", toggle_water_swells);
         command!(app, "Toggle wet sand", toggle_water_wetness);

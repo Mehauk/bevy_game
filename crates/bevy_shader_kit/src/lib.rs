@@ -32,8 +32,9 @@ pub use compose::{
 };
 pub use water::{
     MAX_RIPPLES, MAX_SWELLS, REFRACTION_STRENGTH, RippleSet, RippleWave, ShoreContext,
-    SHORE_ZONE, SHOAL_DEPTH, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WaterMaterialKey,
-    WaterOptics, WaterParams, shore_factor, shore_horiz_damp, shore_vert_damp, water_shader_defs,
+    SHORE_ZONE, SHOAL_DEPTH, SwellSet, SwellWave, WaterCaustics, WaterDye, WaterDetail,
+    WaterMaterial, WaterMaterialExt, WaterMaterialKey, WaterOptics, WaterParams, shore_factor,
+    shore_horiz_damp, shore_vert_damp, water_shader_defs,
 };
 
 pub struct ShaderKitPlugin;
@@ -42,6 +43,7 @@ impl Plugin for ShaderKitPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(app, "shaders/math/aa.wesl");
         load_shader_library!(app, "shaders/math/falloff.wesl");
+        load_shader_library!(app, "shaders/math/normal.wesl");
         load_shader_library!(app, "shaders/noise/hash.wesl");
         load_shader_library!(app, "shaders/noise/value2d.wesl");
         load_shader_library!(app, "shaders/noise/fbm2d.wesl");
@@ -60,6 +62,10 @@ impl Plugin for ShaderKitPlugin {
         load_shader_library!(app, "shaders/water/swell_types.wesl");
         load_shader_library!(app, "shaders/water/swells.wesl");
         load_shader_library!(app, "shaders/water/body.wesl");
+        load_shader_library!(app, "shaders/water/detail.wesl");
+        load_shader_library!(app, "shaders/water/dye.wesl");
+        load_shader_library!(app, "shaders/water/caustics.wesl");
+        load_shader_library!(app, "shaders/water/refract.wesl");
         load_shader_library!(app, "shaders/post_process/bindings.wesl");
         load_shader_library!(app, "shaders/debug/region_color.wesl");
         load_shader_library!(app, "shaders/debug/surface_debug.wesl");

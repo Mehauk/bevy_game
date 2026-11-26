@@ -2,12 +2,15 @@ use bevy::{prelude::*, shader::Shader, shader::ShaderDefVal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ShaderHook {
+    SurfaceDetail,
     DepthSample,
+    BodyDye,
     RippleField,
     FoamEdge,
     FoamPattern,
     FoamRoughness,
     PreLighting,
+    Caustics,
     PostLighting,
     VolumeOptics,
     FoamShade,
@@ -18,12 +21,15 @@ pub enum ShaderHook {
 impl ShaderHook {
     pub fn slot_name(&self) -> String {
         match self {
+            ShaderHook::SurfaceDetail => "surface_detail".to_string(),
             ShaderHook::DepthSample => "depth_sample".to_string(),
+            ShaderHook::BodyDye => "body_dye".to_string(),
             ShaderHook::RippleField => "ripple_field".to_string(),
             ShaderHook::FoamEdge => "foam_edge".to_string(),
             ShaderHook::FoamPattern => "foam_pattern".to_string(),
             ShaderHook::FoamRoughness => "foam_roughness".to_string(),
             ShaderHook::PreLighting => "pre_lighting".to_string(),
+            ShaderHook::Caustics => "caustics".to_string(),
             ShaderHook::PostLighting => "post_lighting".to_string(),
             ShaderHook::VolumeOptics => "volume_optics".to_string(),
             ShaderHook::FoamShade => "foam_shade".to_string(),
@@ -216,12 +222,17 @@ pub fn water_blueprint() -> ShaderBlueprint {
             "import bevy_pbr::render::view_transformations::depth_ndc_to_view_z;",
             "import bevy_pbr::prepass::utils::prepass_depth;",
             "import package::shaders::math::falloff::view_distance_fade;",
+            "import package::shaders::math::normal::tilt_normal;",
             "import package::shaders::noise::fbm2d::scrolling_fbm_2d;",
             "import package::shaders::sdf::volume::volume_sample_world;",
             "import package::shaders::water::body::{body_sdf, body_volume};",
+            "import package::shaders::water::caustics::{caustic_gain, caustic_pattern};",
+            "import package::shaders::water::detail::{detail, detail_foam, detail_slope};",
+            "import package::shaders::water::dye::{depth_blend, depth_tint, dyed_base_color};",
             "import package::shaders::water::foam::{\n    apply_foam_roughness, blend_foam_color, body_contact_mask, foam_noise_mask, shore_edge_mask,\n};",
             "import package::shaders::water::optics::water_volume_in_scatter;",
-            "import package::shaders::water::ripples::{ripple_foam_edge, ripple_normal, ripple_slope};",
+            "import package::shaders::water::refract::{refracted_probe, refracted_uv};",
+            "import package::shaders::water::ripples::{ripple_foam_edge, ripple_slope};",
             "import package::shaders::water::types::{WaterContext, water};",
         ],
         declarations: vec![
@@ -231,28 +242,37 @@ pub fn water_blueprint() -> ShaderBlueprint {
         entry: WATER_FRAGMENT_ENTRY,
         segments: vec![
             BlueprintSegment::Text(
-                "    var out: FragmentOutput;\n    var pbr_input = pbr_input_from_standard_material(in, front);\n    pbr_input.material.base_color = alpha_discard(\n        pbr_input.material.flags,\n        pbr_input.material.alpha_cutoff,\n        pbr_input.material.base_color,\n    );\n\n    var ctx: WaterContext;\n    ctx.p = pbr_input.world_position.xyz;\n    ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);\n\n    ctx.depth = water.optics.max_depth;\n    @if(DEPTH_PREPASS) {\n",
+                "    var out: FragmentOutput;\n    var pbr_input = pbr_input_from_standard_material(in, front);\n    pbr_input.material.base_color = alpha_discard(\n        pbr_input.material.flags,\n        pbr_input.material.alpha_cutoff,\n        pbr_input.material.base_color,\n    );\n\n    var ctx: WaterContext;\n    ctx.p = pbr_input.world_position.xyz;\n    ctx.view_fade = view_distance_fade(ctx.p, view.world_position, WATER_VIEW_FADE_RANGE);\n\n    ctx.detail = vec2<f32>(0.0);\n    ctx.ripple = vec2<f32>(0.0);\n    ctx.slope = vec2<f32>(0.0);\n",
+            ),
+            BlueprintSegment::Slot {
+                hook: ShaderHook::SurfaceDetail,
+                default: "    @if(WATER_DETAIL) {\n        ctx.detail = detail_slope(ctx.p.xz, water.time);\n        ctx.slope = ctx.detail * detail.normal_gain;\n    }\n",
+            },
+            BlueprintSegment::Slot {
+                hook: ShaderHook::RippleField,
+                default: "    @if(WATER_RIPPLES) {\n        ctx.ripple = ripple_slope(ctx.p.xz, water.time);\n        ctx.slope = ctx.slope + ctx.ripple * water.ripple_normal;\n    }\n",
+            },
+            BlueprintSegment::Text(
+                "    pbr_input.N = tilt_normal(pbr_input.N, ctx.slope);\n\n    ctx.depth = water.optics.max_depth;\n    @if(DEPTH_PREPASS) {\n",
             ),
             BlueprintSegment::Slot {
                 hook: ShaderHook::DepthSample,
-                default: "        let surface_view_z = depth_ndc_to_view_z(in.position.z);\n        let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));\n        ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.optics.max_depth);\n",
+                default: "        let surface_view_z = depth_ndc_to_view_z(in.position.z);\n        @if(WATER_REFRACT) {\n            let probe = refracted_probe(in.position, refracted_uv(ctx.slope, water.refraction, surface_view_z));\n            let behind_view_z = depth_ndc_to_view_z(prepass_depth(probe, 0u));\n            ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.optics.max_depth);\n        }\n        @if(!WATER_REFRACT) {\n            let behind_view_z = depth_ndc_to_view_z(prepass_depth(in.position, 0u));\n            ctx.depth = clamp(surface_view_z - behind_view_z, 0.0, water.optics.max_depth);\n        }\n",
             },
             BlueprintSegment::Text(
-                "    }\n    var body_distance: f32 = 1.0e6;\n    @if(WATER_BODY_FOAM) {\n        body_distance = volume_sample_world(body_volume, body_sdf, ctx.p);\n        ctx.depth = min(ctx.depth, max(body_distance, 0.0));\n    }\n    pbr_input.material.thickness = ctx.depth;\n\n    ctx.ripple = vec2<f32>(0.0);\n    @if(WATER_RIPPLES) {\n",
+                "    }\n    var body_distance: f32 = 1.0e6;\n    @if(WATER_BODY_FOAM) {\n        body_distance = volume_sample_world(body_volume, body_sdf, ctx.p);\n        ctx.depth = min(ctx.depth, max(body_distance, 0.0));\n    }\n    pbr_input.material.thickness = ctx.depth;\n\n    ctx.blend = 0.0;\n    ctx.tint = 0.0;\n",
             ),
             BlueprintSegment::Slot {
-                hook: ShaderHook::RippleField,
-                default: "        ctx.ripple = ripple_slope(ctx.p.xz, water.time);\n",
+                hook: ShaderHook::BodyDye,
+                default: "    @if(WATER_DYE || WATER_CAUSTICS) {\n        ctx.blend = depth_blend(ctx.depth);\n    }\n    @if(WATER_DYE) {\n        ctx.tint = depth_tint(ctx.blend);\n        let dyed = dyed_base_color(pbr_input.material.base_color.rgb, ctx.tint);\n        pbr_input.material.base_color = vec4<f32>(dyed, pbr_input.material.base_color.a);\n    }\n",
             },
-            BlueprintSegment::Text(
-                "        pbr_input.N = ripple_normal(pbr_input.N, ctx.ripple, water.ripple_normal);\n    }\n\n    @if(WATER_FOAM) {\n",
-            ),
+            BlueprintSegment::Text("\n    @if(WATER_FOAM) {\n"),
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamEdge,
                 default: "        var shore_edge = shore_edge_mask(ctx.depth, water.foam_width);\n        ctx.edge = max(shore_edge, ripple_foam_edge(length(ctx.ripple), water.ripple_foam));\n",
             },
             BlueprintSegment::Text(
-                "        @if(WATER_BODY_FOAM) {\n            let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));\n            ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));\n        }\n",
+                "        @if(WATER_DETAIL) {\n            ctx.edge = max(ctx.edge, detail_foam(ctx.detail));\n        }\n        @if(WATER_BODY_FOAM) {\n            let surface_proximity = 1.0 - smoothstep(0.0, water.foam_width, abs(ctx.p.y - water.water_height));\n            ctx.edge = max(ctx.edge, body_contact_mask(body_distance, surface_proximity));\n        }\n",
             ),
             BlueprintSegment::Slot {
                 hook: ShaderHook::FoamPattern,
@@ -272,10 +292,15 @@ pub fn water_blueprint() -> ShaderBlueprint {
             },
             BlueprintSegment::Text("    out.color = apply_pbr_lighting(pbr_input);\n\n"),
             BlueprintSegment::Slot {
+                hook: ShaderHook::Caustics,
+                default: "    @if(WATER_CAUSTICS) {\n        let caustic = caustic_gain(caustic_pattern(ctx.p.xz, water.time), ctx.blend);\n        out.color = vec4<f32>(out.color.rgb * (1.0 + caustic), out.color.a);\n    }\n",
+            },
+            BlueprintSegment::Text("\n"),
+            BlueprintSegment::Slot {
                 hook: ShaderHook::PostLighting,
                 default: "",
             },
-            BlueprintSegment::Text("    @if(WATER_OPTICS) {\n"),
+            BlueprintSegment::Text("\n    @if(WATER_OPTICS) {\n"),
             BlueprintSegment::Slot {
                 hook: ShaderHook::VolumeOptics,
                 default: "        if (front) {\n            let in_scatter = water_volume_in_scatter(pbr_input.V, pbr_input.N, ctx.depth, water.optics.scattering, water.optics.absorption, water.optics.sun_direction, water.optics.sun_illuminance, water.optics.ambient_illuminance, water.optics.phase_g);\n            out.color = vec4<f32>(out.color.rgb + in_scatter, out.color.a);\n        }\n",

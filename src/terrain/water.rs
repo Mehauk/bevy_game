@@ -9,8 +9,8 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 use bevy_shader_kit::{
-    ShoreContext, SdfVolume, SwellSet, SwellWave, WaterMaterial, WaterMaterialExt, WaterOptics,
-    WetSandMaterial, shore_factor,
+    ShoreContext, SdfVolume, SwellSet, SwellWave, WaterCaustics, WaterDetail, WaterDye,
+    WaterMaterial, WaterMaterialExt, WaterOptics, WaterParams, WetSandMaterial, shore_factor,
 };
 
 use super::chunks::{TerrainSurfaceMaterial, TerrainViewer};
@@ -36,6 +36,10 @@ pub struct SeaState {
     pub wetness_height: f32,
     pub swells: SwellSet,
     pub optics: WaterOptics,
+    pub detail: WaterDetail,
+    pub dye: WaterDye,
+    pub caustics: WaterCaustics,
+    pub refraction: f32,
     pub tides_enabled: bool,
     pub swells_enabled: bool,
     pub wetness_enabled: bool,
@@ -53,6 +57,10 @@ impl Default for SeaState {
             wetness_height: f32::MIN,
             swells: SWELLS,
             optics: WaterOptics::default(),
+            detail: WaterDetail::default(),
+            dye: WaterDye::default(),
+            caustics: WaterCaustics::default(),
+            refraction: 0.35,
             tides_enabled: true,
             swells_enabled: true,
             wetness_enabled: true,
@@ -340,7 +348,14 @@ pub fn setup_water_surface(
             ..default()
         },
         extension: WaterMaterialExt {
+            params: WaterParams {
+                refraction: sea_state.refraction,
+                ..default()
+            },
             swells: sea_state.effective_swells(),
+            detail_settings: sea_state.detail,
+            dye_settings: sea_state.dye,
+            caustics_settings: sea_state.caustics,
             body_volume: SdfVolume::from_bounds(
                 Vec3::splat(-0.5),
                 Vec3::splat(0.5),
@@ -405,9 +420,13 @@ pub(super) fn sync_water_params(
     params.time = time.elapsed_secs();
     params.water_height = sea_state.sea_level;
     params.wave_energy = sea_state.wave_energy;
+    params.refraction = sea_state.refraction;
     params.optics = sea_state.optics;
     material.extension.params = params;
     material.extension.swells = sea_state.effective_swells();
+    material.extension.detail_settings = sea_state.detail;
+    material.extension.dye_settings = sea_state.dye;
+    material.extension.caustics_settings = sea_state.caustics;
 }
 
 pub(super) fn sync_wetness(
@@ -510,6 +529,98 @@ pub(super) fn toggle_water_body_foam(
     flip_extension_flag(surface, &mut materials, &mut output, "Body foam", |ext| {
         &mut ext.body_foam
     });
+}
+
+pub(super) fn toggle_water_detail(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water detail", |ext| {
+        &mut ext.detail
+    });
+}
+
+pub(super) fn toggle_water_dye(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water dye", |ext| {
+        &mut ext.dye
+    });
+}
+
+pub(super) fn toggle_water_caustics(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water caustics", |ext| {
+        &mut ext.caustics
+    });
+}
+
+pub(super) fn toggle_water_refraction(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water refraction", |ext| {
+        &mut ext.refract
+    });
+}
+
+pub(super) fn set_water_refraction(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(strength) = args.get_f32(0) else {
+        output.set("Usage: set_water_refraction <strength>");
+        return;
+    };
+    sea_state.refraction = strength.max(0.0);
+    output.set(format!("Water refraction: {:.2}", sea_state.refraction));
+}
+
+pub(super) fn set_caustic_strength(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(strength) = args.get_f32(0) else {
+        output.set("Usage: set_caustic_strength <strength>");
+        return;
+    };
+    sea_state.caustics.strength = strength.max(0.0);
+    output.set(format!(
+        "Caustic strength: {:.2}",
+        sea_state.caustics.strength
+    ));
+}
+
+pub(super) fn set_water_color(
+    args: Res<CommandArgs>,
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let usage = "Usage: set_water_color <shallow|deep> <r> <g> <b>";
+    let kind = args.args.first().map(|kind| kind.as_str());
+    let (Some(r), Some(g), Some(b)) = (args.get_f32(1), args.get_f32(2), args.get_f32(3)) else {
+        output.set(usage);
+        return;
+    };
+    let color = Vec3::new(r, g, b).clamp(Vec3::ZERO, Vec3::splat(1.0));
+    match kind {
+        Some("shallow") => sea_state.dye.shallow = color,
+        Some("deep") => sea_state.dye.deep = color,
+        _ => {
+            output.set(usage);
+            return;
+        }
+    }
+    output.set(format!("Water {kind:?}: {color:?}"));
 }
 
 pub(super) fn toggle_water_tides(mut sea_state: ResMut<SeaState>, mut output: ResMut<CommandOutput>) {
@@ -885,5 +996,131 @@ mod tests {
             "the basin floor must sit below the sea"
         );
         assert_eq!(sea.flooded_surface_height_at(&terrain, x, z, 0.0), None);
+    }
+
+    #[test]
+    fn the_shader_settings_reach_the_material() {
+        let mut materials = Assets::<WaterMaterial>::default();
+        let handle = materials.add(WaterMaterial {
+            base: StandardMaterial::default(),
+            extension: WaterMaterialExt::default(),
+        });
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(20),
+            ))
+            .insert_resource(SeaState {
+                refraction: 0.9,
+                detail: WaterDetail {
+                    normal_gain: 1.25,
+                    ..default()
+                },
+                dye: WaterDye {
+                    beers_law: 3.5,
+                    ..default()
+                },
+                caustics: WaterCaustics {
+                    strength: 0.0,
+                    ..default()
+                },
+                ..default()
+            })
+            .insert_resource(WaterSurface {
+                material: handle.clone(),
+            })
+            .insert_resource(materials)
+            .add_systems(Update, sync_water_params);
+        app.update();
+
+        let material = app
+            .world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(&handle)
+            .unwrap();
+        assert_eq!(material.extension.params.refraction, 0.9);
+        assert_eq!(material.extension.detail_settings.normal_gain, 1.25);
+        assert_eq!(material.extension.dye_settings.beers_law, 3.5);
+        assert_eq!(material.extension.caustics_settings.strength, 0.0);
+    }
+
+    #[test]
+    fn the_surface_toggles_stick_across_sync() {
+        let mut materials = Assets::<WaterMaterial>::default();
+        let handle = materials.add(WaterMaterial {
+            base: StandardMaterial::default(),
+            extension: WaterMaterialExt::default(),
+        });
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(20),
+            ))
+            .insert_resource(SeaState::default())
+            .insert_resource(WaterSurface {
+                material: handle.clone(),
+            })
+            .insert_resource(materials)
+            .init_resource::<CommandOutput>()
+            .add_systems(Update, sync_water_params);
+        let detail = app.world_mut().register_system(toggle_water_detail);
+        let dye = app.world_mut().register_system(toggle_water_dye);
+        let caustics = app.world_mut().register_system(toggle_water_caustics);
+        let refraction = app.world_mut().register_system(toggle_water_refraction);
+        for system in [detail, dye, caustics, refraction] {
+            app.world_mut().run_system(system).unwrap();
+        }
+        for _ in 0..4 {
+            app.update();
+        }
+
+        let material = app
+            .world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(&handle)
+            .unwrap();
+        assert!(!material.extension.detail);
+        assert!(!material.extension.dye);
+        assert!(!material.extension.caustics);
+        assert!(!material.extension.refract);
+    }
+
+    #[test]
+    fn the_dye_command_paints_the_requested_band() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SeaState::default())
+            .insert_resource(CommandArgs {
+                args: vec![
+                    "deep".to_string(),
+                    "0.1".to_string(),
+                    "0.2".to_string(),
+                    "0.3".to_string(),
+                ],
+            })
+            .init_resource::<CommandOutput>();
+        let paint = app.world_mut().register_system(set_water_color);
+        app.world_mut().run_system(paint).unwrap();
+
+        let sea = app.world().resource::<SeaState>();
+        assert_eq!(sea.dye.deep, Vec3::new(0.1, 0.2, 0.3));
+        assert_eq!(sea.dye.shallow, WaterDye::default().shallow);
+    }
+
+    #[test]
+    fn the_dye_command_leaves_the_sea_alone_without_a_band() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SeaState::default())
+            .insert_resource(CommandArgs {
+                args: vec!["murk".to_string(), "0.1".to_string(), "0.2".to_string(), "0.3".to_string()],
+            })
+            .init_resource::<CommandOutput>();
+        let paint = app.world_mut().register_system(set_water_color);
+        app.world_mut().run_system(paint).unwrap();
+
+        let sea = app.world().resource::<SeaState>();
+        assert_eq!(sea.dye.deep, WaterDye::default().deep);
+        assert_eq!(sea.dye.shallow, WaterDye::default().shallow);
     }
 }

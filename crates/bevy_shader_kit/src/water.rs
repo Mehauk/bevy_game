@@ -88,7 +88,7 @@ pub struct WaterParams {
     pub ripple_normal: f32,
     pub ripple_foam: f32,
     pub wave_energy: f32,
-    pub pad0: f32,
+    pub refraction: f32,
     pub optics: WaterOptics,
 }
 
@@ -102,8 +102,88 @@ impl Default for WaterParams {
             ripple_normal: 0.55,
             ripple_foam: 0.9,
             wave_energy: 0.35,
-            pad0: 0.0,
+            refraction: 0.35,
             optics: WaterOptics::default(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
+pub struct WaterDetail {
+    pub drift: Vec2,
+    pub detail_scale: f32,
+    pub flow_scale: f32,
+    pub flow_speed: f32,
+    pub flow_strength: f32,
+    pub layer_ratio: f32,
+    pub gradient_step: f32,
+    pub blend_a: f32,
+    pub blend_b: f32,
+    pub normal_gain: f32,
+    pub foam_gain: f32,
+    pub pad0: f32,
+}
+
+impl Default for WaterDetail {
+    fn default() -> Self {
+        Self {
+            drift: Vec2::new(0.05, 0.04),
+            detail_scale: 0.25,
+            flow_scale: 0.25,
+            flow_speed: 0.06,
+            flow_strength: 0.15,
+            layer_ratio: 2.3,
+            gradient_step: 0.25,
+            blend_a: 0.75,
+            blend_b: 0.25,
+            normal_gain: 0.1,
+            foam_gain: 0.03,
+            pad0: 0.0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
+pub struct WaterDye {
+    pub shallow: Vec3,
+    pub deep: Vec3,
+    pub beers_law: f32,
+    pub depth_offset: f32,
+    pub tint_exponent: f32,
+    pub pad0: f32,
+}
+
+impl Default for WaterDye {
+    fn default() -> Self {
+        Self {
+            shallow: Vec3::new(0.35, 0.75, 0.72),
+            deep: Vec3::new(0.02, 0.13, 0.2),
+            beers_law: 2.0,
+            depth_offset: -0.75,
+            tint_exponent: 2.5,
+            pad0: 0.0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType, Reflect)]
+pub struct WaterCaustics {
+    pub strength: f32,
+    pub scale: f32,
+    pub speed: f32,
+    pub sharpness: f32,
+}
+
+impl Default for WaterCaustics {
+    fn default() -> Self {
+        Self {
+            strength: 0.45,
+            scale: 0.9,
+            speed: 0.5,
+            sharpness: 6.0,
         }
     }
 }
@@ -259,6 +339,10 @@ pub struct WaterMaterialKey {
     pub optics: bool,
     pub ripples: bool,
     pub body_foam: bool,
+    pub detail: bool,
+    pub dye: bool,
+    pub caustics: bool,
+    pub refract: bool,
     pub override_shader: Option<Uuid>,
 }
 
@@ -269,6 +353,10 @@ impl From<&WaterMaterialExt> for WaterMaterialKey {
             optics: ext.optics,
             ripples: ext.ripples,
             body_foam: ext.body_foam,
+            detail: ext.detail,
+            dye: ext.dye,
+            caustics: ext.caustics,
+            refract: ext.refract,
             override_shader: ext.override_shader.as_ref().and_then(|shader| match shader.id() {
                 AssetId::Uuid { uuid } => Some(uuid),
                 AssetId::Index { .. } => None,
@@ -283,6 +371,10 @@ pub fn water_shader_defs(key: &WaterMaterialKey) -> Vec<ShaderDefVal> {
         ShaderDefVal::Bool("WATER_OPTICS".into(), key.optics),
         ShaderDefVal::Bool("WATER_RIPPLES".into(), key.ripples),
         ShaderDefVal::Bool("WATER_BODY_FOAM".into(), key.body_foam),
+        ShaderDefVal::Bool("WATER_DETAIL".into(), key.detail),
+        ShaderDefVal::Bool("WATER_DYE".into(), key.dye),
+        ShaderDefVal::Bool("WATER_CAUSTICS".into(), key.caustics),
+        ShaderDefVal::Bool("WATER_REFRACT".into(), key.refract),
     ]
 }
 
@@ -309,10 +401,20 @@ pub struct WaterMaterialExt {
     pub body_volume: SdfVolume,
     #[texture(104, dimension = "3d", sample_type = "float", filterable = false)]
     pub body_sdf: Handle<Image>,
+    #[uniform(105)]
+    pub detail_settings: WaterDetail,
+    #[uniform(106)]
+    pub dye_settings: WaterDye,
+    #[uniform(107)]
+    pub caustics_settings: WaterCaustics,
     pub foam: bool,
     pub optics: bool,
     pub ripples: bool,
     pub body_foam: bool,
+    pub detail: bool,
+    pub dye: bool,
+    pub caustics: bool,
+    pub refract: bool,
     pub override_shader: Option<Handle<Shader>>,
 }
 
@@ -324,10 +426,17 @@ impl Default for WaterMaterialExt {
             swells: default(),
             body_volume: default(),
             body_sdf: default(),
+            detail_settings: default(),
+            dye_settings: default(),
+            caustics_settings: default(),
             foam: true,
             optics: true,
             ripples: true,
             body_foam: false,
+            detail: true,
+            dye: true,
+            caustics: true,
+            refract: true,
             override_shader: None,
         }
     }
@@ -614,6 +723,86 @@ mod tests {
                     .shader_defs
                     .contains(&def),
                 "the fragment stage is missing {def:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_uniform_matches_the_shader_layout() {
+        assert_eq!(WaterDetail::min_size().get(), 48);
+        let source = include_str!("shaders/water/detail.wesl");
+        for field in [
+            "drift",
+            "detail_scale",
+            "flow_scale",
+            "flow_speed",
+            "flow_strength",
+            "layer_ratio",
+            "gradient_step",
+            "blend_a",
+            "blend_b",
+            "normal_gain",
+            "foam_gain",
+        ] {
+            assert!(
+                source.contains(&format!("{field}:")),
+                "detail.wesl is missing the `{field}` field"
+            );
+        }
+        assert!(source.contains("@binding(105)"));
+    }
+
+    #[test]
+    fn dye_uniform_matches_the_shader_layout() {
+        assert_eq!(WaterDye::min_size().get(), 48);
+        let source = include_str!("shaders/water/dye.wesl");
+        for field in [
+            "shallow",
+            "deep",
+            "beers_law",
+            "depth_offset",
+            "tint_exponent",
+        ] {
+            assert!(
+                source.contains(&format!("{field}:")),
+                "dye.wesl is missing the `{field}` field"
+            );
+        }
+        assert!(source.contains("@binding(106)"));
+    }
+
+    #[test]
+    fn caustics_uniform_matches_the_shader_layout() {
+        assert_eq!(WaterCaustics::min_size().get(), 16);
+        let source = include_str!("shaders/water/caustics.wesl");
+        for field in ["strength", "scale", "speed", "sharpness"] {
+            assert!(
+                source.contains(&format!("{field}:")),
+                "caustics.wesl is missing the `{field}` field"
+            );
+        }
+        assert!(source.contains("@binding(107)"));
+    }
+
+    #[test]
+    fn params_carry_the_refraction_strength() {
+        let source = include_str!("shaders/water/types.wesl");
+        assert!(source.contains("refraction: f32,"));
+        assert_eq!(WaterParams::min_size().get(), 128);
+    }
+
+    #[test]
+    fn defs_carry_the_ported_feature_flags() {
+        let defs = water_shader_defs(&WaterMaterialKey::from(&WaterMaterialExt::default()));
+        for name in [
+            "WATER_DETAIL",
+            "WATER_DYE",
+            "WATER_CAUSTICS",
+            "WATER_REFRACT",
+        ] {
+            assert!(
+                defs.contains(&ShaderDefVal::Bool(name.into(), true)),
+                "{name} must default on"
             );
         }
     }

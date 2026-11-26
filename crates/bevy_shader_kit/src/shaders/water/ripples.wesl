@@ -1,3 +1,5 @@
+import package::shaders::math::normal::tilt_normal;
+
 struct RippleWave {
     origin: vec2<f32>,
     delta: vec2<f32>,
@@ -65,7 +67,7 @@ fn ripple_slope(p: vec2<f32>, time: f32) -> vec2<f32> {
 }
 
 fn ripple_normal(normal: vec3<f32>, slope: vec2<f32>, gain: f32) -> vec3<f32> {
-    return normalize(normal - vec3<f32>(slope.x, 0.0, slope.y) * gain);
+    return tilt_normal(normal, slope * gain);
 }
 
 fn ripple_foam_edge(slope: f32, gain: f32) -> f32 {

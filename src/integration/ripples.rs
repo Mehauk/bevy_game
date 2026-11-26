@@ -5,6 +5,22 @@ use bevy_shader_kit::WaterMaterial;
 use crate::character::{CAPSULE_RADIUS, CAPSULE_TOTAL_HEIGHT, Character, FEET_OFFSET};
 use crate::ripples::{RippleField, RippleSystems};
 use crate::terrain::{SeaState, WaterSurface};
+use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
+
+#[derive(Resource)]
+struct SplashesToggle {
+    enabled: bool,
+}
+
+impl Default for SplashesToggle {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+fn splashes_enabled(toggle: Res<SplashesToggle>) -> bool {
+    toggle.enabled
+}
 
 const HULL_RADIUS: f32 = CAPSULE_RADIUS + 0.15;
 const STRADDLE_MARGIN: f32 = 0.05;
@@ -73,13 +89,28 @@ fn plan_splash(
 }
 
 pub(super) fn register(app: &mut App) {
-    app.add_observer(track_character_wake).add_systems(
-        Update,
-        (
-            emit_character_splashes.in_set(RippleSystems::Emit),
-            publish_ripples.in_set(RippleSystems::Publish),
-        ),
-    );
+    app.init_resource::<SplashesToggle>()
+        .add_observer(track_character_wake)
+        .add_systems(
+            Update,
+            (
+                emit_character_splashes
+                    .in_set(RippleSystems::Emit)
+                    .run_if(splashes_enabled),
+                publish_ripples.in_set(RippleSystems::Publish),
+            ),
+        );
+
+    command!(app, "Toggle character splashes", toggle_splashes);
+}
+
+fn toggle_splashes(mut toggle: ResMut<SplashesToggle>, mut output: ResMut<CommandOutput>) {
+    toggle.enabled = !toggle.enabled;
+    output.set(if toggle.enabled {
+        "Splashes: on"
+    } else {
+        "Splashes: off"
+    });
 }
 
 fn track_character_wake(trigger: On<Add<Character>>, mut commands: Commands) {
@@ -253,6 +284,35 @@ mod tests {
             field.waves.len(),
             2,
             "both swimmers enter the water and neither erases the other"
+        );
+    }
+
+    #[test]
+    fn splashes_off_silence_the_swimmers() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<RippleField>()
+            .insert_resource(SplashesToggle { enabled: false })
+            .insert_resource(SeaState {
+                sea_level: 0.0,
+                swells: SwellSet::default(),
+                ..default()
+            })
+            .add_observer(track_character_wake)
+            .add_systems(Update, emit_character_splashes.run_if(splashes_enabled));
+
+        app.world_mut().spawn((
+            Transform::from_xyz(0.0, 0.0, 0.0),
+            LinearVelocity(Vec3::new(0.0, -4.0, 0.0)),
+            Character::default(),
+        ));
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<RippleField>().waves.len(),
+            0,
+            "a disabled splash toggle must not emit, while the manual splash command keeps working"
         );
     }
 }

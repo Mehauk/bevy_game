@@ -100,7 +100,7 @@ fn sync_underwater_post_process(
     let mut settings = *post_process;
     settings.time = now;
     settings.water_height = sea_state.sea_level;
-    settings.swells = sea_state.swells;
+    settings.swells = sea_state.effective_swells();
     settings.optics = sea_state.optics;
 
     let lens_in_water = lens_submerged(

@@ -1,9 +1,16 @@
+use std::sync::Arc;
+
 use avian3d::prelude::Collider;
 use bevy::{
     asset::RenderAssetUsages,
     mesh::{Indices, Mesh, PrimitiveTopology},
     prelude::*,
 };
+
+use crate::utils::registry::commands::{CommandArgs, CommandOutput};
+
+use super::erosion::ErosionConfig;
+use super::grid::{mix, HeightGrid};
 
 const CRATER_DEPTH: f32 = 30.0;
 const CRATER_RIM_X: f32 = 30.0;
@@ -12,6 +19,119 @@ const CRATER_INSET: f32 = 100.0;
 const NORMAL_SAMPLE_STEP: f32 = 0.5;
 const LOD_HYSTERESIS: f32 = 0.15;
 const MIN_LOD_SUBDIVISIONS: u32 = 8;
+const NOISE_AMPLITUDE: f32 = 10.0;
+const NOISE_EDGE_MARGIN: f32 = 0.08;
+const NOISE_EDGE_DEPTH: f32 = -4.0;
+const NOISE_MAX_OCTAVES: u32 = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Generator {
+    Crater,
+    Noise { seed: u32, octaves: u32, scale: f32 },
+}
+
+impl Default for Generator {
+    fn default() -> Self {
+        Self::Crater
+    }
+}
+
+impl Generator {
+    pub fn sample(&self, world: Vec2, x: f32, z: f32) -> f32 {
+        match self {
+            Generator::Crater => crater_height(world, x, z),
+            Generator::Noise {
+                seed,
+                octaves,
+                scale,
+            } => noise_height(world, *seed, *octaves, *scale, x, z),
+        }
+    }
+}
+
+fn crater_height(world: Vec2, x: f32, z: f32) -> f32 {
+    let over_x = (x.abs() - (world.x / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_X;
+    let over_z = (z.abs() - (world.y / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_Z;
+    let t = over_x.hypot(over_z).clamp(0.0, 1.0);
+    -CRATER_DEPTH * t * t * (3.0 - 2.0 * t)
+}
+
+const NOISE_GRADIENTS: [(f32, f32); 8] = [
+    (1.0, 0.0),
+    (-1.0, 0.0),
+    (0.0, 1.0),
+    (0.0, -1.0),
+    (0.70710678, 0.70710678),
+    (-0.70710678, 0.70710678),
+    (0.70710678, -0.70710678),
+    (-0.70710678, -0.70710678),
+];
+
+fn hash2(seed: u32, x: i32, z: i32) -> u32 {
+    let mut h = seed
+        ^((x as u32).wrapping_mul(0x9E37_79B1))
+        ^((z as u32).wrapping_mul(0x85EBCA6B));
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7FEB_35CD);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846C_A68B);
+    h ^ (h >> 16)
+}
+
+fn fade(t: f32) -> f32 {
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+fn gradient_noise(seed: u32, x: f32, z: f32) -> f32 {
+    let ix = x.floor();
+    let iz = z.floor();
+    let (x0, x1) = (ix as i32, ix as i32 + 1);
+    let (z0, z1) = (iz as i32, iz as i32 + 1);
+    let fx = fade(x - ix);
+    let fz = fade(z - iz);
+    let corner = |cx: i32, cz: i32, dx: f32, dz: f32| {
+        let (gx, gz) = NOISE_GRADIENTS[(hash2(seed, cx, cz) & 7) as usize];
+        gx * dx + gz * dz
+    };
+    let low = mix(
+        corner(x0, z0, x - ix, z - iz),
+        corner(x1, z0, x - x1 as f32, z - iz),
+        fx,
+    );
+    let high = mix(
+        corner(x0, z1, x - ix, z - z1 as f32),
+        corner(x1, z1, x - x1 as f32, z - z1 as f32),
+        fx,
+    );
+    mix(low, high, fz) * 1.4142135
+}
+
+fn fbm(seed: u32, octaves: u32, scale: f32, x: f32, z: f32) -> f32 {
+    let octaves = octaves.clamp(1, NOISE_MAX_OCTAVES);
+    let mut sum = 0.0;
+    let mut norm = 0.0;
+    let mut amplitude = 1.0;
+    let mut frequency = scale;
+    for _ in 0..octaves {
+        sum += amplitude * gradient_noise(seed, x * frequency, z * frequency);
+        norm += amplitude;
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    sum / norm
+}
+
+fn noise_height(world: Vec2, seed: u32, octaves: u32, scale: f32, x: f32, z: f32) -> f32 {
+    if octaves == 0 || !(scale > 0.0) {
+        return 0.0;
+    }
+    let half = world * 0.5;
+    let margin = (world.min_element() * NOISE_EDGE_MARGIN).max(1.0);
+    let inside = (half.x - x.abs()).min(half.y - z.abs()).max(0.0);
+    let t = (inside / margin).clamp(0.0, 1.0);
+    let t = t * t * (3.0 - 2.0 * t);
+    fbm(seed, octaves, scale, x, z) * NOISE_AMPLITUDE * t + NOISE_EDGE_DEPTH * (1.0 - t)
+}
 
 #[derive(Resource, Clone, Copy)]
 pub struct TerrainConfig {
@@ -20,45 +140,85 @@ pub struct TerrainConfig {
     pub mesh_subdivisions: u32,
     pub collider_subdivisions: u32,
     pub collider_radius: f32,
+    pub generator: Generator,
+    pub grid_resolution: u32,
+    pub erosion: ErosionConfig,
 }
 
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            world: Vec2::splat(1000.0),
+            world: Vec2::splat(3000.0),
             chunk_size: 60.0,
             mesh_subdivisions: 64,
             collider_subdivisions: 60,
             collider_radius: 120.0,
+            generator: Generator::Crater,
+            grid_resolution: 512,
+            erosion: ErosionConfig::default(),
         }
     }
 }
 
-#[derive(Resource, Clone, Copy)]
-pub struct Terrain(pub(crate) TerrainConfig);
+#[derive(Resource, Clone)]
+pub struct Terrain {
+    config: TerrainConfig,
+    revision: u64,
+    grid: Arc<HeightGrid>,
+}
 
 impl Default for Terrain {
     fn default() -> Self {
-        Self(TerrainConfig::default())
+        Self::new(TerrainConfig::default())
     }
 }
 
 impl Terrain {
+    pub fn new(config: TerrainConfig) -> Self {
+        let grid = HeightGrid::build(&config);
+        Self {
+            config,
+            revision: 0,
+            grid,
+        }
+    }
+
     pub fn config(&self) -> TerrainConfig {
-        self.0
+        self.config
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn set_generator(&mut self, generator: Generator) {
+        self.config.generator = generator;
+    }
+
+    pub fn set_erosion_enabled(&mut self, enabled: bool) {
+        self.config.erosion.enabled = enabled;
+    }
+
+    pub fn regenerate(&mut self) {
+        self.grid = HeightGrid::build(&self.config);
+        self.revision += 1;
+    }
+
+    pub fn grid(&self) -> &Arc<HeightGrid> {
+        &self.grid
     }
 
     pub fn chunk_count(&self) -> UVec2 {
-        let chunks = (self.0.world / self.0.chunk_size.max(1.0)).ceil();
+        let chunks = (self.config.world / self.config.chunk_size.max(1.0)).ceil();
         UVec2::new(chunks.x.max(1.0) as u32, chunks.y.max(1.0) as u32)
     }
 
     pub fn chunk_extent(&self) -> Vec2 {
-        self.0.world / self.chunk_count().as_vec2()
+        self.config.world / self.chunk_count().as_vec2()
     }
 
     pub fn chunk_origin(&self, coord: IVec2) -> Vec2 {
-        -self.0.world * 0.5 + coord.as_vec2() * self.chunk_extent()
+        -self.config.world * 0.5 + coord.as_vec2() * self.chunk_extent()
     }
 
     pub fn chunk_center(&self, coord: IVec2) -> Vec2 {
@@ -72,14 +232,11 @@ impl Terrain {
     }
 
     pub fn sample_ground_height(&self, x: f32, z: f32) -> f32 {
-        let over_x = (x.abs() - (self.0.world.x / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_X;
-        let over_z = (z.abs() - (self.0.world.y / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_Z;
-        let t = over_x.hypot(over_z).clamp(0.0, 1.0);
-        -CRATER_DEPTH * t * t * (3.0 - 2.0 * t)
+        self.grid.sample(x, z)
     }
 
     pub fn ground_normal(&self, x: f32, z: f32) -> Vec3 {
-        let step = NORMAL_SAMPLE_STEP;
+        let step = NORMAL_SAMPLE_STEP.max(self.grid.texel().min_element() * 0.5);
         let slope_x =
             self.sample_ground_height(x + step, z) - self.sample_ground_height(x - step, z);
         let slope_z =
@@ -126,6 +283,66 @@ impl Terrain {
             current
         }
     }
+}
+
+pub(super) fn toggle_erosion(mut terrain: ResMut<Terrain>, mut output: ResMut<CommandOutput>) {
+    let enabled = !terrain.config().erosion.enabled;
+    terrain.set_erosion_enabled(enabled);
+    terrain.regenerate();
+    output.set(format!("Erosion: {}", if enabled { "on" } else { "off" }));
+}
+
+pub(super) fn set_terrain_generator(
+    args: Res<CommandArgs>,
+    mut terrain: ResMut<Terrain>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let Some(kind) = args.args.first() else {
+        output.set("Usage: set_terrain_generator <crater|noise> [seed] [octaves] [scale]");
+        return;
+    };
+    let generator = match kind.as_str() {
+        "crater" => Generator::Crater,
+        "noise" => Generator::Noise {
+            seed: args.args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
+            octaves: args.args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4),
+            scale: args.args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.01),
+        },
+        other => {
+            output.set(format!("Unknown generator '{other}', expected crater or noise"));
+            return;
+        }
+    };
+    terrain.set_generator(generator);
+    terrain.regenerate();
+    output.set(format!("Generator: {generator:?}"));
+}
+
+pub(super) fn regenerate_terrain(
+    args: Res<CommandArgs>,
+    mut terrain: ResMut<Terrain>,
+    mut output: ResMut<CommandOutput>,
+) {
+    let seed = args.args.first().and_then(|s| s.parse::<u32>().ok());
+    let seed_ignored = match (seed, terrain.config().generator) {
+        (Some(seed), Generator::Noise { octaves, scale, .. }) => {
+            terrain.set_generator(Generator::Noise { seed, octaves, scale });
+            false
+        }
+        (Some(_), Generator::Crater) => true,
+        (None, _) => false,
+    };
+    terrain.regenerate();
+    let note = if seed_ignored {
+        " (seed ignored: the crater generator has none)"
+    } else {
+        ""
+    };
+    output.set(format!(
+        "Terrain regenerated at revision {}{}",
+        terrain.revision(),
+        note
+    ));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -549,7 +766,7 @@ mod tests {
     }
 
     fn coarse_collider_terrain() -> Terrain {
-        Terrain(TerrainConfig {
+        Terrain::new(TerrainConfig {
             collider_subdivisions: 10,
             ..default()
         })
@@ -575,6 +792,316 @@ mod tests {
         assert_eq!(terrain.sample_ground_height(0.0, 0.0), 0.0);
         assert_eq!(terrain.sample_ground_height(0.0, edge), -CRATER_DEPTH);
         assert_eq!(terrain.ground_normal(0.0, 0.0), Vec3::Y);
+    }
+
+    #[test]
+    fn the_crater_generator_matches_the_original_function() {
+        let world = Vec2::splat(3000.0);
+        for x in [
+            -2000.0f32, -1500.0, -1400.0, -1370.0, 0.0, 37.5, 1400.0, 1500.0, 2000.0,
+        ] {
+            for z in [-1500.0f32, -1000.0, 0.0, 1000.0, 1450.0, 1500.0] {
+                let over_x =
+                    (x.abs() - (world.x / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_X;
+                let over_z =
+                    (z.abs() - (world.y / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_Z;
+                let t = over_x.hypot(over_z).clamp(0.0, 1.0);
+                let expected = -CRATER_DEPTH * t * t * (3.0 - 2.0 * t);
+                assert_eq!(Generator::Crater.sample(world, x, z), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn noise_is_deterministic_and_safe() {
+        let world = Vec2::splat(3000.0);
+        let noise = Generator::Noise {
+            seed: 11,
+            octaves: 5,
+            scale: 0.01,
+        };
+        let mut heights = Vec::new();
+        for x in [-1500.0, -700.0, 0.0, 250.0, 1500.0] {
+            for z in [-900.0, 0.0, 300.0, 1500.0] {
+                let height = noise.sample(world, x, z);
+                assert!(height.is_finite(), "noise left the finite range at ({x}, {z})");
+                assert_eq!(height, noise.sample(world, x, z), "noise must be a pure function");
+                heights.push(height);
+            }
+        }
+        assert!(
+            heights.iter().any(|h| *h > 0.5) && heights.iter().any(|h| *h < -0.5),
+            "the noise must actually undulate"
+        );
+        let other = Generator::Noise {
+            seed: 12,
+            octaves: 5,
+            scale: 0.01,
+        };
+        assert_ne!(
+            noise.sample(world, 123.0, 456.0),
+            other.sample(world, 123.0, 456.0),
+            "a different seed must carve a different world"
+        );
+        let no_octaves = Generator::Noise {
+            seed: 11,
+            octaves: 0,
+            scale: 0.01,
+        };
+        assert_eq!(no_octaves.sample(world, 100.0, 200.0), 0.0);
+        for scale in [0.0, -1.0, f32::NAN] {
+            let degenerate = Generator::Noise {
+                seed: 11,
+                octaves: 5,
+                scale,
+            };
+            assert_eq!(degenerate.sample(world, 100.0, 200.0), 0.0);
+        }
+    }
+
+    #[test]
+    fn noise_sinks_below_sea_level_at_the_world_edge() {
+        let world = Vec2::splat(3000.0);
+        let noise = Generator::Noise {
+            seed: 11,
+            octaves: 5,
+            scale: 0.01,
+        };
+        for (x, z) in [
+            (1500.0, 0.0),
+            (-1500.0, 0.0),
+            (0.0, 1500.0),
+            (0.0, -1500.0),
+            (2000.0, 2000.0),
+        ] {
+            assert_eq!(noise.sample(world, x, z), NOISE_EDGE_DEPTH);
+        }
+    }
+
+    #[test]
+    fn regeneration_bumps_the_revision_and_rebuilds_the_grid() {
+        let mut terrain = Terrain::default();
+        assert_eq!(terrain.revision(), 0);
+        let before = terrain.sample_ground_height(300.0, -200.0);
+        terrain.set_generator(Generator::Noise {
+            seed: 4,
+            octaves: 4,
+            scale: 0.01,
+        });
+        terrain.regenerate();
+        assert_eq!(terrain.revision(), 1);
+        let after = terrain.sample_ground_height(300.0, -200.0);
+        assert_ne!(after, before, "the swapped generator must reach the grid");
+        terrain.regenerate();
+        assert_eq!(terrain.revision(), 2);
+        assert_eq!(
+            terrain.sample_ground_height(300.0, -200.0),
+            after,
+            "regenerating the same config must be deterministic"
+        );
+    }
+
+    #[test]
+    fn the_generator_command_swaps_and_regenerates() {
+        let mut world = World::new();
+        world.insert_resource(Terrain::default());
+        world.insert_resource(CommandArgs {
+            args: vec!["noise".into(), "7".into(), "3".into(), "0.02".into()],
+        });
+        world.insert_resource(CommandOutput::default());
+        let id = world.register_system(set_terrain_generator);
+        world.run_system(id).unwrap();
+
+        let terrain = world.resource::<Terrain>();
+        assert_eq!(
+            terrain.config().generator,
+            Generator::Noise {
+                seed: 7,
+                octaves: 3,
+                scale: 0.02
+            }
+        );
+        assert_eq!(terrain.revision(), 1);
+    }
+
+    #[test]
+    fn the_generator_command_rejects_unknown_kinds() {
+        let mut world = World::new();
+        world.insert_resource(Terrain::default());
+        world.insert_resource(CommandArgs {
+            args: vec!["volcano".into()],
+        });
+        world.insert_resource(CommandOutput::default());
+        let id = world.register_system(set_terrain_generator);
+        world.run_system(id).unwrap();
+
+        let terrain = world.resource::<Terrain>();
+        assert_eq!(terrain.revision(), 0, "a rejected command must not regenerate");
+        assert_eq!(terrain.config().generator, Generator::Crater);
+    }
+
+    #[test]
+    fn the_erosion_command_flips_and_regenerates() {
+        let mut world = World::new();
+        world.insert_resource(Terrain::default());
+        world.insert_resource(CommandOutput::default());
+        let id = world.register_system(toggle_erosion);
+        world.run_system(id).unwrap();
+
+        let terrain = world.resource::<Terrain>();
+        assert!(terrain.config().erosion.enabled);
+        assert_eq!(terrain.revision(), 1);
+    }
+
+    #[test]
+    fn the_regenerate_command_reseeds_noise() {
+        let mut world = World::new();
+        world.insert_resource(Terrain::new(TerrainConfig {
+            generator: Generator::Noise {
+                seed: 1,
+                octaves: 4,
+                scale: 0.01,
+            },
+            ..default()
+        }));
+        world.insert_resource(CommandArgs {
+            args: vec!["42".into()],
+        });
+        world.insert_resource(CommandOutput::default());
+        let id = world.register_system(regenerate_terrain);
+        world.run_system(id).unwrap();
+
+        let terrain = world.resource::<Terrain>();
+        assert_eq!(
+            terrain.config().generator,
+            Generator::Noise {
+                seed: 42,
+                octaves: 4,
+                scale: 0.01
+            }
+        );
+        assert_eq!(terrain.revision(), 1);
+    }
+
+    #[test]
+    fn the_regenerate_command_says_when_crater_ignores_the_seed() {
+        let mut world = World::new();
+        world.insert_resource(Terrain::default());
+        world.insert_resource(CommandArgs {
+            args: vec!["42".into()],
+        });
+        world.insert_resource(CommandOutput::default());
+        let id = world.register_system(regenerate_terrain);
+        world.run_system(id).unwrap();
+
+        let output = world.resource_mut::<CommandOutput>().take().unwrap();
+        assert!(
+            output.contains("seed ignored"),
+            "the crater generator must not pretend a seed took effect, got: {output}"
+        );
+        assert_eq!(world.resource::<Terrain>().revision(), 1);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Border {
+        North,
+        South,
+        East,
+        West,
+    }
+
+    fn border_flag(flags: StitchFlags, border: Border) -> StitchFlags {
+        match border {
+            Border::North => flags.with_north(),
+            Border::South => flags.with_south(),
+            Border::East => flags.with_east(),
+            Border::West => flags.with_west(),
+        }
+    }
+
+    fn border_offset(border: Border) -> IVec2 {
+        match border {
+            Border::North => IVec2::new(0, 1),
+            Border::South => IVec2::new(0, -1),
+            Border::East => IVec2::new(1, 0),
+            Border::West => IVec2::new(-1, 0),
+        }
+    }
+
+    fn edge_vertex(lines: usize, border: Border, coarse_side: bool, line: usize) -> usize {
+        let far = lines - 1;
+        match (border, coarse_side) {
+            (Border::East, false) | (Border::West, true) => line * lines + far,
+            (Border::West, false) | (Border::East, true) => line * lines,
+            (Border::North, false) | (Border::South, true) => far * lines + line,
+            (Border::South, false) | (Border::North, true) => line,
+        }
+    }
+
+    #[test]
+    fn noise_chunks_stitch_on_every_border() {
+        let terrain = Terrain::new(TerrainConfig {
+            generator: Generator::Noise {
+                seed: 7,
+                octaves: 4,
+                scale: 0.01,
+            },
+            ..default()
+        });
+        assert_stitches_on_every_border(&terrain);
+    }
+
+    #[test]
+    fn eroded_noise_chunks_stitch_on_every_border() {
+        let terrain = Terrain::new(TerrainConfig {
+            generator: Generator::Noise {
+                seed: 7,
+                octaves: 4,
+                scale: 0.01,
+            },
+            erosion: ErosionConfig {
+                enabled: true,
+                seed: 2,
+                thermal_iterations: 2,
+                hydraulic_drops: 400,
+                talus_angle: 0.5,
+            },
+            ..default()
+        });
+        assert_stitches_on_every_border(&terrain);
+    }
+
+    fn assert_stitches_on_every_border(terrain: &Terrain) {
+        for (fine_lod, coarse_lod) in [(0u8, 1u8), (1, 2), (2, 3)] {
+            for border in [Border::North, Border::South, Border::East, Border::West] {
+                let fine = build_chunk_mesh(
+                    &terrain,
+                    IVec2::new(25, 25),
+                    fine_lod,
+                    border_flag(StitchFlags::NONE, border),
+                );
+                let coarse = build_chunk_mesh(
+                    &terrain,
+                    IVec2::new(25, 25) + border_offset(border),
+                    coarse_lod,
+                    StitchFlags::NONE,
+                );
+                let fine_lines = terrain.lod_subdivisions(fine_lod) as usize + 1;
+                let coarse_lines = terrain.lod_subdivisions(coarse_lod) as usize + 1;
+                let fine_positions = mesh_positions(&fine);
+                let coarse_positions = mesh_positions(&coarse);
+                for line in 0..coarse_lines {
+                    let fine_y =
+                        fine_positions[edge_vertex(fine_lines, border, false, line * 2)][1];
+                    let coarse_y =
+                        coarse_positions[edge_vertex(coarse_lines, border, true, line)][1];
+                    assert_eq!(
+                        fine_y, coarse_y,
+                        "lod {fine_lod} stitched to lod {coarse_lod} on the {border:?} border must share the coarse chord"
+                    );
+                }
+            }
+        }
     }
 
     fn all_stitch_flags() -> Vec<StitchFlags> {

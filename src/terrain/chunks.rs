@@ -27,6 +27,7 @@ pub struct TerrainChunk {
     pub coord: IVec2,
     pub lod: u8,
     pub flags: StitchFlags,
+    pub revision: u64,
 }
 
 impl TerrainChunk {
@@ -40,7 +41,11 @@ pub(super) struct ChunkMeshTask {
     task: Task<Mesh>,
     lod: u8,
     flags: StitchFlags,
+    revision: u64,
 }
+
+#[derive(Component)]
+pub(super) struct ColliderRevision(pub u64);
 
 #[derive(Resource)]
 pub struct TerrainSurfaceMaterial {
@@ -71,7 +76,8 @@ pub(super) fn spawn_terrain_chunks(
         material: material.clone(),
     });
 
-    let sampler = *terrain;
+    let sampler = terrain.clone();
+    let revision = terrain.revision();
     let radius = terrain.config().collider_radius;
     for coord in sampler.chunk_coords() {
         let center = sampler.chunk_center(coord);
@@ -82,6 +88,7 @@ pub(super) fn spawn_terrain_chunks(
                 coord,
                 lod: UNBUILT,
                 flags: StitchFlags::NONE,
+                revision,
             },
             Transform::from_xyz(center.x, 0.0, center.y),
             RigidBody::Static,
@@ -89,7 +96,7 @@ pub(super) fn spawn_terrain_chunks(
             Restitution::ZERO.with_combine_rule(CoefficientCombine::Min),
         ));
         if viewer_distance(&viewer, position) <= radius {
-            entity.insert(build_chunk_collider(&sampler, coord));
+            entity.insert((build_chunk_collider(&sampler, coord), ColliderRevision(revision)));
         }
     }
 }
@@ -100,7 +107,8 @@ pub(super) fn update_chunk_lods(
     viewer: Res<TerrainViewer>,
     chunks: Query<(Entity, &TerrainChunk, Option<&ChunkMeshTask>)>,
 ) {
-    let sampler = *terrain;
+    let sampler = terrain.clone();
+    let revision = sampler.revision();
     let mut desired: HashMap<IVec2, u8> = HashMap::new();
     for (_, chunk, _) in chunks.iter() {
         let center = sampler.chunk_center(chunk.coord);
@@ -119,19 +127,22 @@ pub(super) fn update_chunk_lods(
             continue;
         };
         let flags = stitch_flags(&desired, chunk.coord, lod);
-        if chunk.lod == lod && chunk.flags == flags {
+        let stale = chunk.revision != revision;
+        if chunk.lod == lod && chunk.flags == flags && !stale {
             continue;
         }
-        if pending.is_some_and(|task| task.lod == lod && task.flags == flags) {
+        if pending.is_some_and(|task| task.lod == lod && task.flags == flags && task.revision == revision) {
             continue;
         }
         let coord = chunk.coord;
+        let sampler = sampler.clone();
         let task = AsyncComputeTaskPool::get()
             .spawn(async move { build_chunk_mesh(&sampler, coord, lod, flags) });
         commands.entity(entity).insert(ChunkMeshTask {
             task,
             lod,
             flags,
+            revision,
         });
     }
 }
@@ -183,16 +194,27 @@ pub(super) fn sync_chunk_colliders(
     terrain: Res<Terrain>,
     viewer: Res<TerrainViewer>,
     mut commands: Commands,
-    chunks: Query<(Entity, &TerrainChunk, &Transform, Has<Collider>)>,
+    chunks: Query<(Entity, &TerrainChunk, &Transform, Has<Collider>, Option<&ColliderRevision>)>,
 ) {
     let radius = terrain.config().collider_radius;
     let detach_beyond = radius + terrain.chunk_extent().max_element();
-    for (entity, chunk, transform, has_collider) in &chunks {
+    let revision = terrain.revision();
+    for (entity, chunk, transform, has_collider, stamped) in &chunks {
         let distance = viewer_distance(&viewer, transform.translation);
-        if !has_collider && distance <= radius {
-            commands.entity(entity).insert(build_chunk_collider(&terrain, chunk.coord));
-        } else if has_collider && distance > detach_beyond {
-            commands.entity(entity).remove::<Collider>();
+        if !has_collider {
+            if distance <= radius {
+                commands.entity(entity).insert((
+                    build_chunk_collider(&terrain, chunk.coord),
+                    ColliderRevision(revision),
+                ));
+            }
+        } else if distance > detach_beyond {
+            commands.entity(entity).remove::<(Collider, ColliderRevision)>();
+        } else if stamped.is_none_or(|stamped| stamped.0 != revision) {
+            commands.entity(entity).insert((
+                build_chunk_collider(&terrain, chunk.coord),
+                ColliderRevision(revision),
+            ));
         }
     }
 }
@@ -209,6 +231,7 @@ pub(super) fn attach_finished_chunk_meshes(
         };
         chunk.lod = pending.lod;
         chunk.flags = pending.flags;
+        chunk.revision = pending.revision;
         commands.entity(entity).remove::<ChunkMeshTask>().insert((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(surface.material.clone()),
@@ -268,7 +291,7 @@ mod tests {
     }
 
     fn lod_app() -> App {
-        let terrain = Terrain(TerrainConfig {
+        let terrain = Terrain::new(TerrainConfig {
             world: Vec2::splat(300.0),
             ..default()
         });
@@ -403,5 +426,44 @@ mod tests {
             !has_collider(&app, IVec2::new(2, 2)),
             "the origin chunk lost its collider"
         );
+    }
+
+    #[test]
+    fn regenerated_terrain_rebuilds_every_chunk_and_collider() {
+        let mut app = lod_app();
+        app.update();
+        settle(&mut app);
+
+        app.world_mut().resource_mut::<Terrain>().regenerate();
+        settle(&mut app);
+
+        let revision = app.world().resource::<Terrain>().revision();
+        assert_eq!(revision, 1);
+        let stale_chunks = app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<TerrainChunk>())
+            .filter(|chunk| chunk.revision != revision)
+            .count();
+        assert_eq!(stale_chunks, 0, "every chunk rebuilt at the new revision");
+        assert_eq!(count::<ChunkMeshTask>(app.world()), 0);
+        let stale_colliders = app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| {
+                entity.get::<Collider>()?;
+                entity.get::<ColliderRevision>()
+            })
+            .filter(|stamped| stamped.0 != revision)
+            .count();
+        assert_eq!(stale_colliders, 0, "active colliders rebuilt at the new revision");
+        let colliders = count::<Collider>(app.world());
+        assert!(colliders > 0, "the viewer keeps colliders nearby");
+        let stamped = app
+            .world()
+            .iter_entities()
+            .filter_map(|entity| entity.get::<ColliderRevision>())
+            .count();
+        assert_eq!(stamped, colliders, "every collider carries its revision");
     }
 }

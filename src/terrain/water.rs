@@ -36,6 +36,9 @@ pub struct SeaState {
     pub wetness_height: f32,
     pub swells: SwellSet,
     pub optics: WaterOptics,
+    pub tides_enabled: bool,
+    pub swells_enabled: bool,
+    pub wetness_enabled: bool,
 }
 
 impl Default for SeaState {
@@ -50,18 +53,31 @@ impl Default for SeaState {
             wetness_height: f32::MIN,
             swells: SWELLS,
             optics: WaterOptics::default(),
+            tides_enabled: true,
+            swells_enabled: true,
+            wetness_enabled: true,
         }
     }
 }
 
 impl SeaState {
+    pub fn effective_swells(&self) -> SwellSet {
+        if self.swells_enabled {
+            self.swells
+        } else {
+            SwellSet::default()
+        }
+    }
+
     pub fn surface_height_at(&self, x: f32, z: f32, time: f32) -> f32 {
-        self.sea_level + self.swells.height_at(x, z, time)
+        self.sea_level + self.effective_swells().height_at(x, z, time)
     }
 
     pub fn shore_surface_height_at(&self, terrain: &Terrain, x: f32, z: f32, time: f32) -> f32 {
         let shore = shore_context(terrain, self, x, z);
-        let swell = self.swells.height_at_shored(x, z, time, shore);
+        let swell = self
+            .effective_swells()
+            .height_at_shored(x, z, time, shore);
         let trough_floor = -(shore.rest_depth - TROUGH_CLEARANCE).max(0.0);
         self.sea_level + swell.max(trough_floor)
     }
@@ -119,7 +135,7 @@ const SWELLS: SwellSet = SwellSet {
 };
 
 pub fn terrain_gradient(terrain: &Terrain, x: f32, z: f32) -> Vec2 {
-    let step = 1.0;
+    let step = terrain.grid().texel().max_element().max(1.0);
     Vec2::new(
         (terrain.sample_ground_height(x + step, z) - terrain.sample_ground_height(x - step, z))
             / (2.0 * step),
@@ -186,7 +202,7 @@ pub fn setup_water_surface(
             ..default()
         },
         extension: WaterMaterialExt {
-            swells: sea_state.swells,
+            swells: sea_state.effective_swells(),
             body_volume: SdfVolume::from_bounds(
                 Vec3::splat(-0.5),
                 Vec3::splat(0.5),
@@ -226,10 +242,15 @@ pub(super) fn drive_sea_level(
     mut sea_state: ResMut<SeaState>,
     mut sea: Query<&mut Transform, With<Sea>>,
 ) {
-    let phase = TAU * time.elapsed_secs() / sea_state.tide_period;
-    sea_state.sea_level = sea_state.base_level + sea_state.tide_amplitude * phase.sin();
-    sea_state.level_rate =
-        sea_state.tide_amplitude * (TAU / sea_state.tide_period) * phase.cos();
+    if sea_state.tides_enabled {
+        let phase = TAU * time.elapsed_secs() / sea_state.tide_period;
+        sea_state.sea_level = sea_state.base_level + sea_state.tide_amplitude * phase.sin();
+        sea_state.level_rate =
+            sea_state.tide_amplitude * (TAU / sea_state.tide_period) * phase.cos();
+    } else {
+        sea_state.sea_level = sea_state.base_level;
+        sea_state.level_rate = 0.0;
+    }
     let wet_target = sea_state.sea_level + SWASH_RUNUP;
     sea_state.wetness_height =
         wet_target.max(sea_state.wetness_height - WETNESS_DECAY * time.delta_secs());
@@ -256,6 +277,7 @@ pub(super) fn sync_water_params(
     params.wave_energy = sea_state.wave_energy;
     params.optics = sea_state.optics;
     material.extension.params = params;
+    material.extension.swells = sea_state.effective_swells();
 }
 
 pub(super) fn sync_wetness(
@@ -269,7 +291,11 @@ pub(super) fn sync_wetness(
     let Some(mut material) = materials.get_mut(&surface.material) else {
         return;
     };
-    material.extension.wetness.height = sea_state.wetness_height;
+    material.extension.wetness.height = if sea_state.wetness_enabled {
+        sea_state.wetness_height
+    } else {
+        f32::MIN
+    };
 }
 
 pub(super) fn set_water_level(
@@ -298,9 +324,239 @@ pub(super) fn set_wave_energy(
     output.set(format!("Wave energy: {:.2}", sea_state.wave_energy));
 }
 
+fn flip_extension_flag(
+    surface: Option<Res<WaterSurface>>,
+    materials: &mut Assets<WaterMaterial>,
+    output: &mut CommandOutput,
+    label: &str,
+    flag: impl FnOnce(&mut WaterMaterialExt) -> &mut bool,
+) {
+    let Some(surface) = surface else {
+        return;
+    };
+    let Some(mut material) = materials.get_mut(&surface.material) else {
+        return;
+    };
+    let value = flag(&mut material.extension);
+    *value = !*value;
+    output.set(format!("{label}: {}", if *value { "on" } else { "off" }));
+}
+
+pub(super) fn toggle_water_coast(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water coast", |ext| {
+        &mut ext.coastal
+    });
+}
+
+pub(super) fn toggle_water_ripples(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water ripples", |ext| {
+        &mut ext.ripples
+    });
+}
+
+pub(super) fn toggle_water_foam(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water foam", |ext| {
+        &mut ext.foam
+    });
+}
+
+pub(super) fn toggle_water_optics(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Water optics", |ext| {
+        &mut ext.optics
+    });
+}
+
+pub(super) fn toggle_water_body_foam(
+    surface: Option<Res<WaterSurface>>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+    mut output: ResMut<CommandOutput>,
+) {
+    flip_extension_flag(surface, &mut materials, &mut output, "Body foam", |ext| {
+        &mut ext.body_foam
+    });
+}
+
+pub(super) fn toggle_water_tides(mut sea_state: ResMut<SeaState>, mut output: ResMut<CommandOutput>) {
+    sea_state.tides_enabled = !sea_state.tides_enabled;
+    output.set(if sea_state.tides_enabled {
+        "Tides: on"
+    } else {
+        "Tides: off"
+    });
+}
+
+pub(super) fn toggle_water_swells(
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    sea_state.swells_enabled = !sea_state.swells_enabled;
+    output.set(if sea_state.swells_enabled {
+        "Swells: on"
+    } else {
+        "Swells: off"
+    });
+}
+
+pub(super) fn toggle_water_wetness(
+    mut sea_state: ResMut<SeaState>,
+    mut output: ResMut<CommandOutput>,
+) {
+    sea_state.wetness_enabled = !sea_state.wetness_enabled;
+    output.set(if sea_state.wetness_enabled {
+        "Wet sand: on"
+    } else {
+        "Wet sand: off"
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::time::TimeUpdateStrategy;
+    use bevy_shader_kit::WetSandExt;
+
+    #[test]
+    fn tides_off_hold_the_sea_level() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(20),
+            ))
+            .insert_resource(SeaState {
+                base_level: 0.5,
+                sea_level: 0.5,
+                tides_enabled: false,
+                ..default()
+            })
+            .add_systems(Update, drive_sea_level);
+        for _ in 0..8 {
+            app.update();
+        }
+        let sea = app.world().resource::<SeaState>();
+        assert_eq!(sea.sea_level, 0.5);
+        assert_eq!(sea.level_rate, 0.0);
+    }
+
+    #[test]
+    fn swells_off_flatten_the_surface() {
+        let sea = SeaState {
+            sea_level: 1.0,
+            swells_enabled: false,
+            ..default()
+        };
+        for step in 0..12 {
+            assert_eq!(sea.surface_height_at(4.0, -9.0, step as f32 * 0.7), 1.0);
+        }
+    }
+
+    #[test]
+    fn swells_off_hold_the_shore_flat_too() {
+        let terrain = Terrain::default();
+        let sea = SeaState {
+            sea_level: 0.2,
+            wave_energy: 1.0,
+            swells_enabled: false,
+            ..default()
+        };
+        for step in 0..12 {
+            assert_eq!(
+                sea.shore_surface_height_at(&terrain, 0.0, 0.0, step as f32 * 0.35),
+                0.2
+            );
+        }
+    }
+
+    #[test]
+    fn wetness_off_writes_no_wetness() {
+        let mut materials = Assets::<WetSandMaterial>::default();
+        let handle = materials.add(WetSandMaterial {
+            base: StandardMaterial::default(),
+            extension: WetSandExt::default(),
+        });
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(SeaState {
+                wetness_height: 3.0,
+                wetness_enabled: false,
+                ..default()
+            })
+            .insert_resource(TerrainSurfaceMaterial {
+                material: handle.clone(),
+            })
+            .insert_resource(materials)
+            .add_systems(Update, sync_wetness);
+        app.update();
+        let material = app
+            .world()
+            .resource::<Assets<WetSandMaterial>>()
+            .get(&handle)
+            .unwrap();
+        assert_eq!(material.extension.wetness.height, f32::MIN);
+    }
+
+    #[test]
+    fn water_toggles_stick_across_sync() {
+        let mut materials = Assets::<WaterMaterial>::default();
+        let handle = materials.add(WaterMaterial {
+            base: StandardMaterial::default(),
+            extension: WaterMaterialExt {
+                coastal: true,
+                ..default()
+            },
+        });
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeUpdateStrategy::ManualDuration(
+                std::time::Duration::from_millis(20),
+            ))
+            .insert_resource(SeaState::default())
+            .insert_resource(WaterSurface {
+                material: handle.clone(),
+            })
+            .insert_resource(materials)
+            .init_resource::<CommandOutput>()
+            .add_systems(Update, (drive_sea_level, sync_water_params));
+        let coast = app.world_mut().register_system(toggle_water_coast);
+        let swells = app.world_mut().register_system(toggle_water_swells);
+        let tides = app.world_mut().register_system(toggle_water_tides);
+        app.update();
+        app.world_mut().run_system(coast).unwrap();
+        app.world_mut().run_system(swells).unwrap();
+        app.world_mut().run_system(tides).unwrap();
+        for _ in 0..4 {
+            app.update();
+        }
+
+        let material = app
+            .world()
+            .resource::<Assets<WaterMaterial>>()
+            .get(&handle)
+            .unwrap();
+        assert!(
+            !material.extension.coastal,
+            "sync_water_params must not restore the coast flag"
+        );
+        assert_eq!(material.extension.swells, SwellSet::default());
+        let sea = app.world().resource::<SeaState>();
+        assert!(!sea.tides_enabled);
+        assert_eq!(sea.sea_level, sea.base_level);
+    }
 
     #[test]
     fn a_flat_swell_set_rests_on_the_sea_level() {

@@ -33,6 +33,7 @@ struct DebugCurtains {
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<DebugCurtainMaterial>>,
     segments: Vec<CurtainSegment>,
+    terrain_revision: u64,
 }
 
 pub(super) fn register(app: &mut App) {
@@ -114,9 +115,13 @@ fn sync_debug_curtains(
         state.segments.clear();
         return;
     }
-    if state.entity.is_some() && state.segments == segments {
+    if state.entity.is_some()
+        && state.segments == segments
+        && state.terrain_revision == terrain.revision()
+    {
         return;
     }
+    state.terrain_revision = terrain.revision();
 
     let mesh = meshes.add(curtain_mesh(&terrain, &segments));
     if let Some(old) = state.mesh.replace(mesh.clone()) {
@@ -325,6 +330,35 @@ mod tests {
         let terrain = Terrain::default();
         let built: HashMap<IVec2, u8> = HashMap::new();
         assert!(lod_segments(&terrain, &built).is_empty());
+    }
+
+    #[test]
+    fn curtains_redrape_when_the_terrain_regenerates() {
+        let mut registry = DebugViewRegistry::default();
+        registry.register("terrain>chunks".into(), "chunk grid");
+        registry.set("terrain>chunks", DebugViewLevel::Translucent);
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Terrain::default())
+            .insert_resource(registry)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<DebugCurtainMaterial>>()
+            .init_resource::<DebugCurtains>()
+            .add_systems(Update, sync_debug_curtains);
+        app.update();
+        let first_mesh = app.world().resource::<DebugCurtains>().mesh.clone();
+        assert!(first_mesh.is_some(), "the grid curtain is draped");
+
+        app.world_mut().resource_mut::<Terrain>().regenerate();
+        app.update();
+
+        let state = app.world().resource::<DebugCurtains>();
+        assert_eq!(state.terrain_revision, 1);
+        assert_ne!(
+            state.mesh, first_mesh,
+            "the curtain mesh is rebuilt over the regenerated ground"
+        );
     }
 
     #[test]

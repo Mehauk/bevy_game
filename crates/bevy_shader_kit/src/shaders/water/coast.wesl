@@ -25,11 +25,6 @@ fn coast_clamp(texel: vec2<i32>) -> vec2<i32> {
     return clamp(texel, vec2<i32>(0), vec2<i32>(coast.resolution) - vec2<i32>(1));
 }
 
-fn coast_texel_of(world_xz: vec2<f32>) -> vec2<i32> {
-    let uv = (world_xz - coast.bounds_min) * coast.inv_size;
-    return coast_clamp(vec2<i32>(floor(uv * coast.resolution)));
-}
-
 fn coast_sample_at(texel: vec2<i32>) -> vec2<f32> {
     return textureLoad(coast_map, coast_clamp(texel), 0).rg;
 }
@@ -55,7 +50,13 @@ fn terrain_height_at(world_xz: vec2<f32>) -> f32 {
 }
 
 fn spill_height_at(world_xz: vec2<f32>) -> f32 {
-    return coast_sample_at(coast_texel_of(world_xz)).y;
+    let origin = floor(coast_weight_of(world_xz));
+    let corner = vec2<i32>(i32(origin.x), i32(origin.y));
+    let west = coast_sample_at(corner).y;
+    let east = coast_sample_at(corner + vec2<i32>(1, 0)).y;
+    let north = coast_sample_at(corner + vec2<i32>(0, 1)).y;
+    let south = coast_sample_at(corner + vec2<i32>(1, 1)).y;
+    return min(min(west, east), min(north, south));
 }
 
 fn terrain_gradient_at(world_xz: vec2<f32>) -> vec2<f32> {
@@ -92,17 +93,17 @@ fn coastal_wash_mask(shore: ShoreContext, swell: f32) -> f32 {
     return clamp(0.5 + 0.5 * swell / swell_span(), 0.0, 1.0);
 }
 
-fn coastal_surface_y(rest_xz: vec2<f32>, time: f32) -> f32 {
+fn coastal_surface_y(rest_xz: vec2<f32>, time: f32, swell_atten: f32) -> f32 {
     let shore = shore_context_at(rest_xz);
-    let swell = swell_height_shored(swells, rest_xz, time, shore);
+    let swell = swell_height_shored(swells, rest_xz, time, shore) * swell_atten;
     let trough_floor = -max(shore.rest_depth - COAST_TROUGH_CLEARANCE, 0.0);
     return water.water_height + max(swell, trough_floor);
 }
 
-fn coastal_normal(rest_xz: vec2<f32>, time: f32) -> vec3<f32> {
+fn coastal_normal(rest_xz: vec2<f32>, time: f32, swell_atten: f32) -> vec3<f32> {
     let e = 0.5;
-    let h0 = coastal_surface_y(rest_xz, time);
-    let hx = coastal_surface_y(rest_xz + vec2(e, 0.0), time) - h0;
-    let hz = coastal_surface_y(rest_xz + vec2(0.0, e), time) - h0;
+    let h0 = coastal_surface_y(rest_xz, time, swell_atten);
+    let hx = coastal_surface_y(rest_xz + vec2(e, 0.0), time, swell_atten) - h0;
+    let hz = coastal_surface_y(rest_xz + vec2(0.0, e), time, swell_atten) - h0;
     return normalize(vec3(-hx / e, 1.0, -hz / e));
 }

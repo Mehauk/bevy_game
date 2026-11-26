@@ -104,7 +104,7 @@ mod tests {
         debug.set_cell(5, 9);
         debug.set_cell(MAX_SURFACE_DEBUG_CELLS, 1);
         assert_eq!(debug.cell_values[0], UVec4::new(7, 0, 0, 0));
-        assert_eq!(debug.cell_values[1], UVec4::new(0, 0, 9, 0));
+        assert_eq!(debug.cell_values[1], UVec4::new(0, 9, 0, 0));
         assert_eq!(debug.cell_values[15], UVec4::ZERO, "out of range writes nothing");
     }
 

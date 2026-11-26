@@ -18,13 +18,13 @@ fn sync_submersion(
 ) {
     let now = time.elapsed_secs();
     for (transform, mut submersion) in &mut characters {
-        let surface = sea_state.shore_surface_height_at(
+        let surface = sea_state.flooded_surface_height_at(
             &terrain,
             transform.translation.x,
             transform.translation.z,
             now,
         );
-        let measured = SubmersionState::measure(Some(surface), transform.translation.y);
+        let measured = SubmersionState::measure(surface, transform.translation.y);
         if submersion.depth != measured.depth || submersion.water_height != measured.water_height {
             *submersion = measured;
         }
@@ -73,6 +73,16 @@ mod tests {
 
         let above = measure_at(FEET_OFFSET + 0.5, 0.0);
         assert!(above.depth < 0.0, "above the surface reads negative");
+    }
+
+    #[test]
+    fn unflooded_ground_never_measures_depth() {
+        let dry = measure_at(0.0, -0.5);
+        assert!(
+            dry.depth.abs() < 1e-6,
+            "feet below a low sea still read dry while the ground holds the spill"
+        );
+        assert!(!dry.is_submerged());
     }
 
     #[test]

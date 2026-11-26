@@ -84,6 +84,7 @@ impl Plugin for TerrainPlugin {
                     (
                         sync_sea_sun,
                         water::drive_sea_level,
+                        water::sync_water_clipmap,
                         water::sync_water_params,
                         water::sync_wetness,
                     )

@@ -1,6 +1,7 @@
 import bevy_pbr::render::{
     mesh_bindings::mesh,
     mesh_functions,
+    mesh_view_bindings::view,
     skinning,
     morph::{morph_position, morph_normal, morph_tangent},
     forward_io::{Vertex, UncompressedVertex, VertexOutput, decompress_vertex},
@@ -64,14 +65,15 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
 @if(VERTEX_POSITIONS)
     out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
     let swell_rest = out.world_position.xz;
+    let swell_atten = 1.0 - smoothstep(32.0, 60.0, length(swell_rest - view.world_position.xz));
 @if(VERTEX_POSITIONS && WATER_COAST)
-    out.world_position = vec4<f32>(swell_rest.x, coastal_surface_y(swell_rest, water.time), swell_rest.y, out.world_position.w);
+    out.world_position = vec4<f32>(swell_rest.x, coastal_surface_y(swell_rest, water.time, swell_atten), swell_rest.y, out.world_position.w);
 @if(VERTEX_POSITIONS && !WATER_COAST)
-    out.world_position = vec4<f32>(out.world_position.xyz + swell_offset(swells, swell_rest, water.time), out.world_position.w);
+    out.world_position = vec4<f32>(out.world_position.xyz + swell_offset(swells, swell_rest, water.time) * swell_atten, out.world_position.w);
 @if(VERTEX_NORMALS && VERTEX_POSITIONS && !SKINNED && WATER_COAST)
-    out.world_normal = coastal_normal(swell_rest, water.time);
+    out.world_normal = coastal_normal(swell_rest, water.time, swell_atten);
 @if(VERTEX_NORMALS && VERTEX_POSITIONS && !SKINNED && !WATER_COAST)
-    out.world_normal = swell_normal(swells, swell_rest, water.time);
+    out.world_normal = normalize(mix(vec3(0.0, 1.0, 0.0), swell_normal(swells, swell_rest, water.time), swell_atten));
 @if(VERTEX_POSITIONS)
     out.position = position_world_to_clip(out.world_position.xyz);
 

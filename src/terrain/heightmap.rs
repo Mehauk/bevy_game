@@ -1,6 +1,3 @@
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
@@ -10,15 +7,6 @@ use bevy_shader_kit::CoastField;
 
 use super::grid::HeightGrid;
 use super::terrain::Terrain;
-
-fn sortable(level: f32) -> u32 {
-    let bits = level.to_bits();
-    if bits & 0x8000_0000 != 0 {
-        !bits
-    } else {
-        bits ^ 0x8000_0000
-    }
-}
 
 #[derive(Resource)]
 pub struct TerrainHeightMap {
@@ -36,53 +24,9 @@ fn coast_bytes(ground: &[f32], spill: &[f32]) -> Vec<u8> {
     bytes
 }
 
-pub fn compute_spill(ground: &[f32], resolution: UVec2) -> Vec<f32> {
-    let count = ground.len();
-    let mut spill = vec![f32::INFINITY; count];
-    let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
-    for iz in 0..resolution.y {
-        for ix in [0, resolution.x - 1] {
-            let index = (iz * resolution.x + ix) as usize;
-            spill[index] = ground[index];
-            heap.push(Reverse((sortable(ground[index]), index as u32)));
-        }
-    }
-    for ix in 0..resolution.x {
-        for iz in [0, resolution.y - 1] {
-            let index = (iz * resolution.x + ix) as usize;
-            spill[index] = ground[index];
-            heap.push(Reverse((sortable(ground[index]), index as u32)));
-        }
-    }
-    while let Some(Reverse((key, idx))) = heap.pop() {
-        if key != sortable(spill[idx as usize]) {
-            continue;
-        }
-        let level = spill[idx as usize];
-        let ix = idx % resolution.x;
-        let iz = idx / resolution.x;
-        for (dx, dz) in [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)] {
-            let nx = ix as i64 + dx;
-            let nz = iz as i64 + dz;
-            if nx < 0 || nz < 0 || nx >= resolution.x as i64 || nz >= resolution.y as i64 {
-                continue;
-            }
-            let neighbor = (nz * resolution.x as i64 + nx) as usize;
-            let candidate = ground[neighbor].max(level);
-            if candidate < spill[neighbor] {
-                spill[neighbor] = candidate;
-                heap.push(Reverse((sortable(candidate), neighbor as u32)));
-            }
-        }
-    }
-    spill
-}
-
 pub fn bake_height_map(terrain: &Terrain, images: &mut Assets<Image>) -> TerrainHeightMap {
     let grid = terrain.grid();
     let resolution = grid.resolution();
-    let ground = grid.heights();
-    let spill = compute_spill(ground, resolution);
 
     let image = images.add(Image::new(
         Extent3d {
@@ -91,7 +35,7 @@ pub fn bake_height_map(terrain: &Terrain, images: &mut Assets<Image>) -> Terrain
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        coast_bytes(ground, &spill),
+        coast_bytes(grid.heights(), grid.spill()),
         TextureFormat::Rg32Float,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     ));
@@ -123,11 +67,10 @@ pub(super) fn sync_height_map(
         return;
     }
     let grid = terrain.grid();
-    let spill = compute_spill(grid.heights(), grid.resolution());
     let Some(mut image) = images.get_mut(&maps.image) else {
         return;
     };
-    image.data = Some(coast_bytes(grid.heights(), &spill));
+    image.data = Some(coast_bytes(grid.heights(), grid.spill()));
     maps.field = coast_field(grid);
     maps.revision = terrain.revision();
 }

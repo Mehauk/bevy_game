@@ -4,7 +4,7 @@ use bevy_shader_kit::WaterMaterial;
 
 use crate::character::{CAPSULE_RADIUS, CAPSULE_TOTAL_HEIGHT, Character, FEET_OFFSET};
 use crate::ripples::{RippleField, RippleSystems};
-use crate::terrain::{SeaState, WaterSurface};
+use crate::terrain::{SeaState, Terrain, WaterSurface};
 use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
 
 #[derive(Resource)]
@@ -122,17 +122,24 @@ fn track_character_wake(trigger: On<Add<Character>>, mut commands: Commands) {
 fn emit_character_splashes(
     time: Res<Time>,
     sea_state: Res<SeaState>,
+    terrain: Res<Terrain>,
     mut characters: Query<(&Transform, &LinearVelocity, &mut WaterWakeTracker), With<Character>>,
     mut field: ResMut<RippleField>,
 ) {
     let now = time.elapsed_secs();
     for (transform, velocity, mut memory) in &mut characters {
-        let surface =
-            sea_state.surface_height_at(transform.translation.x, transform.translation.z, now);
+        let surface = sea_state.flooded_surface_height_at(
+            &terrain,
+            transform.translation.x,
+            transform.translation.z,
+            now,
+        );
         let feet_y = transform.translation.y - FEET_OFFSET;
         let head_y = transform.translation.y + CAPSULE_TOTAL_HEIGHT - FEET_OFFSET;
-        let straddling = straddles(feet_y, head_y, surface);
-        let hull = hull_fraction(feet_y, surface);
+        let straddling = surface.is_some_and(|surface| straddles(feet_y, head_y, surface));
+        let hull = surface
+            .map(|surface| hull_fraction(feet_y, surface))
+            .unwrap_or(0.0);
         let horizontal_speed = Vec2::new(velocity.x, velocity.z).length();
         let here = Vec3::new(transform.translation.x, 0.0, transform.translation.z);
         let moved_since_wake = memory
@@ -261,6 +268,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<RippleField>()
+            .init_resource::<Terrain>()
             .insert_resource(SeaState {
                 sea_level: 0.0,
                 swells: SwellSet::default(),
@@ -292,6 +300,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<RippleField>()
+            .init_resource::<Terrain>()
             .insert_resource(SplashesToggle { enabled: false })
             .insert_resource(SeaState {
                 sea_level: 0.0,
@@ -313,6 +322,35 @@ mod tests {
             app.world().resource::<RippleField>().waves.len(),
             0,
             "a disabled splash toggle must not emit, while the manual splash command keeps working"
+        );
+    }
+
+    #[test]
+    fn dry_ground_swallows_the_splash() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<RippleField>()
+            .init_resource::<Terrain>()
+            .insert_resource(SeaState {
+                sea_level: -0.5,
+                swells: SwellSet::default(),
+                ..default()
+            })
+            .add_observer(track_character_wake)
+            .add_systems(Update, emit_character_splashes);
+
+        app.world_mut().spawn((
+            Transform::from_xyz(0.0, -0.5, 0.0),
+            LinearVelocity(Vec3::new(0.0, -4.0, 0.0)),
+            Character::default(),
+        ));
+        app.update();
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<RippleField>().waves.len(),
+            0,
+            "feet below an unflooded sea must not splash"
         );
     }
 }

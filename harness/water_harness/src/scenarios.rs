@@ -97,6 +97,22 @@ pub fn scenarios() -> Vec<Scenario> {
     let mut curtain = OceanSettings::default();
     curtain.waves.wind_speed = 6.0;
 
+    let mut tempest = OceanSettings::default();
+    tempest.waves.wind_speed = 24.0;
+    tempest.waves.chop = 3.0;
+    tempest.waves.turbulence = 1.0;
+    tempest.waves.amplitude_multiplier = 1.6;
+    with_gerstner(
+        &mut tempest,
+        &[
+            (20.0, 1.4, Vec2::new(0.9, 0.2), 0.0),
+            (14.0, 0.9, Vec2::new(0.8, 0.5), 0.7),
+            (9.0, 0.5, Vec2::new(0.6, 0.8), 1.6),
+            (6.0, 0.3, Vec2::new(0.3, 0.95), 2.4),
+        ],
+        0.9,
+    );
+
     vec![
         Scenario {
             name: "calm_ocean",
@@ -176,6 +192,15 @@ pub fn scenarios() -> Vec<Scenario> {
             splines: vec![],
             wake: None,
             frames: 90,
+            probes: probes(),
+        },
+        Scenario {
+            name: "stormy",
+            settings: tempest,
+            seabed: Seabed::Flat { height: -50.0 },
+            splines: vec![],
+            wake: None,
+            frames: 120,
             probes: probes(),
         },
     ]

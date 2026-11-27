@@ -203,10 +203,6 @@ impl Terrain {
         self.revision += 1;
     }
 
-    pub fn grid(&self) -> &Arc<HeightGrid> {
-        &self.grid
-    }
-
     pub fn chunk_count(&self) -> UVec2 {
         let chunks = (self.config.world / self.config.chunk_size.max(1.0)).ceil();
         UVec2::new(chunks.x.max(1.0) as u32, chunks.y.max(1.0) as u32)
@@ -755,25 +751,10 @@ pub fn build_chunk_collider(terrain: &Terrain, coord: IVec2) -> Collider {
     )
 }
 
-impl world_water::SeaBed for Terrain {
-    fn ground_height(&self, x: f32, z: f32) -> f32 {
-        self.sample_ground_height(x, z)
-    }
-
-    fn spill_height(&self, x: f32, z: f32) -> f32 {
-        self.grid().sample_spill(x, z)
-    }
-
-    fn texel(&self) -> Vec2 {
-        self.grid().texel()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bevy::mesh::VertexAttributeValues;
-    use world_water::SeaState;
 
     fn mesh_positions(mesh: &Mesh) -> &Vec<[f32; 3]> {
         match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
@@ -1394,41 +1375,4 @@ mod tests {
         assert!(off_diagonal > 0, "the probe must leave the x == z diagonal");
     }
 
-    #[test]
-    fn an_enclosed_basin_below_sea_level_stays_dry() {
-        let terrain = Terrain::new(TerrainConfig {
-            generator: Generator::Noise {
-                seed: 3,
-                octaves: 4,
-                scale: 0.008,
-            },
-            ..default()
-        });
-        let grid = terrain.grid();
-        let mut basin = (0u32, 0u32, 0.0f32);
-        for iz in (0..grid.resolution().y).step_by(4) {
-            for ix in (0..grid.resolution().x).step_by(4) {
-                let x = grid.bounds_min().x + (ix as f32 + 0.5) * grid.texel().x;
-                let z = grid.bounds_min().y + (iz as f32 + 0.5) * grid.texel().y;
-                let gap = grid.sample_spill(x, z) - grid.sample(x, z);
-                if gap > basin.2 {
-                    basin = (ix, iz, gap);
-                }
-            }
-        }
-        let (ix, iz, gap) = basin;
-        assert!(gap > 0.5, "the noise world must contain an enclosed basin");
-        let x = grid.bounds_min().x + (ix as f32 + 0.5) * grid.texel().x;
-        let z = grid.bounds_min().y + (iz as f32 + 0.5) * grid.texel().y;
-        let sea = SeaState {
-            sea_level: (grid.sample(x, z) + grid.sample_spill(x, z)) * 0.5,
-            swells_enabled: false,
-            ..default()
-        };
-        assert!(
-            terrain.sample_ground_height(x, z) < sea.sea_level,
-            "the basin floor must sit below the sea"
-        );
-        assert_eq!(sea.flooded_surface_height_at(&terrain, x, z, 0.0), None);
-    }
 }

@@ -8,7 +8,6 @@ mod docgen;
 mod input;
 mod integration;
 mod profiler;
-mod ripples;
 mod screenshot;
 mod state;
 mod terrain;
@@ -24,7 +23,7 @@ use bevy_brp_extras::BrpExtrasPlugin;
 use bevy_mod_scripting::BMSPlugin;
 use bevy_script_menus::{MenuAssetRoot, MenuConfig, MenuPlugin};
 use bevy_shader_kit::ShaderKitPlugin;
-use world_water::WaterPlugin;
+use crest_water::CrestWaterPlugin;
 
 use camera::CameraPlugin;
 use character::CharacterPlugin;
@@ -36,7 +35,6 @@ use docgen::DocgenPlugin;
 use input::InputPlugin;
 use integration::IntegrationPlugin;
 use profiler::ProfilerPlugin;
-use ripples::RipplePlugin;
 use screenshot::ScreenshotPlugin;
 use state::StatePlugin;
 use terrain::TerrainPlugin;
@@ -73,8 +71,7 @@ fn main() {
             DebugViewPlugin,
             DistanceFieldPlugin,
             TerrainPlugin,
-            WaterPlugin,
-            RipplePlugin,
+            CrestWaterPlugin,
             ScreenshotPlugin,
             DocgenPlugin,
             IntegrationPlugin,

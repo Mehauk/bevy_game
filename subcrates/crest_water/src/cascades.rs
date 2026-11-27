@@ -7,6 +7,7 @@ use bevy::{
     },
 };
 
+use crate::compute::MAX_QUERY_POINTS;
 use crate::settings::OceanSettings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,6 +125,13 @@ pub struct QuerySlices {
     pub depth: Handle<Image>,
 }
 
+#[derive(Resource, Default, Clone)]
+pub struct QueryPointTextures {
+    pub animated: Handle<Image>,
+    pub flow: Handle<Image>,
+    pub depth: Handle<Image>,
+}
+
 fn cascade_image(resolution: usize, lod_count: usize, data: CascadeData) -> Image {
     let mut image = Image::new(
         Extent3d {
@@ -145,15 +153,15 @@ fn cascade_image(resolution: usize, lod_count: usize, data: CascadeData) -> Imag
 
 pub const QUERY_SLICE_SIZE: usize = 16;
 
-fn query_image(format: TextureFormat, bytes_per_pixel: usize) -> Image {
+fn query_image(width: u32, height: u32, format: TextureFormat, bytes_per_pixel: usize) -> Image {
     let mut image = Image::new(
         Extent3d {
-            width: QUERY_SLICE_SIZE as u32,
-            height: QUERY_SLICE_SIZE as u32,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        vec![0u8; QUERY_SLICE_SIZE * QUERY_SLICE_SIZE * bytes_per_pixel],
+        vec![0u8; (width as usize) * (height as usize) * bytes_per_pixel],
         format,
         RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     );
@@ -197,10 +205,20 @@ fn build_cascades(
 }
 
 fn build_query_slices(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let size = QUERY_SLICE_SIZE as u32;
     commands.insert_resource(QuerySlices {
-        animated: images.add(query_image(TextureFormat::Rgba32Float, 16)),
-        flow: images.add(query_image(TextureFormat::Rgba32Float, 16)),
-        depth: images.add(query_image(TextureFormat::Rgba32Float, 16)),
+        animated: images.add(query_image(size, size, TextureFormat::Rgba32Float, 16)),
+        flow: images.add(query_image(size, size, TextureFormat::Rgba32Float, 16)),
+        depth: images.add(query_image(size, size, TextureFormat::Rgba32Float, 16)),
+    });
+}
+
+fn build_query_point_textures(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let width = MAX_QUERY_POINTS as u32;
+    commands.insert_resource(QueryPointTextures {
+        animated: images.add(query_image(width, 1, TextureFormat::Rgba32Float, 16)),
+        flow: images.add(query_image(width, 1, TextureFormat::Rgba32Float, 16)),
+        depth: images.add(query_image(width, 1, TextureFormat::Rgba32Float, 16)),
     });
 }
 
@@ -213,6 +231,18 @@ fn extract_query_slices(
         || slices.depth != extracted.depth
     {
         *extracted = slices.clone();
+    }
+}
+
+fn extract_query_point_textures(
+    textures: Extract<Res<QueryPointTextures>>,
+    mut extracted: ResMut<QueryPointTextures>,
+) {
+    if textures.animated != extracted.animated
+        || textures.flow != extracted.flow
+        || textures.depth != extracted.depth
+    {
+        *extracted = textures.clone();
     }
 }
 
@@ -232,7 +262,10 @@ pub struct CascadesPlugin;
 
 impl Plugin for CascadesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (build_cascades, build_query_slices).chain())
+        app.add_systems(
+            Startup,
+            (build_cascades, build_query_slices, build_query_point_textures).chain(),
+        )
             .add_systems(Update, build_cascades);
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
@@ -241,6 +274,14 @@ impl Plugin for CascadesPlugin {
         render_app
             .init_resource::<ExtractedCascades>()
             .init_resource::<QuerySlices>()
-            .add_systems(ExtractSchedule, (extract_cascades, extract_query_slices));
+            .init_resource::<QueryPointTextures>()
+            .add_systems(
+                ExtractSchedule,
+                (
+                    extract_cascades,
+                    extract_query_slices,
+                    extract_query_point_textures,
+                ),
+            );
     }
 }

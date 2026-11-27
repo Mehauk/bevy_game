@@ -7343,11 +7343,12 @@ version = "0.1.0"
 dependencies = [
  "avian3d",
  "bevy",
+ "bevy_brp_extras",
+ "bevy_mod_scripting",
  "bevy_shader_kit",
  "crest_water",
  "serde",
  "serde_json",
- "world_water",
 ]
 
 [[package]]
@@ -8232,19 +8233,11 @@ dependencies = [
  "bevy_mod_scripting",
  "bevy_script_menus",
  "bevy_shader_kit",
+ "crest_water",
  "glam 0.27.0",
  "meshless_voronoi",
  "noise",
  "toml",
- "world_water",
-]
-
-[[package]]
-name = "world_water"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_shader_kit",
 ]
 
 [[package]]

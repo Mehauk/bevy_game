@@ -24,8 +24,8 @@ use presentation::{character_rotate_body, sync_body_visibility};
 
 pub use locomotion::{camera_relative_direction, camera_relative_direction_3d};
 pub use types::{
-    CAPSULE_HEIGHT, CAPSULE_RADIUS, CAPSULE_TOTAL_HEIGHT, CHARACTER_SPAWN_OFFSET_Y, Character,
-    FEET_OFFSET, GroundState, MovementState, SubmersionState, WaterPhysics,
+    CAPSULE_HEIGHT, CAPSULE_RADIUS, CHARACTER_SPAWN_OFFSET_Y, Character, GroundState,
+    MovementState, SubmersionState, WaterPhysics,
 };
 pub(crate) use types::{CameraFacing, CharacterBody};
 

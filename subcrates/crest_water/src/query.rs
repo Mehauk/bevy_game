@@ -1,7 +1,8 @@
 use bevy::{prelude::*, render::gpu_readback::{Readback, ReadbackComplete}};
 
-use crate::cascades::{QuerySlices, QUERY_SLICE_SIZE};
-use crate::inputs::WaterQueryPoint;
+use crate::cascades::{QueryPointTextures, QuerySlices, QUERY_SLICE_SIZE};
+use crate::compute::MAX_QUERY_POINTS;
+use crate::inputs::{WaterQueryPoint, WaterQueryPoints};
 use crate::lod::LodTransforms;
 use crate::reference::query::{fpi_surface_height, sample_bilinear};
 
@@ -164,12 +165,94 @@ impl WaterSampler {
     }
 }
 
+#[derive(Component)]
+struct ReadQueryAnimated;
+
+#[derive(Component)]
+struct ReadQueryFlow;
+
+#[derive(Component)]
+struct ReadQueryDepth;
+
+#[derive(Resource, Default)]
+pub struct WaterQuery {
+    pub count: usize,
+    pub animated: Vec<[f32; 4]>,
+    pub flow: Vec<[f32; 2]>,
+    pub depth: Vec<[f32; 3]>,
+    pub ready: bool,
+}
+
+impl WaterQuery {
+    pub fn sample(&self, slot: usize, water_level: f32) -> Option<WaterSample> {
+        if !self.ready || slot >= self.count {
+            return None;
+        }
+        let animated = *self.animated.get(slot)?;
+        let flow = *self.flow.get(slot)?;
+        let depth = *self.depth.get(slot)?;
+        let height = animated[1];
+        Some(WaterSample {
+            height: water_level + height,
+            displacement: Vec3::new(animated[0], height, animated[2]),
+            normal: Vec3::new(-depth[1], 1.0, -depth[2]).normalize(),
+            jacobian: animated[3],
+            flow: Vec2::new(flow[0], flow[1]),
+            depth: depth[0],
+        })
+    }
+}
+
+fn ensure_query_readback_entities(
+    mut commands: Commands,
+    textures: Res<QueryPointTextures>,
+    existing: Query<Entity, With<ReadQueryAnimated>>,
+) {
+    if !existing.is_empty() || textures.animated == Handle::default() {
+        return;
+    }
+    commands.spawn((Readback::texture(textures.animated.clone()), ReadQueryAnimated));
+    commands.spawn((Readback::texture(textures.flow.clone()), ReadQueryFlow));
+    commands.spawn((Readback::texture(textures.depth.clone()), ReadQueryDepth));
+}
+
+fn track_query_points(points: Res<WaterQueryPoints>, mut query: ResMut<WaterQuery>) {
+    query.count = points.points.len().min(MAX_QUERY_POINTS);
+}
+
+fn collect_query_points(
+    trigger: On<ReadbackComplete>,
+    animated: Query<(), With<ReadQueryAnimated>>,
+    flow: Query<(), With<ReadQueryFlow>>,
+    depth: Query<(), With<ReadQueryDepth>>,
+    mut query: ResMut<WaterQuery>,
+) {
+    let entity = trigger.entity;
+    let values = f32s_from(&trigger.data);
+    if animated.contains(entity) {
+        query.animated = values.chunks_exact(4).map(|t| [t[0], t[1], t[2], t[3]]).collect();
+    } else if flow.contains(entity) {
+        query.flow = values.chunks_exact(4).map(|t| [t[0], t[1]]).collect();
+    } else if depth.contains(entity) {
+        query.depth = values.chunks_exact(4).map(|t| [t[0], t[1], t[2]]).collect();
+    }
+    query.ready = query.animated.len() == MAX_QUERY_POINTS
+        && query.flow.len() == MAX_QUERY_POINTS
+        && query.depth.len() == MAX_QUERY_POINTS;
+}
+
 pub struct QueryPlugin;
 
 impl Plugin for QueryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterSampler>()
+            .init_resource::<WaterQuery>()
             .add_systems(PreUpdate, (track_query_point, ensure_readback_entities).chain())
-            .add_observer(collect_slices);
+            .add_systems(
+                PreUpdate,
+                (track_query_points, ensure_query_readback_entities).chain(),
+            )
+            .add_observer(collect_slices)
+            .add_observer(collect_query_points);
     }
 }

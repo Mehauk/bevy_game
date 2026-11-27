@@ -17,14 +17,16 @@ use bevy::{
 };
 
 use crate::cascades::{
-    CascadeData, CascadeData::*, ExtractedCascades, QUERY_SLICE_SIZE, QuerySlices,
+    CascadeData, CascadeData::*, ExtractedCascades, QUERY_SLICE_SIZE, QueryPointTextures,
+    QuerySlices,
 };
 use crate::compute::{
     BakeUniforms, CascadePipelines, CombineUniforms, ComputePassSpec, CopySliceUniforms,
     DepthUniforms, DynWavesUniforms, FftUniforms, FillUniforms, FlowUniforms, FoamUniforms,
-    GerstnerUniform, LodUniforms, MAX_GERSTNER, SpectrumUniforms, SpectrumUpdateUniforms, dispatch,
-    pipeline_for, sample_2d_layout_entry, sample_array_layout_entry, storage_layout_entry,
-    storage_texture_layout_entry, uniform_entry, uniform_layout_entry,
+    GerstnerUniform, LodUniforms, MAX_GERSTNER, MAX_QUERY_POINTS, SpectrumUniforms,
+    SpectrumUpdateUniforms, WaterQueryUniforms, dispatch, pipeline_for, sample_2d_layout_entry,
+    sample_array_layout_entry, storage_layout_entry, storage_texture_layout_entry, uniform_entry,
+    uniform_layout_entry,
 };
 use crate::inputs::{ExtractedInputs, WaterQueryPoint, f32_bytes};
 use crate::lod::LodTransforms;
@@ -53,6 +55,7 @@ pub struct CascadeShaders {
     pub fill: Handle<Shader>,
     pub copy_slice: Handle<Shader>,
     pub copy_foam: Handle<Shader>,
+    pub water_query: Handle<Shader>,
 }
 
 #[derive(Resource, Default)]
@@ -98,6 +101,8 @@ pub struct CascadeBuffers {
     pub fill: Option<Buffer>,
     pub clip_fill: Option<Buffer>,
     pub copy_slice: Option<Buffer>,
+    pub water_query: Option<Buffer>,
+    pub query_points: Option<Buffer>,
     pub emitters: Option<Buffer>,
     pub emitter_velocities: Option<Buffer>,
     pub flow_headers: Option<Buffer>,
@@ -195,6 +200,7 @@ fn run_cascades(
     cascades: Res<ExtractedCascades>,
     inputs: Res<ExtractedInputs>,
     slices: Res<QuerySlices>,
+    point_textures: Res<QueryPointTextures>,
     images: Res<RenderAssets<GpuImage>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
@@ -317,6 +323,9 @@ fn run_cascades(
         .get(&inputs.grid.image)
         .map(|image| image.texture_view.clone())
         .unwrap_or_else(|| slice_animated.clone());
+    let query_animated = slice_view(&point_textures.animated);
+    let query_flow = slice_view(&point_textures.flow);
+    let query_depth = slice_view(&point_textures.depth);
 
     let mut shifts = [Vec4::ZERO; 8];
     if buffers.prev_origins_set {
@@ -476,6 +485,18 @@ fn run_cascades(
         &mut buffers.copy_slice,
         &CopySliceUniforms::default(),
     );
+    refresh_uniform(
+        &device,
+        &queue,
+        &mut buffers.water_query,
+        &WaterQueryUniforms {
+            lods: frame.lods.transforms,
+            count: inputs.query_points.len() as u32,
+            resolution: res,
+            lod_count: lods,
+            pad: 0,
+        },
+    );
     refresh_storage(
         &device,
         &queue,
@@ -512,6 +533,12 @@ fn run_cascades(
         &mut buffers.carves,
         &f32_bytes(&inputs.carves),
     );
+    refresh_storage(
+        &device,
+        &queue,
+        &mut buffers.query_points,
+        &f32_bytes(&inputs.query_points),
+    );
 
     let lod_buf = buffers.lod.clone().expect("uniforms exist");
     let depth_buf = buffers.depth.clone().expect("uniforms exist");
@@ -526,6 +553,8 @@ fn run_cascades(
     let fill_buf = buffers.fill.clone().expect("uniforms exist");
     let clip_fill_buf = buffers.clip_fill.clone().expect("uniforms exist");
     let copy_slice_buf = buffers.copy_slice.clone().expect("uniforms exist");
+    let water_query_buf = buffers.water_query.clone().expect("uniforms exist");
+    let query_points_buf = buffers.query_points.clone().expect("storages exist");
     let emitters_buf = buffers.emitters.clone().expect("storages exist");
     let velocities_buf = buffers.emitter_velocities.clone().expect("storages exist");
     let flow_headers_buf = buffers.flow_headers.clone().expect("storages exist");
@@ -901,6 +930,41 @@ fn run_cascades(
 
     if need_spectrum && spectrum_init_ran {
         buffers.spectrum_ready = true;
+    }
+
+    if !inputs.query_points.is_empty() {
+        if let (Some(qa), Some(qf), Some(qd)) =
+            (query_animated.as_ref(), query_flow.as_ref(), query_depth.as_ref())
+        {
+            pass!(
+                "crest.water_query",
+                "water_query",
+                &shaders.water_query,
+                vec![
+                    sample_array_layout_entry(0),
+                    sample_array_layout_entry(1),
+                    sample_array_layout_entry(2),
+                    sample_array_layout_entry(3),
+                    storage_texture_layout_entry(4, TextureFormat::Rgba32Float, false),
+                    storage_texture_layout_entry(5, TextureFormat::Rgba32Float, false),
+                    storage_texture_layout_entry(6, TextureFormat::Rgba32Float, false),
+                    uniform_layout_entry(7),
+                    storage_layout_entry(8),
+                ],
+                &[
+                    (0, BindingResource::TextureView(&waves)),
+                    (1, BindingResource::TextureView(&flow_tex)),
+                    (2, BindingResource::TextureView(&depth)),
+                    (3, BindingResource::TextureView(&derivs)),
+                    (4, BindingResource::TextureView(qa)),
+                    (5, BindingResource::TextureView(qf)),
+                    (6, BindingResource::TextureView(qd)),
+                    uniform_entry(7, &water_query_buf),
+                    storage_binding(8, &query_points_buf),
+                ],
+                [MAX_QUERY_POINTS as u32 / 8, 1, 1]
+            );
+        }
     }
 }
 

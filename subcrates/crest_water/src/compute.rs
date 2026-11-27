@@ -21,6 +21,7 @@ pub const MAX_GERSTNER: usize = 16;
 pub const MAX_EMITTERS: usize = 32;
 pub const MAX_SPLINES: usize = 8;
 pub const MAX_SPLINE_POINTS: usize = 64;
+pub const MAX_QUERY_POINTS: usize = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, ShaderType)]
@@ -195,6 +196,16 @@ pub struct CopySliceUniforms {
     pub extent: f32,
     pub pad1: f32,
     pub pad2: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, ShaderType)]
+pub struct WaterQueryUniforms {
+    pub lods: [LodTransform; 8],
+    pub count: u32,
+    pub resolution: u32,
+    pub lod_count: u32,
+    pub pad: u32,
 }
 
 pub fn uniform_entry(binding: u32, buffer: &Buffer) -> (u32, BindingResource<'_>) {

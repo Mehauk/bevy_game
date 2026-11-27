@@ -1,32 +1,47 @@
 use bevy::prelude::*;
-
-use world_water::SeaState;
+use crest_water::{OceanSettings, WaterQuery, WaterQueryPoints};
 
 use crate::character::{Character, CharacterSystems, SubmersionState};
-use crate::terrain::Terrain;
+
+#[derive(Component)]
+struct WaterSlot(usize);
 
 pub(super) fn register(app: &mut App) {
+    app.add_observer(assign_water_slot);
     app.add_systems(
         FixedUpdate,
-        sync_submersion.before(CharacterSystems::Playing),
+        (publish_query_points, sync_submersion)
+            .chain()
+            .before(CharacterSystems::Playing),
     );
 }
 
-fn sync_submersion(
-    time: Res<Time<Virtual>>,
-    sea_state: Res<SeaState>,
-    terrain: Res<Terrain>,
-    mut characters: Query<(&Transform, &mut SubmersionState), With<Character>>,
+fn assign_water_slot(trigger: On<Add<Character>>, mut commands: Commands) {
+    commands.entity(trigger.entity).insert(WaterSlot(usize::MAX));
+}
+
+fn publish_query_points(
+    mut points: ResMut<WaterQueryPoints>,
+    mut characters: Query<(&mut WaterSlot, &Transform), With<Character>>,
 ) {
-    let now = time.elapsed_secs();
-    for (transform, mut submersion) in &mut characters {
-        let surface = sea_state.flooded_surface_height_at(
-            &*terrain,
-            transform.translation.x,
-            transform.translation.z,
-            now,
-        );
-        let measured = SubmersionState::measure(surface, transform.translation.y);
+    points.points.clear();
+    for (mut slot, transform) in &mut characters {
+        slot.0 = points.points.len();
+        points.points.push(transform.translation);
+    }
+}
+
+fn sync_submersion(
+    settings: Res<OceanSettings>,
+    query: Res<WaterQuery>,
+    mut characters: Query<(&WaterSlot, &Transform, &mut SubmersionState), With<Character>>,
+) {
+    for (slot, transform, mut submersion) in &mut characters {
+        let surface = query
+            .sample(slot.0, settings.water_level)
+            .map(|sample| sample.height)
+            .unwrap_or(settings.water_level);
+        let measured = SubmersionState::measure(Some(surface), transform.translation.y);
         if submersion.depth != measured.depth || submersion.water_height != measured.water_height {
             *submersion = measured;
         }
@@ -36,25 +51,28 @@ fn sync_submersion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::character::FEET_OFFSET;
+    use crate::character::{CAPSULE_HEIGHT, CAPSULE_RADIUS};
     use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
 
-    fn measure_at(center_y: f32, sea_level: f32) -> SubmersionState {
+    const FEET_OFFSET: f32 = CAPSULE_HEIGHT * 0.5 + CAPSULE_RADIUS;
+
+    fn measure_at(center_y: f32, water_level: f32) -> SubmersionState {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<Terrain>()
-            .insert_resource(TimeUpdateStrategy::ManualDuration(std::time::Duration::from_millis(
-                20,
-            )))
-            .insert_resource(SeaState {
-                sea_level,
+            .init_resource::<WaterQuery>()
+            .init_resource::<WaterQueryPoints>()
+            .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(20)))
+            .insert_resource(OceanSettings {
+                water_level,
                 ..default()
             })
-            .add_systems(FixedUpdate, sync_submersion);
+            .add_systems(FixedUpdate, (publish_query_points, sync_submersion).chain());
         let character = app
             .world_mut()
             .spawn((
                 Transform::from_xyz(0.0, center_y, 0.0),
+                WaterSlot(0),
                 Character::default(),
                 SubmersionState::default(),
             ))
@@ -71,20 +89,10 @@ mod tests {
         assert!((waist.depth - FEET_OFFSET).abs() < 1e-6, "waist-deep");
 
         let dry = measure_at(FEET_OFFSET, 0.0);
-        assert!(dry.depth.abs() < 1e-6, "feet on the surface, swell damped at the shore");
+        assert!(dry.depth.abs() < 1e-6, "feet on the surface read zero");
 
         let above = measure_at(FEET_OFFSET + 0.5, 0.0);
         assert!(above.depth < 0.0, "above the surface reads negative");
-    }
-
-    #[test]
-    fn unflooded_ground_never_measures_depth() {
-        let dry = measure_at(0.0, -0.5);
-        assert!(
-            dry.depth.abs() < 1e-6,
-            "feet below a low sea still read dry while the ground holds the spill"
-        );
-        assert!(!dry.is_submerged());
     }
 
     #[test]
@@ -98,12 +106,12 @@ mod tests {
     }
 
     #[test]
-    fn deep_water_carries_the_swell() {
-        let deep = measure_at(0.0, 10.0);
-        let plain = 10.0 - (0.0 - FEET_OFFSET);
+    fn feet_above_a_low_water_line_read_dry() {
+        let dry = measure_at(FEET_OFFSET, -0.5);
         assert!(
-            (deep.depth - plain).abs() < 0.25,
-            "swell wobble stays inside the summed swell amplitude"
+            dry.depth < 0.0,
+            "feet resting on the ground above a low water line read dry"
         );
+        assert!(!dry.is_submerged());
     }
 }

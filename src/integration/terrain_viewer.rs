@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use world_water::SeaViewer;
+use crest_water::OceanViewer;
 
 use crate::camera::MainCamera;
 use crate::terrain::TerrainViewer;
@@ -11,7 +11,7 @@ pub(super) fn register(app: &mut App) {
 fn sync_terrain_viewer(
     cameras: Query<&GlobalTransform, With<MainCamera>>,
     mut viewer: ResMut<TerrainViewer>,
-    mut sea_viewer: ResMut<SeaViewer>,
+    mut ocean_viewer: ResMut<OceanViewer>,
 ) {
     let Some(camera) = cameras.iter().next() else {
         return;
@@ -20,7 +20,7 @@ fn sync_terrain_viewer(
     if viewer.position != position {
         viewer.position = position;
     }
-    if sea_viewer.position != position {
-        sea_viewer.position = position;
+    if ocean_viewer.position != position {
+        ocean_viewer.position = position;
     }
 }

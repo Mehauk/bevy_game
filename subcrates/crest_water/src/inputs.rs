@@ -3,7 +3,7 @@ use bevy::{
     render::{Extract, ExtractSchedule, RenderApp},
 };
 
-use crate::compute::{MAX_EMITTERS, MAX_SPLINES, MAX_SPLINE_POINTS};
+use crate::compute::{MAX_EMITTERS, MAX_QUERY_POINTS, MAX_SPLINES, MAX_SPLINE_POINTS};
 
 #[derive(Resource, Clone, Debug, Default)]
 pub struct SeaFloorHeightGrid {
@@ -55,6 +55,11 @@ pub struct WaterQueryPoint {
 }
 
 #[derive(Resource, Default, Debug)]
+pub struct WaterQueryPoints {
+    pub points: Vec<Vec3>,
+}
+
+#[derive(Resource, Default, Debug)]
 pub struct ExtractedInputs {
     pub emitters: Vec<[f32; 4]>,
     pub emitter_velocities: Vec<[f32; 4]>,
@@ -63,6 +68,7 @@ pub struct ExtractedInputs {
     pub foam_spline_headers: Vec<[f32; 4]>,
     pub spline_points: Vec<[f32; 4]>,
     pub carves: Vec<[f32; 4]>,
+    pub query_points: Vec<[f32; 4]>,
     pub grid: SeaFloorHeightGrid,
 }
 
@@ -98,6 +104,7 @@ fn extract_inputs(
     flow_splines: Extract<Query<&FlowSpline>>,
     foam_splines: Extract<Query<&FoamSpline>>,
     carves: Extract<Query<&ClipCarve>>,
+    query_points: Extract<Res<WaterQueryPoints>>,
 ) {
     extracted.emitters.clear();
     extracted.emitter_velocities.clear();
@@ -155,6 +162,10 @@ fn extract_inputs(
     for carve in &carves {
         extracted.carves.push([carve.center.x, carve.center.y, carve.radius, 0.0]);
     }
+    extracted.query_points.clear();
+    for point in query_points.points.iter().take(MAX_QUERY_POINTS) {
+        extracted.query_points.push([point.x, point.z, 0.0, 0.0]);
+    }
     extracted.grid = grid.clone();
 }
 
@@ -164,6 +175,7 @@ impl Plugin for InputsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SeaFloorHeightGrid>();
         app.init_resource::<WaterQueryPoint>();
+        app.init_resource::<WaterQueryPoints>();
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;

@@ -6,7 +6,6 @@ use bevy::{
     tasks::{AsyncComputeTaskPool, Task, block_on, poll_once},
 };
 use bevy_shader_kit::{WetSandExt, WetSandMaterial};
-use world_water::WetSandSurface;
 
 use super::terrain::{StitchFlags, Terrain, build_chunk_collider, build_chunk_mesh};
 
@@ -74,9 +73,6 @@ pub(super) fn spawn_terrain_chunks(
         extension: WetSandExt::default(),
     });
     commands.insert_resource(TerrainSurfaceMaterial {
-        material: material.clone(),
-    });
-    commands.insert_resource(WetSandSurface {
         material: material.clone(),
     });
 

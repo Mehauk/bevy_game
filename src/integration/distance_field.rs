@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
 use crate::distance_field::{DistanceFieldDimmedColor, DistanceFieldViewHidden};
-use world_water::Sea;
+use crest_water::OceanRoot;
 
 use crate::terrain::SkyBox;
 
@@ -18,7 +18,7 @@ fn dim_the_sky_box(trigger: On<Add<SkyBox>>, mut commands: Commands) {
         .insert(DistanceFieldDimmedColor(SKYBOX_VIEW_COLOR));
 }
 
-fn hide_the_sea(trigger: On<Add<Sea>>, mut commands: Commands) {
+fn hide_the_sea(trigger: On<Add<OceanRoot>>, mut commands: Commands) {
     commands
         .entity(trigger.entity)
         .insert(DistanceFieldViewHidden);

@@ -34,11 +34,12 @@ pub mod underwater;
 pub use cascades::{CascadeData, Cascades};
 pub use inputs::{
     ClipCarve, DynWaveEmitter, FlowSpline, FoamSpline, SeaFloorHeightGrid, WaterQueryPoint,
+    WaterQueryPoints,
 };
 pub use lod::LodTransforms;
 pub use ocean::{OceanRoot, OceanViewer};
 pub use passes::ExtractedFrame;
-pub use query::{WaterSample, WaterSampler};
+pub use query::{WaterQuery, WaterSample, WaterSampler};
 pub use settings::{OceanSettings, WaveSettings};
 
 pub struct CrestWaterPlugin;
@@ -62,6 +63,7 @@ impl Plugin for CrestWaterPlugin {
         embedded_asset!(app, "shaders/fill.wesl");
         embedded_asset!(app, "shaders/copy_slice.wesl");
         embedded_asset!(app, "shaders/copy_foam.wesl");
+        embedded_asset!(app, "shaders/water_query.wesl");
 
         let asset_server = app.world().resource::<AssetServer>().clone();
         let shaders = CascadeShaders {
@@ -77,6 +79,7 @@ impl Plugin for CrestWaterPlugin {
             fill: shader(&asset_server, "fill"),
             copy_slice: shader(&asset_server, "copy_slice"),
             copy_foam: shader(&asset_server, "copy_foam"),
+            water_query: shader(&asset_server, "water_query"),
         };
 
         app.init_resource::<OceanSettings>()

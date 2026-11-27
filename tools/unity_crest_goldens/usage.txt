@@ -1,0 +1,54 @@
+crest_goldens - exports Crest water golden fixtures for the Bevy water harness.
+
+REQUIREMENTS
+- Unity 2022.3 or newer with a working graphics device.
+- Crest 4.23.0 imported in the Unity project (runtime assembly name "Crest"), with
+  Assets/Crest/Crest/Materials/Ocean.mat present.
+
+INSTALL
+Copy the whole crest_goldens folder into the Unity project, for example:
+    <unity-project>/Assets/Editor/crest_goldens/
+Keep the Editor/ subfolder and Crest.Goldens.Editor.asmdef beside the .cs files.
+Unity generates the .meta files on import.
+
+RUN (batchmode)
+"<UnityEditorPath>" -batchmode -projectPath "<unity-project>" ^
+    -executeMethod Crest.Goldens.GoldenExporter.ExportAll ^
+    -goldenOutput "<repo>/harness/water_harness/goldens" -logFile -
+
+Do not pass -quit: the export finishes asynchronously across editor frames and calls
+EditorApplication.Exit itself (0 on success, 1 on failure).
+Do not pass -nographics: the ocean simulations and GPU readbacks need a real graphics device.
+The output path may also be given with the CREST_GOLDENS_OUTPUT environment variable.
+
+RUN (menu)
+Crest > Export Water Goldens runs the same export inside a running editor and leaves the
+editor open afterwards.
+
+FOAM AND BATCHMODE
+Crest does not create the foam simulation when it detects batch mode (OceanRenderer.RunningHeadless).
+The storm_swell, shallow_shore and spline_river scenarios use foam and abort with an explicit error
+under -batchmode; run them without -batchmode (same command line minus -batchmode, the tool still
+exits itself) on a machine with a display. The other scenarios export fully under -batchmode.
+
+OUTPUT
+harness/water_harness/goldens/<scenario>/golden.json plus sidecars in the same folder:
+one .bin per slice and one .png per frame.
+
+Slice .bin layout: little-endian float32, row-major, first row is the v=0 row (minimum world z),
+width*height*channels floats, channels per the golden.json channels field:
+  disp_xyz_jac  x, y, z displacement plus the Jacobian determinant of the horizontal displacement
+                field (same determinant Crest's foam shader uses, forward differences at texel width)
+  flow_xz       flow.x, flow.z
+  foam          foam amount
+  depth         sea floor depth below the water level
+
+All coordinates are Unity left-handed (the Bevy consumer negates z).
+Probe height/displacement/normal come from Crest's collision query API, flow from the flow query API,
+foam and sea_floor_depth from point samples of the foam and sea floor depth data textures.
+Wind speed is exported in m/s; Crest's ocean wind speed field is km/h and is set as wind_speed * 3.6.
+The loop period is applied as the ShapeFFT time loop length; chop and amplitude multiplier are applied
+to the OceanWaveSpectrum instance (_chop, _multiplier); turbulence is the ocean global wind turbulence.
+Scenarios without the flow simulation record flow [0, 0]; scenarios without foam record foam 0.
+The underwater_curtain height offsets are encoded in the probe names; both probes of a pair sample the
+same surface point because Crest's query API samples the water surface at (x, z).

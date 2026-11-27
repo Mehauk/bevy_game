@@ -1,4 +1,6 @@
 ## Repo-Specific Plan: Port Crest `4.23.0` into This Codebase (Bevy `0.20.1`)
+We have implemented custom water to varying degrees of success. our custom implementation is buggy and lacking many features. I would like to completely do away with our water system in favor of slotting in a completely new system. This system can be found at https://github.com/wave-harmonic/crest. It will be your job to port this with as much integrity as possible. 
+
 
 ### Target Workspace Layout
 

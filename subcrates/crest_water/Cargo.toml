@@ -1,0 +1,9 @@
+[package]
+name = "crest_water"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+avian3d = "0.8"
+bevy = { version = "0.20.1" }
+bevy_shader_kit = { path = "../../crates/bevy_shader_kit" }

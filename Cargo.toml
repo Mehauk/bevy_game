@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bevy_script_menus", "crates/bevy_shader_kit", "subcrates/*"]
+members = ["crates/bevy_script_menus", "crates/bevy_shader_kit", "subcrates/*", "harness/water_harness"]
 
 [package]
 name = "world_generation"

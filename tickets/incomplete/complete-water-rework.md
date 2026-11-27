@@ -1,8 +1,131 @@
-We have implemented custom water to varying degrees of success. our custom implementation is buggy and lacking many features. I would like to completely do away with our water system in favor of slotting in a completely new system. This system can be found at https://github.com/wave-harmonic/crest. It will be your job to port this with as much integrity as possible. 
+## Repo-Specific Plan: Port Crest `4.23.0` into This Codebase (Bevy `0.20.1`)
 
-for this you will do the follwoing.
-1. Create a harness for testing the accurracy of your port without running the main game
-   1. this will require running and testing both systems and matching goldens amongst other things
-2. port over the crest water system in its entirety
-3. ensure ant stragglers from our old water implementation are cleaned up
+### Target Workspace Layout
 
+```text
+crates/
+  bevy_shader_kit/          # Keeps shared non-water tech (bake, field, debug, post_process, wet, compose)
+                            # Legacy water.rs, fft.rs, underwater.rs, shaders/water/* deleted in Phase 5
+subcrates/
+  crest_water/              # New Crest 4.23.0 Bevy 0.20.1 plugin (depends only on bevy_shader_kit)
+  world_water/              # Legacy water — kept during Phases 1-4 for comparison, deleted in Phase 5
+harness/
+  water_harness/            # New workspace member outside crates/ & subcrates/ (never imports world_generation)
+tools/
+  unity_crest_goldens/      # Batchmode Unity Crest 4.23.0 golden exporter
+```
+
+Why this layout passes all existing tests:
+- `crates/bevy_shader_kit` has zero workspace deps → `tests/crate_isolation.rs` passes.
+- `subcrates/crest_water` depends only on `crates/bevy_shader_kit` (and external `bevy` / `avian3d`) → `tests/subcrate_isolation.rs` passes.
+- `harness/water_harness` sits outside `crates/` and `subcrates/` and never depends on `world_generation` (`src/`).
+- `src/integration/` wires `crest_water` to `character`, `terrain`, `camera`, `distance_field`, `screenshot`, and `commands` → `tests/module_isolation.rs` passes.
+
+---
+
+### Phase 1: Standalone Harness & Golden Pipeline (`tools/unity_crest_goldens` + `harness/water_harness`)
+
+1. **Workspace Registration (`Cargo.toml`):**
+   - Add `"harness/water_harness"` to `[workspace] members`.
+   - Depend on `crest_water`, `bevy_shader_kit`, `avian3d`, `bevy` (`0.20.1`), and temporarily `world_water` (until Phase 5 cleanup). Never depend on `world_generation`.
+
+2. **Unity Crest `4.23.0` Reference Generator (`tools/unity_crest_goldens`):**
+   - Batchmode Unity scene pinned to `wave-harmonic/crest` tag `4.23.0` (`-batchmode -nographics`, fixed `Time.fixedDeltaTime`, fixed RNG seed).
+   - Commit the generated golden fixtures (so CI runs without requiring Unity installed) for 6 scenarios:
+     - `calm_ocean` (open deep waves)
+     - `storm_swell` (FFT + Gerstner + whitecap foam)
+     - `shallow_shore` (sloped seabed depth attenuation + shoreline foam + caustics)
+     - `spline_river` (sloped `Spline` height + directional `Flow` feeding into ocean)
+     - `boat_wakes` (`BoatProbes` + `SphereWaterInteraction` driven at fixed thrust over `t = 0..10s`)
+     - `underwater_curtain` (camera straddling & submerged)
+   - Export per preset: `(x, z, t)` height/displacement/normal/flow tables, raw `Texture2DArray` cascade slices, boat transform trajectories, and rendered reference PNGs.
+
+3. **Bevy Standalone Harness (`harness/water_harness`):**
+   - **Headless CI Mode (`cargo test -p water_harness`):**
+     - Uses `TimeUpdateStrategy::ManualDuration`, offscreen `Image` render target, and `bevy::render::gpu_readback::Readback` (`ReadbackComplete`) to extract cascade slices, query outputs, and rendered frames.
+     - Runs **both** `crest_water` (comparing against Unity Crest `4.23.0` goldens after LH↔RH coordinate conversion `z_bevy = -z_unity`) **and** `world_water` on shared baseline probes (sloped shore height, deep-water query, render sanity) during migration.
+   - **Interactive Sandbox Mode (`cargo run -p water_harness`):**
+     - Minimal testbed scene (sloped shore + spline river + `avian3d` example boats with `BoatProbes` + `SphereWaterInteraction` wakes + free camera) running completely decoupled from `src/main.rs`.
+
+---
+
+### Phase 2: Core Crest `4.23.0` Port (`subcrates/crest_water`)
+
+Implement inside `subcrates/crest_water` following `CLAUDE.md` (zero comments in code, WESL shaders via `load_shader_library!` / `embedded_asset!`):
+
+1. **Clipmap & LOD Transforms (`OceanBuilder` Parity):**
+   - `OceanSettings`, `OceanRoot`, `OceanViewer` (replaces `SeaViewer`), `LodTransform` (`lod_count`, snapped origin per cascade, texel size, scale).
+   - CCW clipmap mesh with smooth LOD-morph attributes (`lod_alpha`) and frustum-culled tile drawing.
+2. **LOD Data Cascades (`Texture2DArray` + Bevy `0.20.1` `Core3d` Systems):**
+   - Schedule compute & render passes in `RenderApp` / `Core3d` prior to `Core3dSystems::MainPass` (no legacy `RenderGraph` nodes) in Crest's exact order:
+     1. **`SeaFloorDepth`**: Orthographic terrain/mesh depth pass + `DepthInput` / `HeightGrid` upload trait (`OceanBed` or direct `Image`/mesh inputs).
+     2. **`AnimatedWaves`**: GPU `ShapeFFT` spectrum/IFFT compute + `ShapeGerstner` + depth attenuation from `SeaFloorDepth`.
+     3. **`DynamicWaves`**: GPU ping-pong wave equation compute driven by `DynamicWaveInput` emitters (replaces `src/ripples/`).
+     4. **`Flow`**: Horizontal `(vx, vz)` cascade driven by `FlowInput` / Splines.
+     5. **`Foam`**: Persistent foam simulation + decay driven by wave folding (Jacobian), `SeaFloorDepth`, `DynamicWaves`, and `FoamInput`.
+     6. **`Shadow`**: Directional-light cascade shadow sampling into water volume.
+     7. **`ClipSurface`**: Cutout/dry-zone mask (`ClipInput`).
+3. **Surface, `WaterBody`, & Underwater WESL Shaders:**
+   - **Surface (`Core3dSystems::MainPass`):** `SpecializedRenderPipeline` with WESL shaders reading `AnimatedWaves`, `Foam`, `Flow`, `SeaFloorDepth`, `Shadow`, `ClipSurface`, `DepthPrepass`, and `ScreenSpaceTransmission` (for refraction, absorption, caustics, SSS). Supports `WaterBody` regional overrides.
+   - **Underwater:** Implement via `bevy_shader_kit::PostProcessPlugin` (`PostProcessEffect` in `Core3dSystems::EarlyPostProcess`, extended or paired with `AnimatedWaves` binding so the lens meniscus matches the Crest wave surface 1:1).
+
+---
+
+### Phase 3: Splines (`Spline`, `SplineMesh`, River/Lake Inputs) — No Floating Origin
+
+Inside `subcrates/crest_water`:
+1. **`Spline` & `SplinePoint` (`SplinePointData`):**
+   - Cubic curve evaluation with per-point width/radius, height offset, flow speed, wave multiplier, and foam weight.
+2. **`SplineMesh` & Cascade Writers:**
+   - Adaptive ribbon tessellation with cross-section edge falloff.
+   - Wire into `SeaFloorDepth` / `AnimatedWaves` height inputs (sloped rivers, elevated lakes), `Flow` inputs (river currents), `Foam` inputs, and localized `ShapeFFT`/`ShapeGerstner` shoreline waves.
+3. **Floating Origin Explicitly Excluded:** Omit `FloatingOrigin` and origin-shift UV/cascade logic.
+
+---
+
+### Phase 4: Async Queries (`Readback` + FPI), Buoyancy & Example Boats
+
+1. **`WaterQuery` / Collision Provider:**
+   - Async `Readback` of active `AnimatedWaves`, `Flow`, and `SeaFloorDepth` LOD slices via `ReadbackComplete`.
+   - CPU **Fixed Point Iteration (FPI)** solver exposing `sample_height`, `sample_displacement`, `sample_normal`, and `sample_flow`.
+2. **Buoyancy & Example Boats:**
+   - `BoatProbes` (multi-point Archimedes buoyancy + drag/lift driven by `WaterQuery`, applying forces/torques via `avian3d`'s `Forces` / `LinearVelocity` + `AngularVelocity`).
+   - `SimpleFloatingObject` / `BoatAlignNormal` kinematic helpers.
+   - `SphereWaterInteraction` emitting velocity wakes into `DynamicWaves` + `Foam`.
+   - Wire into `harness/water_harness` interactive sandbox and `boat_wakes` golden test.
+
+---
+
+### Phase 5: Main Game Integration & Total Legacy Eradication
+
+#### 5A. Rewire `src/integration/` & `src/terrain/` to `crest_water`
+- **`src/integration/terrain_viewer.rs`:** Update `MainCamera` sync to drive `crest_water::OceanViewer` (drop `world_water::SeaViewer`).
+- **`src/integration/submersion.rs`:** Query `crest_water`'s `WaterQuery` (`sample_height` / `sample_flow`) to populate `character::SubmersionState` (`src/character/types.rs` stays unchanged).
+- **`src/integration/currents.rs`:** Read `sample_flow` from `crest_water`'s `WaterQuery` into `character.water.current` (replacing manual `terrain_gradient` approximation).
+- **`src/integration/ripples.rs` → `src/integration/water_interactions.rs`:** Attach Crest `SphereWaterInteraction` (or emit `DynamicWaveInput` / `FoamInput` on straddle/move/breach) onto `Character` instead of `RippleField`.
+- **`src/integration/body_foam.rs`:** Either remove (replaced by `DynamicWaves` + `Foam` emitters) or feed `CharacterBody` SDF into Crest's `Foam` cascade input.
+- **`src/integration/post_process.rs`:** Drive Crest's `UnderwaterPostProcess` component on `MainCamera`, preserve `ScreenshotCaptureCamera` mirroring (`On<Add<ScreenshotCaptureCamera>>`), and keep `DistanceFieldView.active` suppression.
+- **`src/integration/distance_field.rs`:** Update `On<Add<Sea>>` to `On<Add<OceanRoot>>` so SDF debug view hides the ocean.
+- **`src/integration/water_commands.rs`:** Rebind console commands (`command!`) to Crest settings (`set_water_level`, wind/spectrum presets, cascade toggles, `debug_view!` layers for Crest LODs).
+- **`src/terrain/`:**
+  - Remove `impl world_water::SeaBed for Terrain` from `src/terrain/terrain.rs`. Feed `Terrain` chunks/`HeightGrid` to `crest_water`'s `SeaFloorDepth` via `src/integration/`.
+  - Remove `world_water::WetSandSurface` from `src/terrain/chunks.rs`; keep `TerrainSurfaceMaterial` (`WetSandMaterial`) and sync `Wetness.height` from Crest's water level in `src/integration/`.
+
+#### 5B. Delete Every Legacy Straggler (Zero Leftovers Checklist)
+1. **Delete `subcrates/world_water/`** completely.
+2. **Delete `src/ripples/`** completely (`RipplePlugin`, `RippleField`, `splash`).
+3. **Strip legacy water from `crates/bevy_shader_kit/`:**
+   - Delete `src/water.rs`, `src/fft.rs`, `src/underwater.rs`, `src/shaders/water/` (entire folder), and `src/shaders/post_process/underwater.wesl`.
+   - Remove water-specific `ShaderHook`s and `water_blueprint()` from `src/compose.rs` (keeping generic `compose_wesl` / `ShaderBlueprint` if used elsewhere, or cleaning unused water hooks).
+   - Remove `WaterMaterial`, `FftWaterTextures`, `UnderwaterPostProcess`, and legacy shader registrations from `src/lib.rs`.
+   - *(Keep `bake.rs`, `field.rs`, `debug.rs`, `post_process.rs`, `wet.rs`, and non-water shaders used by `terrain`, `distance_field`, and `debug_views`.)*
+4. **Update `harness/water_harness/Cargo.toml`:** Remove the temporary `world_water` dependency and legacy-comparison tests so the harness only runs `crest_water` + Crest `4.23.0` goldens.
+5. **Update `Cargo.toml` & `src/main.rs`:**
+   - Remove `world_water` from root `Cargo.toml` dependencies.
+   - Remove `WaterPlugin` and `RipplePlugin` from `src/main.rs`; add `CrestWaterPlugin`.
+6. **Update `tests/module_isolation.rs`:**
+   - Remove `"ripples"` from `FEATURES` (and add any new feature module if created, though everything should stay in `subcrates/crest_water` + `src/integration/`).
+7. **Verification:**
+   - `rg -i "world_water|SeaState|SeaViewer|SeaBed|WaterSurface|WetSandSurface|RippleField|WaterMaterialExt"` returns **0 matches**.
+   - `cargo test --workspace` (including `crate_isolation`, `subcrate_isolation`, `module_isolation`, and `water_harness` golden suite) passes cleanly.
+   - `cargo run` boots the main game with Crest water active, and `cargo run -p water_harness` runs the standalone interactive boat + spline river demo.

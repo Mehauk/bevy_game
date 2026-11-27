@@ -10,7 +10,7 @@ use bevy::{
 use crate::utils::registry::commands::{CommandArgs, CommandOutput};
 
 use super::erosion::ErosionConfig;
-use super::grid::{mix, HeightGrid};
+use super::grid::{HeightGrid, mix};
 
 const CRATER_DEPTH: f32 = 30.0;
 const CRATER_RIM_X: f32 = 30.0;
@@ -68,9 +68,8 @@ const NOISE_GRADIENTS: [(f32, f32); 8] = [
 ];
 
 fn hash2(seed: u32, x: i32, z: i32) -> u32 {
-    let mut h = seed
-        ^((x as u32).wrapping_mul(0x9E37_79B1))
-        ^((z as u32).wrapping_mul(0x85EBCA6B));
+    let mut h =
+        seed ^ ((x as u32).wrapping_mul(0x9E37_79B1)) ^ ((z as u32).wrapping_mul(0x85EBCA6B));
     h ^= h >> 16;
     h = h.wrapping_mul(0x7FEB_35CD);
     h ^= h >> 15;
@@ -148,7 +147,7 @@ pub struct TerrainConfig {
 impl Default for TerrainConfig {
     fn default() -> Self {
         Self {
-            world: Vec2::splat(3000.0),
+            world: Vec2::splat(500.0),
             chunk_size: 60.0,
             mesh_subdivisions: 64,
             collider_subdivisions: 60,
@@ -306,10 +305,16 @@ pub(super) fn set_terrain_generator(
         "noise" => Generator::Noise {
             seed: args.args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
             octaves: args.args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4),
-            scale: args.args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0.01),
+            scale: args
+                .args
+                .get(3)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.01),
         },
         other => {
-            output.set(format!("Unknown generator '{other}', expected crater or noise"));
+            output.set(format!(
+                "Unknown generator '{other}', expected crater or noise"
+            ));
             return;
         }
     };
@@ -326,7 +331,11 @@ pub(super) fn regenerate_terrain(
     let seed = args.args.first().and_then(|s| s.parse::<u32>().ok());
     let seed_ignored = match (seed, terrain.config().generator) {
         (Some(seed), Generator::Noise { octaves, scale, .. }) => {
-            terrain.set_generator(Generator::Noise { seed, octaves, scale });
+            terrain.set_generator(Generator::Noise {
+                seed,
+                octaves,
+                scale,
+            });
             false
         }
         (Some(_), Generator::Crater) => true,
@@ -746,10 +755,25 @@ pub fn build_chunk_collider(terrain: &Terrain, coord: IVec2) -> Collider {
     )
 }
 
+impl world_water::SeaBed for Terrain {
+    fn ground_height(&self, x: f32, z: f32) -> f32 {
+        self.sample_ground_height(x, z)
+    }
+
+    fn spill_height(&self, x: f32, z: f32) -> f32 {
+        self.grid().sample_spill(x, z)
+    }
+
+    fn texel(&self) -> Vec2 {
+        self.grid().texel()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bevy::mesh::VertexAttributeValues;
+    use world_water::SeaState;
 
     fn mesh_positions(mesh: &Mesh) -> &Vec<[f32; 3]> {
         match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
@@ -801,10 +825,8 @@ mod tests {
             -2000.0f32, -1500.0, -1400.0, -1370.0, 0.0, 37.5, 1400.0, 1500.0, 2000.0,
         ] {
             for z in [-1500.0f32, -1000.0, 0.0, 1000.0, 1450.0, 1500.0] {
-                let over_x =
-                    (x.abs() - (world.x / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_X;
-                let over_z =
-                    (z.abs() - (world.y / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_Z;
+                let over_x = (x.abs() - (world.x / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_X;
+                let over_z = (z.abs() - (world.y / 2.0 - CRATER_INSET)).max(0.0) / CRATER_RIM_Z;
                 let t = over_x.hypot(over_z).clamp(0.0, 1.0);
                 let expected = -CRATER_DEPTH * t * t * (3.0 - 2.0 * t);
                 assert_eq!(Generator::Crater.sample(world, x, z), expected);
@@ -824,8 +846,15 @@ mod tests {
         for x in [-1500.0, -700.0, 0.0, 250.0, 1500.0] {
             for z in [-900.0, 0.0, 300.0, 1500.0] {
                 let height = noise.sample(world, x, z);
-                assert!(height.is_finite(), "noise left the finite range at ({x}, {z})");
-                assert_eq!(height, noise.sample(world, x, z), "noise must be a pure function");
+                assert!(
+                    height.is_finite(),
+                    "noise left the finite range at ({x}, {z})"
+                );
+                assert_eq!(
+                    height,
+                    noise.sample(world, x, z),
+                    "noise must be a pure function"
+                );
                 heights.push(height);
             }
         }
@@ -936,7 +965,11 @@ mod tests {
         world.run_system(id).unwrap();
 
         let terrain = world.resource::<Terrain>();
-        assert_eq!(terrain.revision(), 0, "a rejected command must not regenerate");
+        assert_eq!(
+            terrain.revision(),
+            0,
+            "a rejected command must not regenerate"
+        );
         assert_eq!(terrain.config().generator, Generator::Crater);
     }
 
@@ -1359,5 +1392,43 @@ mod tests {
         }
 
         assert!(off_diagonal > 0, "the probe must leave the x == z diagonal");
+    }
+
+    #[test]
+    fn an_enclosed_basin_below_sea_level_stays_dry() {
+        let terrain = Terrain::new(TerrainConfig {
+            generator: Generator::Noise {
+                seed: 3,
+                octaves: 4,
+                scale: 0.008,
+            },
+            ..default()
+        });
+        let grid = terrain.grid();
+        let mut basin = (0u32, 0u32, 0.0f32);
+        for iz in (0..grid.resolution().y).step_by(4) {
+            for ix in (0..grid.resolution().x).step_by(4) {
+                let x = grid.bounds_min().x + (ix as f32 + 0.5) * grid.texel().x;
+                let z = grid.bounds_min().y + (iz as f32 + 0.5) * grid.texel().y;
+                let gap = grid.sample_spill(x, z) - grid.sample(x, z);
+                if gap > basin.2 {
+                    basin = (ix, iz, gap);
+                }
+            }
+        }
+        let (ix, iz, gap) = basin;
+        assert!(gap > 0.5, "the noise world must contain an enclosed basin");
+        let x = grid.bounds_min().x + (ix as f32 + 0.5) * grid.texel().x;
+        let z = grid.bounds_min().y + (iz as f32 + 0.5) * grid.texel().y;
+        let sea = SeaState {
+            sea_level: (grid.sample(x, z) + grid.sample_spill(x, z)) * 0.5,
+            swells_enabled: false,
+            ..default()
+        };
+        assert!(
+            terrain.sample_ground_height(x, z) < sea.sea_level,
+            "the basin floor must sit below the sea"
+        );
+        assert_eq!(sea.flooded_surface_height_at(&terrain, x, z, 0.0), None);
     }
 }

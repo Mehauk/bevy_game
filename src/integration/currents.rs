@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 
+use world_water::{SeaState, terrain_gradient};
+
 use crate::character::{Character, CharacterSystems, SubmersionState};
-use crate::terrain::{SeaState, Terrain, terrain_gradient};
+use crate::terrain::Terrain;
 use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
 
 const STRAIT_DEPTH: f32 = 3.0;
@@ -60,7 +62,8 @@ fn sync_tidal_currents(
             continue;
         }
         let shallow = 1.0 - smoothstep(0.0, STRAIT_DEPTH, rest_depth);
-        let gradient = terrain_gradient(&terrain, transform.translation.x, transform.translation.z);
+        let gradient =
+            terrain_gradient(&*terrain, transform.translation.x, transform.translation.z);
         let speed = sea_state.level_rate * CURRENT_GAIN * shallow;
         character.water.current = Vec3::new(gradient.x, 0.0, gradient.y) * speed;
     }

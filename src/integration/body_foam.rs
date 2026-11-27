@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 use bevy_shader_kit::{SdfVolume, WaterMaterial};
 
+use world_water::WaterSurface;
+
 use crate::character::CharacterBody;
 use crate::distance_field::DistanceFieldSource;
-use crate::terrain::WaterSurface;
 
 pub(super) fn register(app: &mut App) {
     app.add_systems(Update, sync_body_sdf);

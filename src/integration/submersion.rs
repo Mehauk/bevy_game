@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 
+use world_water::SeaState;
+
 use crate::character::{Character, CharacterSystems, SubmersionState};
-use crate::terrain::{SeaState, Terrain};
+use crate::terrain::Terrain;
 
 pub(super) fn register(app: &mut App) {
     app.add_systems(
@@ -19,7 +21,7 @@ fn sync_submersion(
     let now = time.elapsed_secs();
     for (transform, mut submersion) in &mut characters {
         let surface = sea_state.flooded_surface_height_at(
-            &terrain,
+            &*terrain,
             transform.translation.x,
             transform.translation.z,
             now,

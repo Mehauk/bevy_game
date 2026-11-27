@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bevy_script_menus", "crates/bevy_shader_kit"]
+members = ["crates/bevy_script_menus", "crates/bevy_shader_kit", "subcrates/*"]
 
 [package]
 name = "world_generation"
@@ -14,6 +14,7 @@ bevy_enhanced_input = "0.27"
 bevy_mod_scripting = { version = "0.24", features = ["lua54"] }
 bevy_script_menus = { path = "crates/bevy_script_menus", features = ["clipboard"] }
 bevy_shader_kit = { path = "crates/bevy_shader_kit" }
+world_water = { path = "subcrates/world_water" }
 glam27 = { package = "glam", version = "0.27" }
 meshless_voronoi = "0.7.2"
 noise = "0.9.0"

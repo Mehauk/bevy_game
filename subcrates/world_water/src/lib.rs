@@ -15,16 +15,28 @@ use bevy_shader_kit::{
     shore_factor, shore_vert_damp, spawn_fft_bake,
 };
 
-use super::chunks::{TerrainSurfaceMaterial, TerrainViewer};
-use super::terrain::Terrain;
-use crate::utils::registry::commands::{CommandArgs, CommandOutput};
+pub trait SeaBed {
+    fn ground_height(&self, x: f32, z: f32) -> f32;
+    fn spill_height(&self, x: f32, z: f32) -> f32;
+    fn texel(&self) -> Vec2;
+}
 
 #[derive(Component)]
 pub struct Sea;
 
+#[derive(Resource, Default)]
+pub struct SeaViewer {
+    pub position: Vec3,
+}
+
 #[derive(Resource)]
 pub struct WaterSurface {
     pub material: Handle<WaterMaterial>,
+}
+
+#[derive(Resource)]
+pub struct WetSandSurface {
+    pub material: Handle<WetSandMaterial>,
 }
 
 #[derive(Resource)]
@@ -64,6 +76,21 @@ impl WeatherPreset {
             WeatherPreset::Calm => 0.0,
             WeatherPreset::Moderate => 0.5,
             WeatherPreset::Storm => 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DyeBand {
+    Shallow,
+    Deep,
+}
+
+impl DyeBand {
+    pub fn name(self) -> &'static str {
+        match self {
+            DyeBand::Shallow => "shallow",
+            DyeBand::Deep => "deep",
         }
     }
 }
@@ -135,8 +162,14 @@ impl SeaState {
         Some(field.height_at(x, z, time) * self.swell_strength)
     }
 
-    pub fn shore_surface_height_at(&self, terrain: &Terrain, x: f32, z: f32, time: f32) -> f32 {
-        let shore = shore_context(terrain, self, x, z);
+    pub fn shore_surface_height_at(
+        &self,
+        bed: &dyn SeaBed,
+        x: f32,
+        z: f32,
+        time: f32,
+    ) -> f32 {
+        let shore = shore_context(bed, self, x, z);
         let swell = match self.fft_swell_height_at(x, z, time) {
             Some(height) => height * shore_vert_damp(shore.rest_depth),
             None => self.effective_swells().height_at_shored(x, z, time, shore),
@@ -147,15 +180,15 @@ impl SeaState {
 
     pub fn flooded_surface_height_at(
         &self,
-        terrain: &Terrain,
+        bed: &dyn SeaBed,
         x: f32,
         z: f32,
         time: f32,
     ) -> Option<f32> {
-        if self.sea_level + self.max_crest_height() < terrain.grid().sample_spill(x, z) {
+        if self.sea_level + self.max_crest_height() < bed.spill_height(x, z) {
             None
         } else {
-            Some(self.shore_surface_height_at(terrain, x, z, time))
+            Some(self.shore_surface_height_at(bed, x, z, time))
         }
     }
 
@@ -170,6 +203,73 @@ impl SeaState {
             .amplitude_span()
             .max(COAST_SPAN_FLOOR);
         span * COAST_SHOAL_MAX * (0.5 + self.wave_energy)
+    }
+
+    pub fn set_base_level(&mut self, height: f32) -> String {
+        self.base_level = height;
+        format!("Water level: {height:.2}")
+    }
+
+    pub fn set_wave_energy(&mut self, energy: f32) -> String {
+        self.wave_energy = energy.clamp(0.0, 1.0);
+        format!("Wave energy: {:.2}", self.wave_energy)
+    }
+
+    pub fn set_refraction(&mut self, strength: f32) -> String {
+        self.refraction = strength.max(0.0);
+        format!("Water refraction: {:.2}", self.refraction)
+    }
+
+    pub fn set_caustic_strength(&mut self, strength: f32) -> String {
+        self.caustics.strength = strength.max(0.0);
+        format!("Caustic strength: {:.2}", self.caustics.strength)
+    }
+
+    pub fn set_dye_color(&mut self, band: DyeBand, color: Vec3) -> String {
+        let color = color.clamp(Vec3::ZERO, Vec3::splat(1.0));
+        match band {
+            DyeBand::Shallow => self.dye.shallow = color,
+            DyeBand::Deep => self.dye.deep = color,
+        }
+        format!("Water {}: {color:?}", band.name())
+    }
+
+    pub fn apply_weather(&mut self, preset: WeatherPreset) -> String {
+        self.wave_energy = preset.energy();
+        let (swell, chop) = weather_strengths(preset.energy());
+        self.swell_strength = swell;
+        self.chop_strength = chop;
+        format!("Weather: {preset:?} (swell {swell:.2}, chop {chop:.2})")
+    }
+
+    pub fn set_swell_strength(&mut self, strength: f32) -> String {
+        self.swell_strength = strength.clamp(0.0, 2.0);
+        format!("Swell strength: {:.2}", self.swell_strength)
+    }
+
+    pub fn set_chop_strength(&mut self, strength: f32) -> String {
+        self.chop_strength = strength.clamp(0.0, 2.0);
+        format!("Chop strength: {:.2}", self.chop_strength)
+    }
+
+    pub fn toggle_tides(&mut self) -> String {
+        self.tides_enabled = !self.tides_enabled;
+        format!("Tides: {}", if self.tides_enabled { "on" } else { "off" })
+    }
+
+    pub fn toggle_swells(&mut self) -> String {
+        self.swells_enabled = !self.swells_enabled;
+        format!("Swells: {}", if self.swells_enabled { "on" } else { "off" })
+    }
+
+    pub fn toggle_fft(&mut self) -> String {
+        self.fft_enabled = !self.fft_enabled;
+        format!("FFT water: {}", if self.fft_enabled { "on" } else { "off" })
+    }
+
+    pub fn toggle_wetness(&mut self) -> String {
+        self.wetness_enabled = !self.wetness_enabled;
+        format!("Wet sand: {}", if self.wetness_enabled { "on" } else { "off" })
     }
 }
 
@@ -186,6 +286,7 @@ const COAST_SPAN_FLOOR: f32 = 0.05;
 const COAST_SHOAL_MAX: f32 = 2.5;
 const WHITECAP_BASE: f32 = 0.2;
 const WHITECAP_ENERGY: f32 = 0.6;
+const SUN_RADIANCE_PER_LUX: f32 = 3.0 / bevy::light::light_consts::lux::AMBIENT_DAYLIGHT;
 
 const SWELLS: SwellSet = SwellSet {
     count: 3,
@@ -232,19 +333,17 @@ const SWELLS: SwellSet = SwellSet {
     ],
 };
 
-pub fn terrain_gradient(terrain: &Terrain, x: f32, z: f32) -> Vec2 {
-    let step = terrain.grid().texel().max_element().max(1.0);
+pub fn terrain_gradient(bed: &dyn SeaBed, x: f32, z: f32) -> Vec2 {
+    let step = bed.texel().max_element().max(1.0);
     Vec2::new(
-        (terrain.sample_ground_height(x + step, z) - terrain.sample_ground_height(x - step, z))
-            / (2.0 * step),
-        (terrain.sample_ground_height(x, z + step) - terrain.sample_ground_height(x, z - step))
-            / (2.0 * step),
+        (bed.ground_height(x + step, z) - bed.ground_height(x - step, z)) / (2.0 * step),
+        (bed.ground_height(x, z + step) - bed.ground_height(x, z - step)) / (2.0 * step),
     )
 }
 
-fn shore_context(terrain: &Terrain, sea: &SeaState, x: f32, z: f32) -> ShoreContext {
-    let rest_depth = sea.sea_level - terrain.sample_ground_height(x, z);
-    let gradient = terrain_gradient(terrain, x, z);
+fn shore_context(bed: &dyn SeaBed, sea: &SeaState, x: f32, z: f32) -> ShoreContext {
+    let rest_depth = sea.sea_level - bed.ground_height(x, z);
+    let gradient = terrain_gradient(bed, x, z);
     let length = gradient.length();
     ShoreContext {
         rest_depth,
@@ -392,7 +491,29 @@ fn build_water_clipmap_mesh() -> Mesh {
     mesh
 }
 
-pub fn setup_water_surface(
+pub struct WaterPlugin;
+
+impl Plugin for WaterPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<SeaState>()
+            .init_resource::<SeaViewer>()
+            .add_systems(Startup, setup_water_surface)
+            .add_systems(
+                Update,
+                (
+                    sync_sea_sun,
+                    drive_sea_level,
+                    poll_fft_bake,
+                    sync_water_clipmap,
+                    sync_water_params,
+                    sync_wetness,
+                )
+                    .chain(),
+            );
+    }
+}
+
+fn setup_water_surface(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
@@ -457,7 +578,7 @@ pub fn setup_water_surface(
     ));
 }
 
-pub(super) fn poll_fft_bake(
+fn poll_fft_bake(
     mut commands: Commands,
     receiver: Option<Res<FftBakeReceiver>>,
     mut images: ResMut<Assets<Image>>,
@@ -496,7 +617,7 @@ pub(super) fn poll_fft_bake(
     commands.remove_resource::<FftBakeReceiver>();
 }
 
-pub(super) fn drive_sea_level(time: Res<Time>, mut sea_state: ResMut<SeaState>) {
+fn drive_sea_level(time: Res<Time>, mut sea_state: ResMut<SeaState>) {
     if sea_state.tides_enabled {
         let phase = TAU * time.elapsed_secs() / sea_state.tide_period;
         sea_state.sea_level = sea_state.base_level + sea_state.tide_amplitude * phase.sin();
@@ -511,8 +632,23 @@ pub(super) fn drive_sea_level(time: Res<Time>, mut sea_state: ResMut<SeaState>) 
         wet_target.max(sea_state.wetness_height - WETNESS_DECAY * time.delta_secs());
 }
 
-pub(super) fn sync_water_clipmap(
-    viewer: Res<TerrainViewer>,
+fn sync_sea_sun(
+    lights: Query<(Ref<'_, DirectionalLight>, Ref<'_, Transform>)>,
+    mut sea_state: ResMut<SeaState>,
+) {
+    let Some((light, transform)) = lights.iter().next() else {
+        return;
+    };
+    if !light.is_changed() && !transform.is_changed() {
+        return;
+    }
+    sea_state.optics.sun_direction = -*transform.forward();
+    sea_state.optics.sun_illuminance =
+        light.color.to_linear().to_vec3() * (light.illuminance * SUN_RADIANCE_PER_LUX);
+}
+
+fn sync_water_clipmap(
+    viewer: Res<SeaViewer>,
     sea_state: Res<SeaState>,
     mut sea: Query<&mut Transform, With<Sea>>,
 ) {
@@ -522,7 +658,7 @@ pub(super) fn sync_water_clipmap(
     }
 }
 
-pub(super) fn sync_water_params(
+fn sync_water_params(
     time: Res<Time>,
     sea_state: Res<SeaState>,
     surface: Option<Res<WaterSurface>>,
@@ -565,9 +701,9 @@ pub(super) fn sync_water_params(
     }
 }
 
-pub(super) fn sync_wetness(
+fn sync_wetness(
     sea_state: Res<SeaState>,
-    surface: Option<Res<TerrainSurfaceMaterial>>,
+    surface: Option<Res<WetSandSurface>>,
     mut materials: ResMut<Assets<WetSandMaterial>>,
 ) {
     let Some(surface) = surface else {
@@ -583,282 +719,49 @@ pub(super) fn sync_wetness(
     };
 }
 
-pub(super) fn set_water_level(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let Some(height) = args.get_f32(0) else {
-        output.set("Usage: set_water_level <height>");
-        return;
-    };
-    sea_state.base_level = height;
-    output.set(format!("Water level: {height:.2}"));
-}
-
-pub(super) fn set_wave_energy(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let Some(energy) = args.get_f32(0) else {
-        output.set("Usage: set_wave_energy <0..1>");
-        return;
-    };
-    sea_state.wave_energy = energy.clamp(0.0, 1.0);
-    output.set(format!("Wave energy: {:.2}", sea_state.wave_energy));
-}
-
-fn flip_extension_flag(
-    surface: Option<Res<WaterSurface>>,
+pub fn flip_material_flag(
+    surface: Option<&WaterSurface>,
     materials: &mut Assets<WaterMaterial>,
-    output: &mut CommandOutput,
     label: &str,
     flag: impl FnOnce(&mut WaterMaterialExt) -> &mut bool,
-) {
-    let Some(surface) = surface else {
-        return;
-    };
-    let Some(mut material) = materials.get_mut(&surface.material) else {
-        return;
-    };
+) -> Option<String> {
+    let surface = surface?;
+    let mut material = materials.get_mut(&surface.material)?;
     let value = flag(&mut material.extension);
     *value = !*value;
-    output.set(format!("{label}: {}", if *value { "on" } else { "off" }));
-}
-
-pub(super) fn toggle_water_ripples(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water ripples", |ext| {
-        &mut ext.ripples
-    });
-}
-
-pub(super) fn toggle_water_foam(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water foam", |ext| {
-        &mut ext.foam
-    });
-}
-
-pub(super) fn toggle_water_optics(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water optics", |ext| {
-        &mut ext.optics
-    });
-}
-
-pub(super) fn toggle_water_body_foam(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Body foam", |ext| {
-        &mut ext.body_foam
-    });
-}
-
-pub(super) fn toggle_water_detail(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water detail", |ext| {
-        &mut ext.detail
-    });
-}
-
-pub(super) fn toggle_water_dye(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water dye", |ext| {
-        &mut ext.dye
-    });
-}
-
-pub(super) fn toggle_water_caustics(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water caustics", |ext| {
-        &mut ext.caustics
-    });
-}
-
-pub(super) fn toggle_water_refraction(
-    surface: Option<Res<WaterSurface>>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-    mut output: ResMut<CommandOutput>,
-) {
-    flip_extension_flag(surface, &mut materials, &mut output, "Water refraction", |ext| {
-        &mut ext.refract
-    });
-}
-
-pub(super) fn set_water_refraction(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let Some(strength) = args.get_f32(0) else {
-        output.set("Usage: set_water_refraction <strength>");
-        return;
-    };
-    sea_state.refraction = strength.max(0.0);
-    output.set(format!("Water refraction: {:.2}", sea_state.refraction));
-}
-
-pub(super) fn set_caustic_strength(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let Some(strength) = args.get_f32(0) else {
-        output.set("Usage: set_caustic_strength <strength>");
-        return;
-    };
-    sea_state.caustics.strength = strength.max(0.0);
-    output.set(format!(
-        "Caustic strength: {:.2}",
-        sea_state.caustics.strength
-    ));
-}
-
-pub(super) fn set_water_color(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let usage = "Usage: set_water_color <shallow|deep> <r> <g> <b>";
-    let kind = args.args.first().map(|kind| kind.as_str());
-    let (Some(r), Some(g), Some(b)) = (args.get_f32(1), args.get_f32(2), args.get_f32(3)) else {
-        output.set(usage);
-        return;
-    };
-    let color = Vec3::new(r, g, b).clamp(Vec3::ZERO, Vec3::splat(1.0));
-    match kind {
-        Some("shallow") => sea_state.dye.shallow = color,
-        Some("deep") => sea_state.dye.deep = color,
-        _ => {
-            output.set(usage);
-            return;
-        }
-    }
-    output.set(format!("Water {kind:?}: {color:?}"));
-}
-
-pub(super) fn toggle_water_tides(mut sea_state: ResMut<SeaState>, mut output: ResMut<CommandOutput>) {
-    sea_state.tides_enabled = !sea_state.tides_enabled;
-    output.set(if sea_state.tides_enabled {
-        "Tides: on"
-    } else {
-        "Tides: off"
-    });
-}
-
-pub(super) fn toggle_water_swells(
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    sea_state.swells_enabled = !sea_state.swells_enabled;
-    output.set(if sea_state.swells_enabled {
-        "Swells: on"
-    } else {
-        "Swells: off"
-    });
-}
-
-pub(super) fn toggle_water_fft(
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    sea_state.fft_enabled = !sea_state.fft_enabled;
-    output.set(if sea_state.fft_enabled {
-        "FFT water: on"
-    } else {
-        "FFT water: off"
-    });
-}
-
-pub(super) fn set_water_weather(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let preset = match args.args.first().map(|name| name.as_str()) {
-        Some("calm") => WeatherPreset::Calm,
-        Some("moderate") => WeatherPreset::Moderate,
-        Some("storm") => WeatherPreset::Storm,
-        _ => {
-            output.set("Usage: set_water_weather <calm|moderate|storm>");
-            return;
-        }
-    };
-    sea_state.wave_energy = preset.energy();
-    let (swell, chop) = weather_strengths(preset.energy());
-    sea_state.swell_strength = swell;
-    sea_state.chop_strength = chop;
-    output.set(format!(
-        "Weather: {preset:?} (swell {swell:.2}, chop {chop:.2})"
-    ));
-}
-
-pub(super) fn set_swell_strength(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let Some(strength) = args.get_f32(0) else {
-        output.set("Usage: set_swell_strength <strength>");
-        return;
-    };
-    sea_state.swell_strength = strength.clamp(0.0, 2.0);
-    output.set(format!("Swell strength: {:.2}", sea_state.swell_strength));
-}
-
-pub(super) fn set_chop_strength(
-    args: Res<CommandArgs>,
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    let Some(strength) = args.get_f32(0) else {
-        output.set("Usage: set_chop_strength <strength>");
-        return;
-    };
-    sea_state.chop_strength = strength.clamp(0.0, 2.0);
-    output.set(format!("Chop strength: {:.2}", sea_state.chop_strength));
-}
-
-pub(super) fn toggle_water_wetness(
-    mut sea_state: ResMut<SeaState>,
-    mut output: ResMut<CommandOutput>,
-) {
-    sea_state.wetness_enabled = !sea_state.wetness_enabled;
-    output.set(if sea_state.wetness_enabled {
-        "Wet sand: on"
-    } else {
-        "Wet sand: off"
-    });
+    Some(format!("{label}: {}", if *value { "on" } else { "off" }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terrain::terrain::{Generator, TerrainConfig};
     use bevy::time::TimeUpdateStrategy;
-    use bevy_shader_kit::WetSandExt;
+    use bevy_shader_kit::{WetSandExt, bake_band, FftBandConfig};
+
+    struct FlatShore {
+        ground: f32,
+        spill: f32,
+    }
+
+    impl FlatShore {
+        fn new(ground: f32, spill: f32) -> Self {
+            Self { ground, spill }
+        }
+    }
+
+    impl SeaBed for FlatShore {
+        fn ground_height(&self, _x: f32, _z: f32) -> f32 {
+            self.ground
+        }
+
+        fn spill_height(&self, _x: f32, _z: f32) -> f32 {
+            self.spill
+        }
+
+        fn texel(&self) -> Vec2 {
+            Vec2::ONE
+        }
+    }
 
     #[test]
     fn tides_off_hold_the_sea_level() {
@@ -873,7 +776,7 @@ mod tests {
                 tides_enabled: false,
                 ..default()
             })
-            .init_resource::<TerrainViewer>()
+            .init_resource::<SeaViewer>()
             .add_systems(Update, (drive_sea_level, sync_water_clipmap).chain());
         let sea = app.world_mut().spawn((Sea, Transform::default())).id();
         for _ in 0..8 {
@@ -894,7 +797,7 @@ mod tests {
                 sea_level: -0.25,
                 ..default()
             })
-            .insert_resource(TerrainViewer {
+            .insert_resource(SeaViewer {
                 position: Vec3::new(13.0, 4.0, -7.0),
             })
             .add_systems(Update, sync_water_clipmap);
@@ -992,7 +895,7 @@ mod tests {
 
     #[test]
     fn swells_off_hold_the_shore_flat_too() {
-        let terrain = Terrain::default();
+        let shore = FlatShore::new(0.0, 0.0);
         let sea = SeaState {
             sea_level: 0.2,
             wave_energy: 1.0,
@@ -1001,7 +904,7 @@ mod tests {
         };
         for step in 0..12 {
             assert_eq!(
-                sea.shore_surface_height_at(&terrain, 0.0, 0.0, step as f32 * 0.35),
+                sea.shore_surface_height_at(&shore, 0.0, 0.0, step as f32 * 0.35),
                 0.2
             );
         }
@@ -1021,7 +924,7 @@ mod tests {
                 wetness_enabled: false,
                 ..default()
             })
-            .insert_resource(TerrainSurfaceMaterial {
+            .insert_resource(WetSandSurface {
                 material: handle.clone(),
             })
             .insert_resource(materials)
@@ -1052,13 +955,9 @@ mod tests {
                 material: handle.clone(),
             })
             .insert_resource(materials)
-            .init_resource::<CommandOutput>()
             .add_systems(Update, (drive_sea_level, sync_water_params));
-        let swells = app.world_mut().register_system(toggle_water_swells);
-        let tides = app.world_mut().register_system(toggle_water_tides);
-        app.update();
-        app.world_mut().run_system(swells).unwrap();
-        app.world_mut().run_system(tides).unwrap();
+        app.world_mut().resource_mut::<SeaState>().toggle_swells();
+        app.world_mut().resource_mut::<SeaState>().toggle_tides();
         for _ in 0..4 {
             app.update();
         }
@@ -1103,16 +1002,15 @@ mod tests {
 
     #[test]
     fn dry_ground_feels_no_swell() {
-        let terrain = Terrain::default();
-        let ground = terrain.sample_ground_height(0.0, 0.0);
+        let shore = FlatShore::new(0.0, 0.0);
         let sea = SeaState {
-            sea_level: ground - 1.0,
+            sea_level: -1.0,
             ..default()
         };
         for step in 0..24 {
             let time = step as f32 * 0.35;
             assert_eq!(
-                sea.shore_surface_height_at(&terrain, 0.0, 0.0, time),
+                sea.shore_surface_height_at(&shore, 0.0, 0.0, time),
                 sea.sea_level,
                 "shoaling damps the swell to nothing once the ground breaks the surface (t={time})"
             );
@@ -1121,17 +1019,16 @@ mod tests {
 
     #[test]
     fn a_trough_never_opens_below_the_seabed() {
-        let terrain = Terrain::default();
-        let ground = terrain.sample_ground_height(0.0, 0.0);
+        let shore = FlatShore::new(0.0, 0.0);
         let sea = SeaState {
-            sea_level: ground + 0.2,
+            sea_level: 0.2,
             wave_energy: 1.0,
             ..default()
         };
         for step in 0..24 {
             let time = step as f32 * 0.35;
             assert!(
-                sea.shore_surface_height_at(&terrain, 0.0, 0.0, time) >= ground,
+                sea.shore_surface_height_at(&shore, 0.0, 0.0, time) >= shore.ground,
                 "a trough at t={time} dropped below the seabed"
             );
         }
@@ -1139,60 +1036,22 @@ mod tests {
 
     #[test]
     fn ground_the_sea_never_reaches_stays_dry() {
-        let terrain = Terrain::default();
+        let shore = FlatShore::new(0.0, 0.0);
         let sea = SeaState {
             sea_level: -1.0,
             ..default()
         };
-        assert_eq!(sea.flooded_surface_height_at(&terrain, 0.0, 0.0, 1.0), None);
+        assert_eq!(sea.flooded_surface_height_at(&shore, 0.0, 0.0, 1.0), None);
     }
 
     #[test]
     fn the_sea_floods_the_plain_once_it_spills_in() {
-        let terrain = Terrain::default();
+        let shore = FlatShore::new(0.0, 0.0);
         let sea = SeaState {
             sea_level: 0.0,
             ..default()
         };
-        assert!(sea.flooded_surface_height_at(&terrain, 0.0, 0.0, 1.0).is_some());
-    }
-
-    #[test]
-    fn an_enclosed_basin_below_sea_level_stays_dry() {
-        let terrain = Terrain::new(TerrainConfig {
-            generator: Generator::Noise {
-                seed: 3,
-                octaves: 4,
-                scale: 0.008,
-            },
-            ..default()
-        });
-        let grid = terrain.grid();
-        let mut basin = (0u32, 0u32, 0.0f32);
-        for iz in (0..grid.resolution().y).step_by(4) {
-            for ix in (0..grid.resolution().x).step_by(4) {
-                let x = grid.bounds_min().x + (ix as f32 + 0.5) * grid.texel().x;
-                let z = grid.bounds_min().y + (iz as f32 + 0.5) * grid.texel().y;
-                let gap = grid.sample_spill(x, z) - grid.sample(x, z);
-                if gap > basin.2 {
-                    basin = (ix, iz, gap);
-                }
-            }
-        }
-        let (ix, iz, gap) = basin;
-        assert!(gap > 0.5, "the noise world must contain an enclosed basin");
-        let x = grid.bounds_min().x + (ix as f32 + 0.5) * grid.texel().x;
-        let z = grid.bounds_min().y + (iz as f32 + 0.5) * grid.texel().y;
-        let sea = SeaState {
-            sea_level: (grid.sample(x, z) + grid.sample_spill(x, z)) * 0.5,
-            swells_enabled: false,
-            ..default()
-        };
-        assert!(
-            terrain.sample_ground_height(x, z) < sea.sea_level,
-            "the basin floor must sit below the sea"
-        );
-        assert_eq!(sea.flooded_surface_height_at(&terrain, x, z, 0.0), None);
+        assert!(sea.flooded_surface_height_at(&shore, 0.0, 0.0, 1.0).is_some());
     }
 
     #[test]
@@ -1248,6 +1107,21 @@ mod tests {
             base: StandardMaterial::default(),
             extension: WaterMaterialExt::default(),
         });
+        let surface = WaterSurface {
+            material: handle.clone(),
+        };
+        flip_material_flag(Some(&surface), &mut materials, "Water detail", |ext| {
+            &mut ext.detail
+        });
+        flip_material_flag(Some(&surface), &mut materials, "Water dye", |ext| {
+            &mut ext.dye
+        });
+        flip_material_flag(Some(&surface), &mut materials, "Water caustics", |ext| {
+            &mut ext.caustics
+        });
+        flip_material_flag(Some(&surface), &mut materials, "Water refraction", |ext| {
+            &mut ext.refract
+        });
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(TimeUpdateStrategy::ManualDuration(
@@ -1258,15 +1132,7 @@ mod tests {
                 material: handle.clone(),
             })
             .insert_resource(materials)
-            .init_resource::<CommandOutput>()
             .add_systems(Update, sync_water_params);
-        let detail = app.world_mut().register_system(toggle_water_detail);
-        let dye = app.world_mut().register_system(toggle_water_dye);
-        let caustics = app.world_mut().register_system(toggle_water_caustics);
-        let refraction = app.world_mut().register_system(toggle_water_refraction);
-        for system in [detail, dye, caustics, refraction] {
-            app.world_mut().run_system(system).unwrap();
-        }
         for _ in 0..4 {
             app.update();
         }
@@ -1280,28 +1146,6 @@ mod tests {
         assert!(!material.extension.dye);
         assert!(!material.extension.caustics);
         assert!(!material.extension.refract);
-    }
-
-    #[test]
-    fn the_dye_command_paints_the_requested_band() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(SeaState::default())
-            .insert_resource(CommandArgs {
-                args: vec![
-                    "deep".to_string(),
-                    "0.1".to_string(),
-                    "0.2".to_string(),
-                    "0.3".to_string(),
-                ],
-            })
-            .init_resource::<CommandOutput>();
-        let paint = app.world_mut().register_system(set_water_color);
-        app.world_mut().run_system(paint).unwrap();
-
-        let sea = app.world().resource::<SeaState>();
-        assert_eq!(sea.dye.deep, Vec3::new(0.1, 0.2, 0.3));
-        assert_eq!(sea.dye.shallow, WaterDye::default().shallow);
     }
 
     #[test]
@@ -1320,18 +1164,9 @@ mod tests {
     }
 
     #[test]
-    fn the_weather_command_blends_the_bands() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(SeaState::default())
-            .insert_resource(CommandArgs {
-                args: vec!["storm".to_string()],
-            })
-            .init_resource::<CommandOutput>();
-        let weather = app.world_mut().register_system(set_water_weather);
-        app.world_mut().run_system(weather).unwrap();
-
-        let sea = app.world().resource::<SeaState>();
+    fn the_weather_preset_blends_the_bands() {
+        let mut sea = SeaState::default();
+        sea.apply_weather(WeatherPreset::Storm);
         assert_eq!(sea.wave_energy, 1.0);
         assert!((sea.swell_strength - 1.2).abs() < 1e-5);
         assert!((sea.chop_strength - 1.0).abs() < 1e-5);
@@ -1339,15 +1174,11 @@ mod tests {
 
     #[test]
     fn the_fft_toggle_sticks() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .insert_resource(SeaState::default())
-            .init_resource::<CommandOutput>();
-        let toggle = app.world_mut().register_system(toggle_water_fft);
-        app.world_mut().run_system(toggle).unwrap();
-        assert!(!app.world().resource::<SeaState>().fft_enabled);
-        app.world_mut().run_system(toggle).unwrap();
-        assert!(app.world().resource::<SeaState>().fft_enabled);
+        let mut sea = SeaState::default();
+        sea.toggle_fft();
+        assert!(!sea.fft_enabled);
+        sea.toggle_fft();
+        assert!(sea.fft_enabled);
     }
 
     #[test]
@@ -1362,7 +1193,7 @@ mod tests {
 
     #[test]
     fn the_fft_swell_drives_the_shore_height() {
-        let band = bevy_shader_kit::bake_band(&bevy_shader_kit::FftBandConfig {
+        let band = bake_band(&FftBandConfig {
             tile_size: 8.0,
             resolution: 16,
             frames: 4,
@@ -1377,7 +1208,7 @@ mod tests {
             amplitude: 1.0,
             seed: 7,
         });
-        let terrain = Terrain::default();
+        let shore = FlatShore::new(0.0, 0.0);
         let sea = SeaState {
             sea_level: 5.0,
             swell_strength: 1.0,
@@ -1387,7 +1218,7 @@ mod tests {
         let mut heights = Vec::new();
         for step in 0..8 {
             let time = step as f32 * 0.3;
-            let height = sea.shore_surface_height_at(&terrain, 3.0, -4.0, time);
+            let height = sea.shore_surface_height_at(&shore, 3.0, -4.0, time);
             assert!(height.is_finite());
             heights.push(height);
         }
@@ -1395,8 +1226,8 @@ mod tests {
             heights.windows(2).any(|pair| (pair[1] - pair[0]).abs() > 1e-4),
             "the fft swell must move the shore surface"
         );
-        let start = sea.shore_surface_height_at(&terrain, 3.0, -4.0, 0.0);
-        let looped = sea.shore_surface_height_at(&terrain, 3.0, -4.0, band.loop_period);
+        let start = sea.shore_surface_height_at(&shore, 3.0, -4.0, 0.0);
+        let looped = sea.shore_surface_height_at(&shore, 3.0, -4.0, band.loop_period);
         assert!((start - looped).abs() < 1e-4, "the loop must close at the shore too");
     }
 
@@ -1439,19 +1270,30 @@ mod tests {
     }
 
     #[test]
-    fn the_dye_command_leaves_the_sea_alone_without_a_band() {
+    fn the_sea_faces_the_way_the_light_arrives_from() {
+        use bevy::light::light_consts::lux;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(SeaState::default())
-            .insert_resource(CommandArgs {
-                args: vec!["murk".to_string(), "0.1".to_string(), "0.2".to_string(), "0.3".to_string()],
-            })
-            .init_resource::<CommandOutput>();
-        let paint = app.world_mut().register_system(set_water_color);
-        app.world_mut().run_system(paint).unwrap();
+            .init_resource::<SeaState>()
+            .world_mut()
+            .spawn((
+                DirectionalLight {
+                    illuminance: lux::AMBIENT_DAYLIGHT,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 5.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
+            ));
+        app.add_systems(Update, sync_sea_sun);
+        app.update();
 
-        let sea = app.world().resource::<SeaState>();
-        assert_eq!(sea.dye.deep, WaterDye::default().deep);
-        assert_eq!(sea.dye.shallow, WaterDye::default().shallow);
+        let optics = &app.world().resource::<SeaState>().optics;
+        assert!(
+            optics.sun_direction.dot(Vec3::Y) > 0.99,
+            "a light shining straight down means the sun is overhead"
+        );
+        assert!(
+            (optics.sun_illuminance.x - 3.0).abs() < 1.0e-3,
+            "the default daylight lux maps back onto the water's in-scatter range"
+        );
     }
 }

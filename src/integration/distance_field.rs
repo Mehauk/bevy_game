@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 
 use crate::distance_field::{DistanceFieldDimmedColor, DistanceFieldViewHidden};
-use crate::terrain::{Sea, SkyBox};
+use world_water::Sea;
+
+use crate::terrain::SkyBox;
 
 const SKYBOX_VIEW_COLOR: Color = Color::srgb(0.015, 0.015, 0.018);
 

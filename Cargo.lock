@@ -8214,6 +8214,15 @@ dependencies = [
  "meshless_voronoi",
  "noise",
  "toml",
+ "world_water",
+]
+
+[[package]]
+name = "world_water"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_shader_kit",
 ]
 
 [[package]]

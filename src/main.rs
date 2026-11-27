@@ -24,6 +24,7 @@ use bevy_brp_extras::BrpExtrasPlugin;
 use bevy_mod_scripting::BMSPlugin;
 use bevy_script_menus::{MenuAssetRoot, MenuConfig, MenuPlugin};
 use bevy_shader_kit::ShaderKitPlugin;
+use world_water::WaterPlugin;
 
 use camera::CameraPlugin;
 use character::CharacterPlugin;
@@ -72,6 +73,7 @@ fn main() {
             DebugViewPlugin,
             DistanceFieldPlugin,
             TerrainPlugin,
+            WaterPlugin,
             RipplePlugin,
             ScreenshotPlugin,
             DocgenPlugin,

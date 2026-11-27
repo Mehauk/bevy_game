@@ -1,10 +1,12 @@
 use bevy::{core_pipeline::prepass::DepthPrepass, prelude::*};
 use bevy_shader_kit::UnderwaterPostProcess;
 
+use world_water::SeaState;
+
 use crate::camera::MainCamera;
 use crate::distance_field::DistanceFieldView;
 use crate::screenshot::ScreenshotCaptureCamera;
-use crate::terrain::{SeaState, Terrain};
+use crate::terrain::Terrain;
 use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
 use crate::utils::registry::debug_info::{DebugInfoAppExt, debug_info};
 

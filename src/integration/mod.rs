@@ -18,6 +18,7 @@ mod ripples;
 mod state_pause;
 mod submersion;
 mod terrain_viewer;
+mod water_commands;
 
 pub struct IntegrationPlugin;
 
@@ -57,5 +58,6 @@ impl Plugin for IntegrationPlugin {
         state_pause::register(app);
         submersion::register(app);
         terrain_viewer::register(app);
+        water_commands::register(app);
     }
 }

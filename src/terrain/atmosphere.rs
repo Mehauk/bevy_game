@@ -1,11 +1,5 @@
-use bevy::{
-    light::{CascadeShadowConfigBuilder, NotShadowCaster, light_consts::lux},
-    prelude::*,
-};
-
-use super::water::SeaState;
-
-const SUN_RADIANCE_PER_LUX: f32 = 3.0 / lux::AMBIENT_DAYLIGHT;
+use bevy::light::{CascadeShadowConfigBuilder, NotShadowCaster};
+use bevy::prelude::*;
 
 #[derive(Resource, Clone)]
 pub struct TerrainFog(pub DistanceFog);
@@ -82,21 +76,6 @@ pub(super) fn sync_terrain_fog(
     }
 }
 
-pub(super) fn sync_sea_sun(
-    lights: Query<(Ref<'_, DirectionalLight>, Ref<'_, Transform>)>,
-    mut sea_state: ResMut<SeaState>,
-) {
-    let Some((light, transform)) = lights.iter().next() else {
-        return;
-    };
-    if !light.is_changed() && !transform.is_changed() {
-        return;
-    }
-    sea_state.optics.sun_direction = -*transform.forward();
-    sea_state.optics.sun_illuminance =
-        light.color.to_linear().to_vec3() * (light.illuminance * SUN_RADIANCE_PER_LUX);
-}
-
 const DEFAULT_FOG_ALPHA: f32 = 1.0;
 const DEFAULT_FOG_LIGHT_ALPHA: f32 = 0.5;
 const FOG_ON_THRESHOLD: f32 = 0.05;
@@ -135,32 +114,5 @@ mod tests {
         let mut color = Color::srgba(0.1, 0.2, 0.3, FOG_ON_THRESHOLD / 2.0);
         toggle_fog_alpha(&mut color, DEFAULT_FOG_ALPHA);
         assert_eq!(color.alpha(), DEFAULT_FOG_ALPHA, "a near-zero alpha must toggle back on");
-    }
-
-    #[test]
-    fn the_sea_faces_the_way_the_light_arrives_from() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
-            .init_resource::<SeaState>()
-            .world_mut()
-            .spawn((
-                DirectionalLight {
-                    illuminance: lux::AMBIENT_DAYLIGHT,
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 5.0, 0.0).looking_at(Vec3::ZERO, Vec3::Y),
-            ));
-        app.add_systems(Update, sync_sea_sun);
-        app.update();
-
-        let optics = &app.world().resource::<SeaState>().optics;
-        assert!(
-            optics.sun_direction.dot(Vec3::Y) > 0.99,
-            "a light shining straight down means the sun is overhead"
-        );
-        assert!(
-            (optics.sun_illuminance.x - 3.0).abs() < 1.0e-3,
-            "the default daylight lux maps back onto the water's in-scatter range"
-        );
     }
 }

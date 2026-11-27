@@ -2,9 +2,11 @@ use avian3d::prelude::LinearVelocity;
 use bevy::prelude::*;
 use bevy_shader_kit::WaterMaterial;
 
+use world_water::{SeaState, WaterSurface};
+
 use crate::character::{CAPSULE_RADIUS, CAPSULE_TOTAL_HEIGHT, Character, FEET_OFFSET};
 use crate::ripples::{RippleField, RippleSystems};
-use crate::terrain::{SeaState, Terrain, WaterSurface};
+use crate::terrain::Terrain;
 use crate::utils::registry::commands::{CommandAppExt, CommandOutput, command};
 
 #[derive(Resource)]
@@ -129,7 +131,7 @@ fn emit_character_splashes(
     let now = time.elapsed_secs();
     for (transform, velocity, mut memory) in &mut characters {
         let surface = sea_state.flooded_surface_height_at(
-            &terrain,
+            &*terrain,
             transform.translation.x,
             transform.translation.z,
             now,

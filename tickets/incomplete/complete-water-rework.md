@@ -227,3 +227,67 @@ Once Unity exports `<output>/<scenario>/golden.json` + `.bin` + `.png` (commit t
 1. **Patch `tools/unity_crest_goldens/`:** fix `SliceWriter.WithJacobian` (`1.0f +`), resolve the `_lodDataFoam` batchmode skip, add `UnderwaterEffect` to `FrameWork`'s camera, and move execution into a Play Mode test / Play Mode runner invoked via `unity -batchmode` (without `-nographics`).
 2. **Run Unity once and commit `harness/water_harness/unity_goldens/`** (`golden.json`, `.bin`, `.png`) for all 6 scenarios.
 3. **Update `harness/water_harness/`** to build scenarios from `golden.json` with `z -> -z` conversion, compare `WaterQuery` probes + slice RMS + boat trajectory against the Unity goldens, and keep `cargo test -p water_harness` running completely offline in CI.
+
+---
+
+Testing splines (and the rest of the Crest subsystems) currently has major blind spots on **both** the Unity golden-exporter side and the Bevy `water_harness` side.
+
+---
+
+### 1. Why the current `spline_river` test barely tests splines
+
+Looking at `tools/unity_crest_goldens/Editor/ScenarioBuilder.cs` (`SplineRiver` / `BuildSpline`) and `subcrates/crest_water/src/splines.rs`:
+
+1. **The Unity `SplineRiver` fixture is too trivial:**
+   - All 4 points sit on a **straight line** (`x = 0, z = -60..-20..20..60`) with uniform `width = 8`, `flowSpeed = 1.5`, `waveMultiplier = 0.3`, and `foamAmount = 0.2`.
+   - It exports **only** `FlowXz` (`flow_lod0_t4.bin`)—it does not export `Foam` or `AnimatedWaves` (`disp_lod0_t4.bin`) for `spline_river`.
+   - Look at `RiverGroup` vs `slices`: `RiverGroup` probes `z = -40, 0, 40`, which actually fall outside `lod0` (`[-16, +16]` around `(0, 2, 0)`) into `lod2`, while `slices` only dumps `lod0`.
+   - Even though the points have varying `y` (`-1.5` to `-1.0`), `BuildSpline` does not attach `RegisterHeightInput` (or `RegisterSeaFloorDepthInput`), so Unity isn't testing an elevated/sloped river surface either.
+
+2. **`crest_water`'s `Spline` implementation has gaps that the current harness hides:**
+   - `harness/water_harness/tests/golden_checks.rs` spawns `FlowSpline` directly—it **never spawns `crest_water::splines::Spline`**, `SplinePoint`, or `FoamSpline`.
+   - `subcrates/crest_water/src/splines.rs` collapses `widths` via `average_width()` instead of interpolating per-point width, and ignores `wave_multiplier` and per-point `y` elevation completely.
+   - `subcrates/crest_water/src/shaders/flow.wesl` evaluates **straight polyline segments** (`a -> b`), whereas Unity Crest's `SplineMesh` evaluates a **smooth cubic spline** with tangent interpolation and cross-section falloff. A straight line in `SplineRiver` hides tangent discontinuities at bends.
+
+---
+
+### 2. Spline Scenarios & Assertions to Add
+
+To properly test splines against Unity goldens, upgrade `ScenarioBuilder.cs` (and mirror it in `water_harness`):
+
+1. **Curved S-bend river (`spline_river`):**
+   - Use non-collinear control points (e.g. an S-curve or 90° bend) with **varying widths** per point (narrow upstream, wide mouth), **varying flow speeds**, **non-zero `foamAmount`**, and **`waveMultiplier < 1.0`** (damped ocean waves inside the channel).
+   - Export **`FlowXz`**, **`Foam`**, and **`DisplacementXyzJac`** slices at `lod0` and `lod2`, plus probes:
+     - Along the centerline (verifying tangent rotation and speed),
+     - Inside the curve and near the banks (verifying smooth width tapering and edge falloff to `0` outside `width * 0.5`),
+     - Just outside the spline (verifying zero bleed).
+2. **Sloped / elevated river (`sloped_river`):**
+   - Flow downhill from e.g. `y = +4.0` down to `y = 0.0` ocean level (with `RegisterHeightInput` / `ShapeFFT` in Unity) so you can verify **surface height**, **normal tilt**, and **river-to-ocean blending**.
+3. **End-to-end `Spline` component test in `water_harness`:**
+   - Spawn `crest_water::splines::Spline` (not raw `FlowSpline`) in the test app, tick once so `sync_splines` generates `FlowSpline` + `FoamSpline`, and test mutating/removing spline attributes at runtime (`flow_speed = 0.0` removes `FlowSpline`).
+4. **River current carrying a floater / boat:**
+   - Drop a `BoatProbes` or `SimpleFloatingObject` entity into the spline channel and verify it drifts along the spline tangent and rides the river height.
+
+---
+
+### 3. Everything Else Untested in `water_harness` Right Now
+
+Beyond splines, `subcrates/crest_water` has several other subsystems that `golden_checks.rs` never checks because **`WaterSampler` and `WaterQuery` don't read them back**:
+
+| Subsystem                                                                 | What's missing in `water_harness` / `crest_water`                                                                                                                                                                            | How to test it                                                                                                                                                                                                                                                                                             |
+| :------------------------------------------------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Foam (`foam.wesl`)**                                                    | `WaterSampler`, `WaterQuery`, `copy_slice.wesl`, and `water_query.wesl` only read `waves`, `flow`, `depth`, and `derivs`—**foam is never read back or compared** against goldens.                                            | Add a `foam` readback texture to `QuerySlices` / `QueryPointTextures` (or read `CascadeData::Foam` directly in test harness) and compare `storm_swell`, `shallow_shore`, and `spline_river` against Unity's `foam` probes & `.bin` slices.                                                                 |
+| **Clip carves (`ClipCarve`, `fill.wesl`)**                                | Extracted and dispatched in `passes.rs`, zero tests verify it carves.                                                                                                                                                        | Add a `clip_carve` scenario (e.g. boat hull cutout) and read back `CascadeData::ClipSurface` (and check rendered pixel alpha/discard).                                                                                                                                                                     |
+| **Boat physics & dynamic wakes (`BoatProbes`, `SphereWaterInteraction`)** | `boat_wakes` in `golden_checks.rs` only spawns a fake moving `DynWaveEmitter` point; it never runs `BoatProbes` or `SphereWaterInteraction`, and `buoyancy.rs` reads the small `WaterSampler` slice instead of `WaterQuery`. | Spawn an `avian3d` `RigidBody` + `BoatProbes` + `SphereWaterInteraction` matching Unity's `BuildBoat`, and compare the position/rotation trajectory (`trajectories` in `golden.json`) + wake probes.                                                                                                       |
+| **Moving viewer & outer LODs (`LodTransforms`, `dynwaves.wesl`)**         | Every test keeps `OceanViewer` static at `(16, 0, 16)` and only inspects `lod0`. Shift-wrapping in `dynwaves.wesl` / `foam.wesl` (`uni.shifts`) and `lod 1..6` cascades are completely untested.                             | Add a scenario that translates `OceanViewer` across multiple texel boundaries while dynamic waves + foam are active, and query probes across `lod0..lod3` via `WaterQueryPoints`.                                                                                                                          |
+| **Underwater curtain (`UnderwaterFog`)**                                  | `underwater_curtain` only checks water surface `(x, z)` height; it never renders a frame.                                                                                                                                    | Render an offscreen `Camera3d` at Unity's `FrameSpec` pose (`(0, 0, 8)` in RH) with `Screenshot::image`, and compare against Unity's `surface_straddle.png` (which will also immediately catch that `UnderwaterFog` currently uses a binary CPU `eye.y < surface` toggle instead of a per-pixel meniscus). |
+
+---
+
+### Practical Next Step
+If you expand `ScenarioBuilder.cs` first with:
+1. A curved, variable-width **`spline_river`** (exporting `FlowXz`, `Foam`, and `DisplacementXyzJac` at both `lod0` and `lod2`),
+2. An elevated **`sloped_river`** (if you intend Crest splines to drive river water elevation, not just flow/foam), and
+3. A **`Readback` hook in `crest_water` (or test-only slice readback)** for `Foam` and `ClipSurface`,
+
+then running Unity headlessly will give you goldens that exercise the full spline + cascade + buoyancy pipeline instead of just flat 16-point deep-water height probes.

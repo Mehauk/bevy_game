@@ -177,7 +177,7 @@ namespace Crest.Goldens
                     output[i * 4] = x;
                     output[i * 4 + 1] = y;
                     output[i * 4 + 2] = z;
-                    output[i * 4 + 3] = dxX * dzZ - dxZ * dzX;
+                    output[i * 4 + 3] = (1.0f + dxX) * (1.0f + dzZ) - dxZ * dzX;
                 }
             }
             return output;
